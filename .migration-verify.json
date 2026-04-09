@@ -1,0 +1,94 @@
+{
+  "time": "2026-04-09T04:50:03.248Z",
+  "hasRegionColumn": true,
+  "columns": [
+    "id",
+    "year_frame_id",
+    "month",
+    "region",
+    "wine_name",
+    "specifications",
+    "quantity",
+    "unit_price",
+    "quoted_price",
+    "actual_cost",
+    "remarks",
+    "created_at",
+    "updated_at"
+  ],
+  "error": null,
+  "lastRows": [
+    {
+      "id": 18,
+      "year_frame_id": 1,
+      "month": "2月",
+      "region": null,
+      "quantity": 1,
+      "unit_price": "3000.00",
+      "quoted_price": "3000.00"
+    },
+    {
+      "id": 17,
+      "year_frame_id": 1,
+      "month": "1月",
+      "region": null,
+      "quantity": 1,
+      "unit_price": "3000.00",
+      "quoted_price": "3000.00"
+    },
+    {
+      "id": 16,
+      "year_frame_id": 1,
+      "month": "",
+      "region": null,
+      "quantity": 0,
+      "unit_price": "0.00",
+      "quoted_price": "20381.26"
+    },
+    {
+      "id": 15,
+      "year_frame_id": 1,
+      "month": "",
+      "region": null,
+      "quantity": 0,
+      "unit_price": "0.00",
+      "quoted_price": "39177.60"
+    },
+    {
+      "id": 14,
+      "year_frame_id": 1,
+      "month": "",
+      "region": null,
+      "quantity": 0,
+      "unit_price": "0.00",
+      "quoted_price": "9705.36"
+    },
+    {
+      "id": 13,
+      "year_frame_id": 1,
+      "month": "",
+      "region": null,
+      "quantity": 0,
+      "unit_price": "0.00",
+      "quoted_price": "9705.36"
+    },
+    {
+      "id": 12,
+      "year_frame_id": 1,
+      "month": "",
+      "region": null,
+      "quantity": 0,
+      "unit_price": "0.00",
+      "quoted_price": "3358.08"
+    },
+    {
+      "id": 11,
+      "year_frame_id": 1,
+      "month": "",
+      "region": null,
+      "quantity": 0,
+      "unit_price": "0.00",
+      "quoted_price": "20988.00"
+    }
+  ]
+}

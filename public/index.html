@@ -1,0 +1,417 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate">
+  <meta http-equiv="Pragma" content="no-cache">
+  <title>人头马年框项目管理</title>
+  <link rel="stylesheet" href="style.css?v=20260409fix3">
+  <!-- Chart.js -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+</head>
+<body>
+  <!-- 侧边栏 -->
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-header">
+      <div class="brand-logo">
+        <span class="brand-icon">🥃</span>
+        <div class="brand-info">
+          <div class="brand-name">人头马</div>
+          <div class="brand-sub">年框项目管理</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 年度切换 -->
+    <div class="year-switcher">
+      <button class="year-btn active" data-year="25" onclick="switchYear('25')">25年度</button>
+      <button class="year-btn" data-year="26" onclick="switchYear('26')">26年度</button>
+    </div>
+
+    <!-- 导航菜单 -->
+    <nav class="sidebar-nav">
+      <div class="nav-section-label">主要功能</div>
+      <a class="nav-item active" data-page="dashboard" onclick="navigate('dashboard')">
+        <span class="nav-icon">📊</span>
+        <span class="nav-text">数据看板</span>
+      </a>
+      <a class="nav-item" data-page="activities" onclick="navigate('activities')">
+        <span class="nav-icon">📋</span>
+        <span class="nav-text">活动记录</span>
+        <span class="nav-badge" id="badge-activities">—</span>
+      </a>
+      <a class="nav-item" data-page="calendar" onclick="navigate('calendar')">
+        <span class="nav-icon">📅</span>
+        <span class="nav-text">排期日历</span>
+      </a>
+      <a class="nav-item" data-page="cost" onclick="navigate('cost')">
+        <span class="nav-icon">💰</span>
+        <span class="nav-text">成本管理</span>
+      </a>
+
+      <div class="nav-section-label">记录模块</div>
+      <a class="nav-item" data-page="logistics" onclick="navigate('logistics')">
+        <span class="nav-icon">🚚</span>
+        <span class="nav-text">物流记录</span>
+        <span class="nav-badge" id="badge-logistics">—</span>
+      </a>
+      <a class="nav-item" data-page="warehouse" onclick="navigate('warehouse')">
+        <span class="nav-icon">🏪</span>
+        <span class="nav-text">仓储记录</span>
+        <span class="nav-badge" id="badge-warehouse">—</span>
+      </a>
+      <a class="nav-item" data-page="wine" onclick="navigate('wine')">
+        <span class="nav-icon">🍷</span>
+        <span class="nav-text">客户用酒</span>
+        <span class="nav-badge" id="badge-wine">—</span>
+      </a>
+
+      <div class="nav-section-label">系统</div>
+      <a class="nav-item" data-page="backup" onclick="navigate('backup')">
+        <span class="nav-icon">💾</span>
+        <span class="nav-text">数据备份</span>
+      </a>
+    </nav>
+
+    <!-- 底部：版本号 + 明暗主题图标 -->
+    <div class="sidebar-footer">
+      <div class="sidebar-footer-bar">
+        <span class="app-version" id="appVersion" title="应用版本">ver.2026.04.09</span>
+        <button type="button" class="theme-toggle-icon" id="themeToggleBtn" onclick="toggleTheme()" title="切换到亮色模式" aria-label="切换明暗主题"><svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg></button>
+      </div>
+    </div>
+  </aside>
+
+  <!-- 主内容区 -->
+  <main class="main-content" id="mainContent">
+    <!-- 顶部栏 -->
+    <header class="top-bar">
+      <div class="top-bar-left">
+        <button class="menu-toggle" onclick="toggleSidebar()" title="收起侧边栏">☰</button>
+        <h1 class="page-title" id="pageTitle">数据看板</h1>
+      </div>
+      <div class="top-bar-right">
+        <span class="year-badge" id="yearBadge">25年度</span>
+        <div class="connection-status" id="connectionStatus">
+          <span class="status-dot"></span>
+          <span>已连接</span>
+        </div>
+      </div>
+    </header>
+
+    <!-- 页面容器 -->
+    <div class="page-container" id="pageContainer">
+      <!-- 各页面动态渲染 -->
+    </div>
+  </main>
+
+  <!-- 全局弹窗遮罩 -->
+  <div class="modal-overlay" id="modalOverlay" onclick="closeModal()"></div>
+
+  <!-- 全局弹窗：必须挂在 body 下，勿放进 pageContainer（切换页面 innerHTML 会销毁弹窗 DOM） -->
+  <div class="modal wide" id="modalActivity">
+    <div class="modal-header">
+      <span class="modal-title" id="modalActivityTitle">新建活动</span>
+      <button type="button" class="modal-close" onclick="closeModal()">✕</button>
+    </div>
+    <div class="modal-body">
+      <form id="activityForm" onsubmit="saveActivity(event)">
+        <input type="hidden" id="actId">
+        <div class="form-grid">
+          <div class="form-group">
+            <label class="form-label">年框编号 <span class="required">*</span></label>
+            <select class="form-control" id="actYearFrameCode" onchange="genProjectCode()">
+              <option value="N220630-RC-PHD">N220630-RC-PHD</option>
+              <option value="N230901-RM-X.O">N230901-RM-X.O</option>
+              <option value="N230530-RM-CLUB">N230530-RM-CLUB</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">活动类型 <span class="required">*</span></label>
+            <select class="form-control" id="actActivityType" onchange="genProjectCode()">
+              <option value="晚宴">晚宴</option>
+              <option value="品鉴">品鉴</option>
+              <option value="培训">培训</option>
+              <option value="婚宴">婚宴</option>
+              <option value="宴会">宴会</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">城市 <span class="required">*</span></label>
+            <input type="text" class="form-control" id="actCity" placeholder="如：上海" oninput="genProjectCode()" required>
+          </div>
+          <div class="form-group">
+            <label class="form-label">
+              品牌
+              <button type="button" class="btn btn-xs btn-ghost" onclick="showBrandModal()" title="管理品牌" style="margin-left:6px;font-size:11px">⚙️ 管理</button>
+            </label>
+            <select class="form-control" id="actBrandField" onchange="genProjectCode()"></select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">活动日期</label>
+            <input type="date" class="form-control" id="actDate" onchange="genProjectCode()">
+          </div>
+          <div class="form-group">
+            <label class="form-label">客户名称</label>
+            <input type="text" class="form-control" id="actClient" placeholder="客户/场所名称">
+          </div>
+          <div class="form-group">
+            <label class="form-label">区域</label>
+            <select class="form-control" id="actRegion">
+              <option value="">请选择</option>
+              <option value="东区">东区</option>
+              <option value="北区">北区</option>
+              <option value="南区">南区</option>
+              <option value="西南区">西南区</option>
+              <option value="东南区">东南区</option>
+              <option value="内部">内部</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">场地</label>
+            <input type="text" class="form-control" id="actVenue" placeholder="场地名称">
+          </div>
+          <div class="form-group">
+            <label class="form-label">报价 (¥)</label>
+            <input type="number" class="form-control" id="actQuotedPrice" placeholder="0.00" step="0.01">
+          </div>
+          <div class="form-group">
+            <label class="form-label">宾客人数</label>
+            <input type="number" class="form-control" id="actGuestCount" placeholder="0">
+          </div>
+          <div class="form-group">
+            <label class="form-label">执行人员</label>
+            <select class="form-control" id="actExecutor">
+              <option value="无">无</option>
+              <option value="有">有</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">状态</label>
+            <select class="form-control" id="actStatus">
+              <option value="pending">待执行</option>
+              <option value="done">已完成</option>
+              <option value="cancelled">已取消</option>
+            </select>
+          </div>
+          <div class="form-group form-full">
+            <label class="form-label">项目编号（自动生成）</label>
+            <input type="text" class="form-control" id="actProjectCode" readonly style="background:var(--bg-primary);color:var(--text-muted)">
+          </div>
+          <div class="form-group form-full">
+            <label class="form-label">备注</label>
+            <textarea class="form-control" id="actRemarks" rows="2" placeholder="活动备注..."></textarea>
+          </div>
+          <div class="form-section wine-section" id="wineSection" style="grid-column:1/-1">
+            <div class="form-section-header" onclick="toggleWineSection()" style="cursor:pointer;display:flex;align-items:center;gap:8px;margin-bottom:10px">
+              <span class="form-section-title" style="margin:0;border:none;padding:0">🍷 用酒明细</span>
+              <span style="font-size:12px;color:var(--text-muted)">点击展开/收起</span>
+              <span id="wineToggleIcon" style="margin-left:auto">▼</span>
+            </div>
+            <div id="wineSelectionArea" style="display:none">
+              <div id="wineInventoryLoading" style="color:var(--text-muted);font-size:13px;padding:8px">加载酒品库存中...</div>
+              <table class="data-table" id="wineSelectTable" style="display:none">
+                <thead>
+                  <tr>
+                    <th>酒品名称</th><th>规格</th><th>当前库存</th><th>本次用量（瓶）</th>
+                  </tr>
+                </thead>
+                <tbody id="wineSelectBody"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </form>
+    </div>
+    <div class="modal-footer">
+      <button type="button" class="btn btn-secondary" onclick="closeModal()">取消</button>
+      <button type="button" class="btn btn-primary" onclick="saveActivity()">保存</button>
+    </div>
+  </div>
+
+  <div class="modal" id="modalActivityDetail">
+    <div class="modal-header">
+      <span class="modal-title">活动详情</span>
+      <button type="button" class="modal-close" onclick="closeModal()">✕</button>
+    </div>
+    <div class="modal-body" id="activityDetailContent"></div>
+    <div class="modal-footer">
+      <button type="button" class="btn btn-secondary" onclick="closeModal()">关闭</button>
+      <button type="button" class="btn btn-primary" id="detailEditBtn">编辑</button>
+    </div>
+  </div>
+
+  <div class="modal wide" id="modalCostFill">
+    <div class="modal-header">
+      <span class="modal-title">填写成本明细</span>
+      <button type="button" class="modal-close" onclick="closeModal()">✕</button>
+    </div>
+    <div class="modal-body" id="costFillContent"></div>
+    <div class="modal-footer">
+      <button type="button" class="btn btn-secondary" onclick="closeModal()">取消</button>
+      <button type="button" class="btn btn-primary" onclick="saveCostFromModal()">保存成本</button>
+    </div>
+  </div>
+
+  <div class="modal wide" id="modalCostFill2">
+    <div class="modal-header">
+      <span class="modal-title">填写成本明细</span>
+      <button type="button" class="modal-close" onclick="closeModal()">✕</button>
+    </div>
+    <div class="modal-body" id="costFillContent2"></div>
+    <div class="modal-footer">
+      <button type="button" class="btn btn-secondary" onclick="closeModal()">取消</button>
+      <button type="button" class="btn btn-primary" onclick="saveCostFromModal2()">保存成本</button>
+    </div>
+  </div>
+
+  <div class="modal" id="modalWineStockIn" style="max-width:500px">
+    <div class="modal-header">
+      <span class="modal-title">🍷 酒品入库</span>
+      <button type="button" class="modal-close" onclick="closeModal()">✕</button>
+    </div>
+    <div class="modal-body" id="wineStockInContent"></div>
+    <div class="modal-footer">
+      <button type="button" class="btn btn-secondary" onclick="closeModal()">取消</button>
+      <button type="button" class="btn btn-primary" onclick="confirmWineStockIn()">确认入库</button>
+    </div>
+  </div>
+
+  <div class="modal" id="modalBrand" style="max-width:500px">
+    <div class="modal-header">
+      <span class="modal-title">⚙️ 管理品牌</span>
+      <button type="button" class="modal-close" onclick="closeModal()">✕</button>
+    </div>
+    <div class="modal-body" style="max-height:70vh;overflow-y:auto" id="brandContent"></div>
+  </div>
+
+  <div class="modal" id="modalLogistics">
+    <div class="modal-header">
+      <span class="modal-title" id="logModalTitle">新建物流记录</span>
+      <button type="button" class="modal-close" onclick="closeModal()">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-grid">
+        <input type="hidden" id="logId">
+        <div class="form-group">
+          <label class="form-label">物流公司</label>
+          <select class="form-control" id="logCompany">
+            <option value="顺丰">顺丰</option>
+            <option value="京东">京东</option>
+            <option value="中通">中通</option>
+            <option value="圆通">圆通</option>
+            <option value="其他">其他</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">单号</label>
+          <input type="text" class="form-control" id="logTrack" placeholder="快递单号">
+        </div>
+        <div class="form-group">
+          <label class="form-label">发货城市</label>
+          <input type="text" class="form-control" id="logOrigin" placeholder="发货地">
+        </div>
+        <div class="form-group">
+          <label class="form-label">目的城市</label>
+          <input type="text" class="form-control" id="logDest" placeholder="目的地">
+        </div>
+        <div class="form-group">
+          <label class="form-label">发货日期</label>
+          <input type="date" class="form-control" id="logDate">
+        </div>
+        <div class="form-group">
+          <label class="form-label">费用 (¥)</label>
+          <input type="number" class="form-control" id="logFee" placeholder="0.00" step="0.01">
+        </div>
+        <div class="form-group form-full">
+          <label class="form-label">关联项目编号</label>
+          <div style="display:flex;gap:8px;align-items:center">
+            <input type="text" class="form-control" id="logProject" list="logProjectList" autocomplete="off" placeholder="输入搜索并从下拉选择（仅允许活动项目编号）">
+          </div>
+          <datalist id="logProjectList"></datalist>
+        </div>
+        <div class="form-group form-full">
+          <label class="form-label">备注</label>
+          <textarea class="form-control" id="logRemarks" rows="2"></textarea>
+        </div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button type="button" class="btn btn-secondary" onclick="closeModal()">取消</button>
+      <button type="button" class="btn btn-primary" onclick="saveLogistics()">保存</button>
+    </div>
+  </div>
+
+  <div class="modal" id="modalWarehouse">
+    <div class="modal-header">
+      <span class="modal-title" id="warModalTitle">新建仓储记录</span>
+      <button type="button" class="modal-close" onclick="closeModal()">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-grid three">
+        <input type="hidden" id="warId">
+        <div class="form-group">
+          <label class="form-label">年份 <span class="required">*</span></label>
+          <select class="form-control" id="warYearFrameId" required></select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">月份 <span class="required">*</span></label>
+          <select class="form-control" id="warMonthField">
+            <option value="1月">1月</option>
+            <option value="2月">2月</option>
+            <option value="3月">3月</option>
+            <option value="4月">4月</option>
+            <option value="5月">5月</option>
+            <option value="6月">6月</option>
+            <option value="7月">7月</option>
+            <option value="8月">8月</option>
+            <option value="9月">9月</option>
+            <option value="10月">10月</option>
+            <option value="11月">11月</option>
+            <option value="12月">12月</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">区域 <span class="required">*</span></label>
+          <select class="form-control" id="warRegion" required>
+            <option value="">请选择</option>
+            <option value="东区">东区</option>
+            <option value="北区">北区</option>
+            <option value="南区">南区</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">数量（月） <span class="required">*</span></label>
+          <input type="number" class="form-control" id="warQty" placeholder="0" min="0" step="1" oninput="updateWarQuotedPrice()">
+        </div>
+        <div class="form-group">
+          <label class="form-label">单价 (¥) <span class="required">*</span></label>
+          <input type="number" class="form-control" id="warUnitPrice" placeholder="0.00" step="0.01" min="0" oninput="updateWarQuotedPrice()">
+        </div>
+        <div class="form-group">
+          <label class="form-label">报价 (¥) <span style="font-size:11px;color:var(--text-muted);font-weight:500">自动：数量×单价</span></label>
+          <input type="number" class="form-control" id="warQuotedPrice" placeholder="0.00" step="0.01" readonly style="background:var(--bg-primary);color:var(--text-muted);cursor:not-allowed">
+        </div>
+        <div class="form-group">
+          <label class="form-label">实际成本 (¥)</label>
+          <input type="number" class="form-control" id="warActualCost" placeholder="0.00" step="0.01" min="0">
+        </div>
+        <div class="form-group form-full">
+          <label class="form-label">备注</label>
+          <input type="text" class="form-control" id="warRemarks" placeholder="备注说明">
+        </div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button type="button" class="btn btn-secondary" onclick="closeModal()">取消</button>
+      <button type="button" class="btn btn-primary" onclick="saveWarehouse()">保存</button>
+    </div>
+  </div>
+
+  <!-- 全局 Toast -->
+  <div class="toast-container" id="toastContainer"></div>
+
+  <script src="app.js?v=20260409fix18"></script>
+</body>
+</html>
