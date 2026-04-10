@@ -43,6 +43,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   await initBrands();
   navigate(currentPage);
   checkConnection();
+  renderLucideIcons();
 });
 
 // ===== API 请求封装 =====
@@ -146,7 +147,11 @@ function navigate(page) {
     wine: renderWine,
     backup: renderBackup,
   };
-  if (renders[page]) renders[page]();
+  if (renders[page]) {
+    Promise.resolve(renders[page]()).finally(() => {
+      renderLucideIcons();
+    });
+  }
 }
 
 function toggleSidebar() {
@@ -162,9 +167,9 @@ function toggleTheme() {
 }
 
 const THEME_ICON_MOON =
-  '<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>';
+  '<svg xmlns="http://www.w3.org/2000/svg" width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>';
 const THEME_ICON_SUN =
-  '<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg>';
+  '<svg xmlns="http://www.w3.org/2000/svg" width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg>';
 
 function applyTheme(theme) {
   document.documentElement.setAttribute('data-theme', theme);
@@ -207,11 +212,17 @@ async function checkConnection() {
 
 // ===== Toast =====
 function showToast(msg, type = 'info') {
-  const icons = { success: '✅', error: '❌', warning: '⚠️', info: 'ℹ️' };
+  const icons = {
+    success: '<i data-lucide="circle-check-big" style="width:14px;height:14px"></i>',
+    error: '<i data-lucide="circle-x" style="width:14px;height:14px"></i>',
+    warning: '<i data-lucide="triangle-alert" style="width:14px;height:14px"></i>',
+    info: '<i data-lucide="info" style="width:14px;height:14px"></i>',
+  };
   const el = document.createElement('div');
   el.className = `toast ${type}`;
   el.innerHTML = `<span>${icons[type]}</span><span>${msg}</span>`;
   document.getElementById('toastContainer').appendChild(el);
+  renderLucideIcons();
   setTimeout(() => {
     el.style.animation = 'fadeOut 0.3s ease forwards';
     setTimeout(() => el.remove(), 300);
@@ -546,7 +557,8 @@ async function renderDashboard() {
     drawRegionChart(activityByRegion);
     renderLucideIcons();
   } catch (err) {
-    container.innerHTML = `<div class="empty-state"><div class="empty-icon">⚠️</div><div class="empty-title">加载失败</div><div class="empty-sub">${err.message}</div></div>`;
+    container.innerHTML = `<div class="empty-state"><div class="empty-icon"><i data-lucide="triangle-alert" style="width:20px;height:20px"></i></div><div class="empty-title">加载失败</div><div class="empty-sub">${err.message}</div></div>`;
+    renderLucideIcons();
   }
 }
 
@@ -669,7 +681,7 @@ async function renderActivities() {
   container.innerHTML = `
     <div class="toolbar">
       <div class="toolbar-left">
-        <input type="text" class="search-input" id="actSearch" placeholder="🔍 搜索城市/客户/项目编号..." oninput="debounceSearch()" value="${activitiesState.search}">
+        <input type="text" class="search-input" id="actSearch" placeholder="搜索城市/客户/项目编号..." oninput="debounceSearch()" value="${activitiesState.search}">
         <select class="filter-select" id="actYear" onchange="filterActivities()">
           <option value="">全部年份</option>
           <option value="2025">2025年</option>
@@ -693,10 +705,10 @@ async function renderActivities() {
         <select class="filter-select" id="actType" onchange="filterActivities()">
           <option value="">全部类型</option>
         </select>
-        <select class="filter-select" id="actPeriod" onchange="filterActivities()">
+        <select class="filter-select" id="actFilterPeriod" onchange="filterActivities()">
           <option value="">全部时段</option>
         </select>
-        <select class="filter-select" id="actRegion" onchange="filterActivities()">
+        <select class="filter-select" id="actFilterRegion" onchange="filterActivities()">
           <option value="">全部区域</option>
         </select>
         <select class="filter-select" id="actBrand" onchange="filterActivities()">
@@ -735,7 +747,7 @@ async function renderActivities() {
   }
   try {
     const periods = await api('GET', '/lookups?category=activity_period');
-    const periodSel = document.getElementById('actPeriod');
+    const periodSel = document.getElementById('actFilterPeriod');
     if (periodSel) {
       const keep = activitiesState.period;
       periodSel.innerHTML =
@@ -753,7 +765,7 @@ async function renderActivities() {
   }
   try {
     const regions = await api('GET', '/lookups?category=activity_region');
-    const regionSel = document.getElementById('actRegion');
+    const regionSel = document.getElementById('actFilterRegion');
     if (regionSel) {
       const keep = activitiesState.region;
       regionSel.innerHTML =
@@ -789,8 +801,8 @@ function debounceSearch() {
 
 function filterActivities() {
   activitiesState.type = document.getElementById('actType')?.value || '';
-  activitiesState.period = document.getElementById('actPeriod')?.value || '';
-  activitiesState.region = document.getElementById('actRegion')?.value || '';
+  activitiesState.period = document.getElementById('actFilterPeriod')?.value || '';
+  activitiesState.region = document.getElementById('actFilterRegion')?.value || '';
   activitiesState.brand = document.getElementById('actBrand')?.value || '';
   activitiesState.year = document.getElementById('actYear')?.value || '';
   activitiesState.month = document.getElementById('actMonth')?.value || '';
@@ -916,6 +928,7 @@ async function loadActivities() {
 
     html += `</tbody></table></div>`;
     container.innerHTML = html;
+    renderLucideIcons();
 
     // 分页
     const pgEl = document.getElementById('actPagination');
@@ -923,7 +936,8 @@ async function loadActivities() {
       pgEl.innerHTML = renderPagination(activitiesState.page, totalPages, total, 'goActPage');
     }
   } catch (err) {
-    container.innerHTML = `<div class="empty-state"><div class="empty-icon">⚠️</div><div class="empty-title">加载失败</div><div class="empty-sub">${err.message}</div></div>`;
+    container.innerHTML = `<div class="empty-state"><div class="empty-icon"><i data-lucide="triangle-alert" style="width:20px;height:20px"></i></div><div class="empty-title">加载失败</div><div class="empty-sub">${err.message}</div></div>`;
+    renderLucideIcons();
   }
 }
 
@@ -1418,7 +1432,7 @@ async function showActivityDetail(id) {
       ${a.remarks ? `<div style="margin-bottom:12px"><div class="form-label">备注</div><div style="color:var(--text-secondary);font-size:13px">${a.remarks}</div></div>` : ''}
       ${Object.keys(wines).length > 0 ? `<div><div class="form-section-title">用酒明细</div><table><thead><tr><th>酒品</th><th>规格</th><th>数量</th></tr></thead><tbody>${Object.entries(wines).filter(([k,v])=>v&&v.qty>0).map(([k,v])=>`<tr><td>${k}</td><td>${v.spec||'—'}</td><td>${v.qty}</td></tr>`).join('')}</tbody></table></div>` : ''}
       <div style="margin-top:16px;display:flex;gap:8px">
-        <button class="btn btn-success btn-sm" onclick="closeModal();setTimeout(()=>showCostFill(${id}),100)">💰 填写成本</button>
+        <button class="btn btn-success btn-sm" onclick="closeModal();setTimeout(()=>showCostFill(${id}),100)"><i data-lucide="wallet" style="width:13px;height:13px"></i>填写成本</button>
       </div>
     `;
 
@@ -1672,25 +1686,25 @@ async function renderCost() {
     container.innerHTML = `
       <div class="stats-grid">
         <div class="stat-card success">
-          <div class="stat-icon">💰</div>
+          <div class="stat-icon"><i data-lucide="wallet" style="width:16px;height:16px"></i></div>
           <div class="stat-label">总报价</div>
           <div class="stat-value sm">${fmtMoney(totalRev)}</div>
           <div class="stat-sub">场次 ${fmtMoney(totalRev-warRev)} ｜ 仓储 ${fmtMoney(warRev)}</div>
         </div>
         <div class="stat-card warning">
-          <div class="stat-icon">💸</div>
+          <div class="stat-icon"><i data-lucide="hand-coins" style="width:16px;height:16px"></i></div>
           <div class="stat-label">总成本</div>
           <div class="stat-value sm">${fmtMoney(totalCost)}</div>
           <div class="stat-sub">场次 ${fmtMoney(actCost)} ｜ 仓储 ${fmtMoney(warCost)} ｜ 物流 ${fmtMoney(logCost)}</div>
         </div>
         <div class="stat-card accent">
-          <div class="stat-icon">📊</div>
+          <div class="stat-icon"><i data-lucide="chart-column" style="width:16px;height:16px"></i></div>
           <div class="stat-label">毛利润</div>
           <div class="stat-value sm">${fmtMoney(totalRev - totalCost)}</div>
           <div class="stat-sub">毛利率 ${totalRev > 0 ? ((totalRev-totalCost)/totalRev*100).toFixed(1) : 0}%</div>
         </div>
         <div class="stat-card blue">
-          <div class="stat-icon">📋</div>
+          <div class="stat-icon"><i data-lucide="clipboard-list" style="width:16px;height:16px"></i></div>
           <div class="stat-label">已填成本场次</div>
           <div class="stat-value">${actsWithCost.length}</div>
           <div class="stat-sub">待填 ${actsNoCost.length} 场</div>
@@ -1701,7 +1715,7 @@ async function renderCost() {
       <div class="card" style="margin-bottom:20px">
         <div class="card-header">
           <div style="flex:1">
-            <div class="card-title">⏳ 待填写成本（${filteredActsNoCost.length}场）</div>
+            <div class="card-title"><i data-lucide="hourglass" style="width:14px;height:14px;vertical-align:-2px;margin-right:6px"></i>待填写成本（${filteredActsNoCost.length}场）</div>
             <div class="card-sub">
               <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:10px">
                 <button class="btn btn-secondary btn-sm" style="${costNoCostYMFilter === 'all' ? 'background:var(--accent);color:white' : ''}" onclick="setCostNoCostYMFilter('all')">全部</button>
@@ -1753,7 +1767,7 @@ async function renderCost() {
       <!-- 已填成本活动 -->
       <div class="card">
         <div class="card-header">
-          <div><div class="card-title">✅ 已填成本（${actsWithCost.length}场）</div></div>
+          <div><div class="card-title"><i data-lucide="circle-check-big" style="width:14px;height:14px;vertical-align:-2px;margin-right:6px"></i>已填成本（${actsWithCost.length}场）</div></div>
         </div>
         <div class="table-wrapper">
           <table>
@@ -1793,7 +1807,8 @@ async function renderCost() {
       </div>
     `;
   } catch (err) {
-    container.innerHTML = `<div class="empty-state"><div class="empty-icon">⚠️</div><div class="empty-title">加载失败</div><div class="empty-sub">${err.message}</div></div>`;
+    container.innerHTML = `<div class="empty-state"><div class="empty-icon"><i data-lucide="triangle-alert" style="width:20px;height:20px"></i></div><div class="empty-title">加载失败</div><div class="empty-sub">${err.message}</div></div>`;
+    renderLucideIcons();
   }
 }
 
@@ -1957,7 +1972,7 @@ async function renderLogistics() {
   container.innerHTML = `
     <div class="toolbar">
       <div class="toolbar-left">
-        <input type="text" class="search-input" id="logSearch" placeholder="🔍 搜索单号/城市/项目编号..." oninput="filterLogistics()">
+        <input type="text" class="search-input" id="logSearch" placeholder="搜索单号/城市/项目编号..." oninput="filterLogistics()">
       </div>
       <div class="toolbar-right" style="display:flex;gap:8px;align-items:center">
         <button type="button" class="btn btn-danger btn-sm" id="logBatchDeleteBtn" disabled onclick="deleteSelectedLogistics()">一键删除</button>
@@ -2054,7 +2069,8 @@ async function loadLogistics() {
     updateLogisticsSelectUi();
     void updateBadges();
   } catch (err) {
-    container.innerHTML = `<div class="empty-state"><div class="empty-icon">⚠️</div><div class="empty-title">加载失败</div><div class="empty-sub">${err.message}</div></div>`;
+    container.innerHTML = `<div class="empty-state"><div class="empty-icon"><i data-lucide="triangle-alert" style="width:20px;height:20px"></i></div><div class="empty-title">加载失败</div><div class="empty-sub">${err.message}</div></div>`;
+    renderLucideIcons();
   }
 }
 
@@ -2341,7 +2357,7 @@ async function loadWarehouse() {
             const { quoted, cost, profit } = calc(rows);
             return `
               <div class="stat-card ${r.tone}">
-                <div class="stat-icon">🏪</div>
+                <div class="stat-icon"><i data-lucide="warehouse" style="width:16px;height:16px"></i></div>
                 <div class="stat-label">${r.label}</div>
                 <div style="display:flex;flex-direction:column;gap:6px;margin-top:6px">
                   <div style="display:flex;justify-content:space-between;gap:10px">
@@ -2643,13 +2659,13 @@ async function renderBackup() {
   container.innerHTML = `
     <div class="card" style="max-width:600px;margin:0 auto">
       <div class="card-header">
-        <div class="card-title">💾 数据备份与导出</div>
+        <div class="card-title"><i data-lucide="database-backup" style="width:14px;height:14px;vertical-align:-2px;margin-right:6px"></i>数据备份与导出</div>
       </div>
       <div style="display:flex;flex-direction:column;gap:16px">
         <div style="padding:16px;background:var(--bg-input);border-radius:var(--radius-sm)">
           <div style="font-weight:600;margin-bottom:6px">导出当前数据</div>
           <div style="font-size:12px;color:var(--text-secondary);margin-bottom:12px">导出所有活动、物流、仓储、报销数据为 JSON 格式</div>
-          <button class="btn btn-primary" onclick="exportData()">📥 导出 JSON 备份</button>
+          <button class="btn btn-primary" onclick="exportData()"><i data-lucide="download" style="width:14px;height:14px"></i>导出 JSON 备份</button>
         </div>
 
         <div style="padding:16px;background:var(--bg-input);border-radius:var(--radius-sm)">
@@ -2670,7 +2686,8 @@ async function renderBackup() {
       <div style="margin-top:8px;font-size:12px;color:var(--text-muted)">上次检查: ${new Date().toLocaleTimeString()}</div>
     `;
   } catch (err) {
-    document.getElementById('serverStatus').innerHTML = `<span style="color:var(--danger)">⚠️ 服务异常: ${err.message}</span>`;
+    document.getElementById('serverStatus').innerHTML = `<span style="color:var(--danger)"><i data-lucide="triangle-alert" style="width:12px;height:12px;vertical-align:-2px;margin-right:4px"></i>服务异常: ${err.message}</span>`;
+    renderLucideIcons();
   }
 }
 
@@ -2707,7 +2724,7 @@ async function renderWine() {
     <div class="page-header" style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px">
       <div></div>
       <div style="display:flex;gap:8px">
-        <button class="btn btn-primary btn-sm" onclick="showWineStockInModal()">📥 酒品入库</button>
+        <button class="btn btn-primary btn-sm" onclick="showWineStockInModal()"><i data-lucide="download" style="width:14px;height:14px"></i>酒品入库</button>
       </div>
     </div>
 
@@ -2717,7 +2734,7 @@ async function renderWine() {
     <!-- 库存总览 -->
     <div class="card" style="margin-bottom:16px">
       <div class="card-header">
-        <h3>🍷 酒品库存</h3>
+        <h3><i data-lucide="wine" style="width:14px;height:14px;vertical-align:-2px;margin-right:6px"></i>酒品库存</h3>
       </div>
       <div class="card-body" id="wineInventoryList">
         <div style="color:var(--text-muted);padding:20px;text-align:center">加载中...</div>
@@ -2727,7 +2744,7 @@ async function renderWine() {
     <!-- 入库记录 -->
     <div class="card">
       <div class="card-header">
-        <div class="card-title">📦 入库记录</div>
+        <div class="card-title"><i data-lucide="package" style="width:14px;height:14px;vertical-align:-2px;margin-right:6px"></i>入库记录</div>
       </div>
       <div class="card-body" id="wineRecordsContent">
         <div style="color:var(--text-muted);padding:20px;text-align:center">加载中...</div>
@@ -2873,6 +2890,7 @@ async function loadWineRecords(tab) {
           </tbody>
         </table>
       `;
+      renderLucideIcons();
     } else {
       content.innerHTML = `
         <table class="data-table">
@@ -2889,7 +2907,7 @@ async function loadWineRecords(tab) {
                 <td>
                   <div style="display:flex;gap:6px">
                     <button class="btn btn-secondary btn-sm" onclick="showWineUsageModal(${r.id})" title="修改">编辑</button>
-                    <button class="btn btn-danger btn-sm" onclick="deleteWineUsage(${r.id})" title="删除">🗑</button>
+                    <button class="btn btn-danger btn-sm" onclick="deleteWineUsage(${r.id})" title="删除"><i data-lucide="trash-2" style="width:13px;height:13px"></i></button>
                   </div>
                 </td>
               </tr>
@@ -2897,6 +2915,7 @@ async function loadWineRecords(tab) {
           </tbody>
         </table>
       `;
+      renderLucideIcons();
     }
   } catch (err) {
     content.innerHTML = `<div style="color:var(--danger);padding:20px">加载失败: ${err.message}</div>`;
@@ -2939,10 +2958,11 @@ async function showWineStockInModal() {
           <input type="text" class="form-control" id="wineRemarks" placeholder="批次号/备注...">
         </div>
         <div style="padding:10px;background:var(--bg-primary);border-radius:var(--radius-sm);font-size:13px;color:var(--text-muted)">
-          💡 入库后将自动更新酒品库存
+          <i data-lucide="lightbulb" style="width:13px;height:13px;vertical-align:-2px;margin-right:4px"></i>入库后将自动更新酒品库存
         </div>
       </form>
     `;
+    renderLucideIcons();
   } catch (err) {
     content.innerHTML = `<div style="color:var(--danger)">加载失败: ${err.message}</div>`;
   }
@@ -2969,7 +2989,7 @@ async function confirmWineStockIn() {
   try {
     await api('POST', '/wine/stock-in', body);
     closeModal();
-    showToast('✅ 入库成功', 'success');
+    showToast('入库成功', 'success');
     renderWine();
   } catch (err) {
     showToast('入库失败: ' + err.message, 'error');
@@ -3019,7 +3039,7 @@ async function showWineUsageModal(editId = null) {
           <input type="text" class="form-control" id="wineUseRemarks" placeholder="备注...">
         </div>
         <div id="wineUseWarning" style="display:none;padding:10px;background:#FEF3C7;border-radius:var(--radius-sm);font-size:13px;color:#92400E">
-          ⚠️ 库存不足，无法记录使用
+          库存不足，无法记录使用
         </div>
       </form>
     `;
@@ -3040,10 +3060,10 @@ async function showWineUsageModal(editId = null) {
       document.getElementById('wineClient').value = target.client_name || '';
       document.getElementById('wineUseRemarks').value = target.remarks || '';
       const modalTitle = document.querySelector('#modalWineUsage .modal-title');
-      if (modalTitle) modalTitle.textContent = '📝 修改酒品使用';
+      if (modalTitle) modalTitle.textContent = '修改酒品使用';
     } else {
       const modalTitle = document.querySelector('#modalWineUsage .modal-title');
-      if (modalTitle) modalTitle.textContent = '📝 记录酒品使用';
+      if (modalTitle) modalTitle.textContent = '记录酒品使用';
     }
   } catch (err) {
     content.innerHTML = `<div style="color:var(--danger)">加载失败: ${err.message}</div>`;
@@ -3074,7 +3094,7 @@ async function confirmWineUsage() {
     if (usageId) await api('PUT', `/wine/usage/${usageId}`, body);
     else await api('POST', '/wine/usage', body);
     closeModal();
-    showToast(usageId ? '✅ 使用记录已更新' : '✅ 使用记录已保存', 'success');
+    showToast(usageId ? '使用记录已更新' : '使用记录已保存', 'success');
     renderWine();
   } catch (err) {
     showToast(err.message || '记录失败', 'error');
@@ -3177,8 +3197,8 @@ async function showBrandModal() {
                 <td>${b.brand_name}</td>
                 <td><span style="font-size:11px;color:${b.is_active ? 'var(--success)' : 'var(--text-muted)'}">${b.is_active ? '✓ 启用' : '✗ 停用'}</span></td>
                 <td style="white-space:nowrap">
-                  <button class="btn btn-xs btn-ghost" onclick="showEditBrand(${b.id})" title="编辑">✏️</button>
-                  ${b.is_active ? `<button class="btn btn-xs btn-ghost" onclick="toggleBrandActive(${b.id}, false)" title="停用">⏸</button>` : `<button class="btn btn-xs btn-ghost" onclick="toggleBrandActive(${b.id}, true)" title="启用">▶</button>`}
+                  <button class="btn btn-xs btn-ghost" onclick="showEditBrand(${b.id})" title="编辑"><i data-lucide="pencil" style="width:12px;height:12px"></i></button>
+                  ${b.is_active ? `<button class="btn btn-xs btn-ghost" onclick="toggleBrandActive(${b.id}, false)" title="停用"><i data-lucide="pause" style="width:12px;height:12px"></i></button>` : `<button class="btn btn-xs btn-ghost" onclick="toggleBrandActive(${b.id}, true)" title="启用"><i data-lucide="play" style="width:12px;height:12px"></i></button>`}
                 </td>
               </tr>
               <tr id="brand-edit-${b.id}" style="display:none;background:var(--bg-primary)">
@@ -3197,6 +3217,7 @@ async function showBrandModal() {
     `;
 
     renderBrandOptions();
+    renderLucideIcons();
   } catch (err) {
     content.innerHTML = `<div style="color:var(--danger)">加载失败: ${err.message}</div>`;
   }
@@ -3233,7 +3254,7 @@ async function confirmAddBrand() {
 
   try {
     await api('POST', '/brand', { brand_code: code, brand_name: name, brand_color: color });
-    showToast('✅ 品牌已添加', 'success');
+    showToast('品牌已添加', 'success');
     showBrandModal();
   } catch (err) {
     showToast(err.message || '添加失败', 'error');
@@ -3258,7 +3279,7 @@ async function confirmEditBrand(id) {
 
   try {
     await api('PUT', `/brand/${id}`, { brand_code: code, brand_name: name });
-    showToast('✅ 品牌已更新', 'success');
+    showToast('品牌已更新', 'success');
     showBrandModal();
   } catch (err) {
     showToast(err.message || '更新失败', 'error');
@@ -3268,7 +3289,7 @@ async function confirmEditBrand(id) {
 async function toggleBrandActive(id, active) {
   try {
     await api('PUT', `/brand/${id}`, { is_active: active });
-    showToast(active ? '✅ 品牌已启用' : '⏸ 品牌已停用', 'success');
+    showToast(active ? '品牌已启用' : '品牌已停用', 'success');
     showBrandModal();
   } catch (err) {
     showToast(err.message || '操作失败', 'error');
