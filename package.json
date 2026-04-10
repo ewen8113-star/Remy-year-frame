@@ -11,6 +11,8 @@
     "migrate:warehouse-region": "node src/scripts/addWarehouseRegionColumn.js",
     "migrate:logistics-project-code": "node src/scripts/addLogisticsRelatedProjectColumn.js",
     "migrate:activity-cost-details": "node src/scripts/addActivityCostDetailsColumn.js",
+    "migrate:activity-period": "node src/scripts/addActivityPeriodColumn.js",
+    "migrate:lookup-options": "node src/scripts/addLookupOptionsTable.js",
     "verify:warehouse-db": "node src/scripts/verifyWarehouseDb.js"
   },
   "dependencies": {

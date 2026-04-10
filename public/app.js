@@ -23,7 +23,7 @@ const API = resolveApiBase();
 let currentYear = localStorage.getItem('remy_activeYear') || '25';
 let currentYearFrameId = null;
 let currentPage = localStorage.getItem('remy_currentPage') || 'dashboard';
-let activitiesState = { page: 1, search: '', type: '', brand: '', year: '', month: '', sortOrder: 'DESC', data: [], total: 0 };
+let activitiesState = { page: 1, search: '', type: '', period: '', region: '', brand: '', year: '', month: '', sortOrder: 'DESC', data: [], total: 0 };
 let logisticsState = { data: [], selectedIds: new Set() };
 let warehouseState = { data: [], selectedIds: new Set() };
 let charts = {};
@@ -53,14 +53,19 @@ async function api(method, path, body = null) {
   };
   if (body) opts.body = JSON.stringify(body);
   try {
-    const res = await fetch(`${API}${path}`, opts);
+    const url = `${API}${path}`;
+    const res = await fetch(url, opts);
     let data;
     try {
       data = await res.json();
     } catch {
-      throw new Error(res.ok ? '响应不是合法 JSON' : `请求失败 (${res.status})`);
+      throw new Error(
+        res.ok ? '响应不是合法 JSON' : `请求失败 (${res.status})，URL：${url}`
+      );
     }
-    if (!res.ok) throw new Error(data.error || data.message || '请求失败');
+    if (!res.ok) {
+      throw new Error(data.error || data.message || `请求失败 (${res.status})，URL：${url}`);
+    }
     return data;
   } catch (err) {
     const msg = err && err.message ? String(err.message) : '';
@@ -92,6 +97,14 @@ function switchYear(year) {
     b.classList.toggle('active', b.dataset.year === year);
   });
   document.getElementById('yearBadge').textContent = year + '年度';
+  dashboardState = {
+    brand: '',
+    region: '',
+    activityType: '',
+    executionFlag: '',
+    period: '',
+    month: '',
+  };
   loadYearFrames().then(() => navigate(currentPage));
 }
 
@@ -205,19 +218,38 @@ function showToast(msg, type = 'info') {
   }, 3000);
 }
 
-// ===== 弹窗 =====
+// ===== 弹窗（栈：子弹窗关闭后父弹窗仍保留，如 新建活动 → 编辑品牌）=====
 let activeModal = null;
+const modalStack = [];
+
 function openModal(id) {
   const overlay = document.getElementById('modalOverlay');
   overlay.classList.add('active');
+  if (activeModal && activeModal !== id) {
+    modalStack.push(activeModal);
+  }
   const modal = document.getElementById(id);
-  if (modal) { modal.classList.add('active'); activeModal = id; }
+  if (modal) {
+    modal.classList.add('active');
+    activeModal = id;
+  }
 }
 
 function closeModal() {
-  document.getElementById('modalOverlay').classList.remove('active');
-  document.querySelectorAll('.modal.active').forEach(m => m.classList.remove('active'));
-  activeModal = null;
+  const overlay = document.getElementById('modalOverlay');
+  if (!activeModal) {
+    overlay.classList.remove('active');
+    return;
+  }
+  const cur = document.getElementById(activeModal);
+  if (cur) cur.classList.remove('active');
+  const prev = modalStack.length ? modalStack.pop() : null;
+  if (prev) {
+    activeModal = prev;
+  } else {
+    activeModal = null;
+    overlay.classList.remove('active');
+  }
 }
 
 // ===== 工具函数 =====
@@ -301,53 +333,189 @@ async function updateBadges() {
 /* =============================================
    页面：数据看板
    ============================================= */
+let dashboardState = {
+  brand: '',
+  region: '',
+  activityType: '',
+  executionFlag: '',
+  period: '',
+  month: '',
+};
+let dashboardFilterOptions = null;
+let dashboardPanelKey = '';
+
+const DASHBOARD_FILTER_META = {
+  brand: { title: '品牌', icon: 'tag' },
+  region: { title: '区域', icon: 'map-pin' },
+  activityType: { title: '类别', icon: 'shapes' },
+  executionFlag: { title: '执行', icon: 'user-check' },
+  period: { title: '时段', icon: 'calendar-range' },
+  month: { title: '月份', icon: 'calendar-days' },
+};
+
+function renderLucideIcons() {
+  if (typeof window !== 'undefined' && window.lucide && typeof window.lucide.createIcons === 'function') {
+    window.lucide.createIcons();
+  }
+}
+
+function normalizeFilterOptions(options) {
+  return (options || []).map((opt) => {
+    if (typeof opt === 'string') return { value: opt, label: opt };
+    return { value: String(opt.value || ''), label: String(opt.label || opt.value || '') };
+  });
+}
+
+function filterLabelByValue(key, value) {
+  if (!value || !dashboardFilterOptions) return '全部';
+  const map = {
+    brand: normalizeFilterOptions(dashboardFilterOptions.brands),
+    region: normalizeFilterOptions(dashboardFilterOptions.regions),
+    activityType: normalizeFilterOptions(dashboardFilterOptions.activityTypes),
+    executionFlag: normalizeFilterOptions(dashboardFilterOptions.executionFlags),
+    period: normalizeFilterOptions(dashboardFilterOptions.periods),
+    month: normalizeFilterOptions(dashboardFilterOptions.fiscalMonths),
+  };
+  const hit = (map[key] || []).find((x) => x.value === value);
+  return hit ? hit.label : value;
+}
+
+function renderDashboardFilterButton(key, title, icon) {
+  const label = filterLabelByValue(key, dashboardState[key]);
+  const isOpen = dashboardPanelKey === key;
+  return `<button class="btn btn-secondary btn-sm ${isOpen ? 'active' : ''}" onclick="openDashboardFilterPanel('${key}')"><i data-lucide="${icon}" style="width:14px;height:14px;vertical-align:-2px;margin-right:4px"></i>${escapeHtml(title)}：${escapeHtml(label)}</button>`;
+}
+
+function dashboardOptionsByKey(key) {
+  if (!dashboardFilterOptions) return [];
+  const optionsMap = {
+    brand: normalizeFilterOptions(dashboardFilterOptions.brands),
+    region: normalizeFilterOptions(dashboardFilterOptions.regions),
+    activityType: normalizeFilterOptions(dashboardFilterOptions.activityTypes),
+    executionFlag: normalizeFilterOptions(dashboardFilterOptions.executionFlags),
+    period: normalizeFilterOptions(dashboardFilterOptions.periods),
+    month: normalizeFilterOptions(dashboardFilterOptions.fiscalMonths),
+  };
+  return optionsMap[key] || [];
+}
+
+function openDashboardFilterPanel(key) {
+  dashboardPanelKey = dashboardPanelKey === key ? '' : key;
+  renderDashboard();
+}
+
+function chooseDashboardFilter(key, value) {
+  dashboardState[key] = value || '';
+  dashboardPanelKey = '';
+  renderDashboard();
+}
+
+function renderDashboardFilterPanel() {
+  if (!dashboardPanelKey) return '';
+  const meta = DASHBOARD_FILTER_META[dashboardPanelKey];
+  const options = dashboardOptionsByKey(dashboardPanelKey);
+  const cur = dashboardState[dashboardPanelKey] || '';
+  return `
+    <div class="card" style="margin-top:10px;padding:12px">
+      <div class="card-sub" style="margin-bottom:8px">${escapeHtml(meta.title)}（单选）</div>
+      <div style="display:flex;flex-wrap:wrap;gap:8px">
+        <button class="btn btn-secondary btn-sm ${cur === '' ? 'active' : ''}" onclick="chooseDashboardFilter('${dashboardPanelKey}','')">全部</button>
+        ${options.map((o) => `<button class="btn btn-secondary btn-sm ${cur === o.value ? 'active' : ''}" onclick="chooseDashboardFilter('${dashboardPanelKey}','${escapeHtml(String(o.value))}')">${escapeHtml(o.label)}</button>`).join('')}
+      </div>
+    </div>
+  `;
+}
+
+function resetDashboardFilters() {
+  dashboardState = {
+    brand: '',
+    region: '',
+    activityType: '',
+    executionFlag: '',
+    period: '',
+    month: '',
+  };
+  dashboardPanelKey = '';
+  renderDashboard();
+}
+
+function dashboardQueryString() {
+  const sp = new URLSearchParams();
+  if (currentYearFrameId) sp.set('yearFrameId', String(currentYearFrameId));
+  if (dashboardState.brand) sp.set('brands', dashboardState.brand);
+  if (dashboardState.region) sp.set('regions', dashboardState.region);
+  if (dashboardState.activityType) sp.set('activityTypes', dashboardState.activityType);
+  if (dashboardState.executionFlag) sp.set('executionFlags', dashboardState.executionFlag);
+  if (dashboardState.period) sp.set('periods', dashboardState.period);
+  if (dashboardState.month) sp.set('months', dashboardState.month);
+  const q = sp.toString();
+  return q ? `?${q}` : '';
+}
+
 async function renderDashboard() {
   const container = document.getElementById('pageContainer');
   try {
-    const qs = currentYearFrameId ? `?yearFrameId=${currentYearFrameId}` : '';
-    const dash = await api('GET', '/dashboard' + qs.replace('?', '?'));
+    const query = dashboardQueryString();
+    const [options, dash] = await Promise.all([
+      api('GET', '/dashboard/options' + (currentYearFrameId ? `?yearFrameId=${currentYearFrameId}` : '')),
+      api('GET', '/dashboard' + query),
+    ]);
 
-    const { summary, activityByType, activityByBrand, warehouse, logistics, reimbursements } = dash;
-
-    const profit = (summary.totalRevenue || 0) + (parseFloat(warehouse?.revenue || 0)) - (summary.totalCost || 0);
-    const totalRevAll = (summary.totalRevenue || 0) + parseFloat(warehouse?.revenue || 0);
+    const { summary, activityByType, activityByBrand, activityByRegion, activityByMonth } = dash;
+    dashboardFilterOptions = options;
 
     container.innerHTML = `
       <!-- 统计卡片 -->
       <div class="stats-grid">
         <div class="stat-card accent">
-          <div class="stat-icon">💰</div>
-          <div class="stat-label">总报价（场次+仓储）</div>
-          <div class="stat-value">${fmtMoney(totalRevAll)}</div>
-          <div class="stat-sub">场次 ${fmtMoney(summary.totalRevenue)} ｜ 仓储 ${fmtMoney(warehouse?.revenue || 0)}</div>
+          <div class="stat-icon"><i data-lucide="flag" style="width:16px;height:16px"></i></div>
+          <div class="stat-label">活动总场次</div>
+          <div class="stat-value">${summary.activityCount || 0}</div>
+          <div class="stat-sub">当前筛选条件下活动记录数</div>
         </div>
         <div class="stat-card success">
-          <div class="stat-icon">📊</div>
-          <div class="stat-label">总场次</div>
-          <div class="stat-value">${summary.activityCount || 0}</div>
-          <div class="stat-sub">晚宴 ${activityByType.find(t=>t.activity_type==='晚宴')?.count||0} ｜ 品鉴 ${activityByType.find(t=>t.activity_type==='品鉴')?.count||0} ｜ 培训 ${activityByType.find(t=>t.activity_type==='培训')?.count||0}</div>
+          <div class="stat-icon"><i data-lucide="wallet" style="width:16px;height:16px"></i></div>
+          <div class="stat-label">总报价（活动报价）</div>
+          <div class="stat-value">${fmtMoney(summary.activityRevenue || 0)}</div>
+          <div class="stat-sub">活动执行报价合计</div>
         </div>
         <div class="stat-card warning">
-          <div class="stat-icon">💸</div>
-          <div class="stat-label">总成本（含报销）</div>
-          <div class="stat-value sm">${fmtMoney((summary.totalCost||0) + parseFloat(reimbursements?.cost||0) + parseFloat(logistics?.cost||0))}</div>
-          <div class="stat-sub">场次 ${fmtMoney(summary.totalCost)} ｜ 报销 ${fmtMoney(reimbursements?.cost||0)}</div>
+          <div class="stat-icon"><i data-lucide="warehouse" style="width:16px;height:16px"></i></div>
+          <div class="stat-label">仓储报价</div>
+          <div class="stat-value sm">${fmtMoney(summary.warehouseRevenue || 0)}</div>
+          <div class="stat-sub">仓储模块 quoted_price 合计</div>
         </div>
         <div class="stat-card blue">
-          <div class="stat-icon">🏪</div>
-          <div class="stat-label">仓储报价</div>
-          <div class="stat-value sm">${fmtMoney(warehouse?.revenue || 0)}</div>
-          <div class="stat-sub">成本 ${fmtMoney(warehouse?.cost || 0)}</div>
+          <div class="stat-icon"><i data-lucide="bar-chart-3" style="width:16px;height:16px"></i></div>
+          <div class="stat-label">汇总报价</div>
+          <div class="stat-value sm">${fmtMoney(summary.totalRevenue || 0)}</div>
+          <div class="stat-sub">活动报价 + 仓储报价</div>
         </div>
       </div>
+      <div class="card" style="margin:16px 0">
+        <div class="card-header">
+          <div><div class="card-title">透视筛选</div><div class="card-sub">点击按钮弹出小面板单选，未选择时显示全部</div></div>
+          <button class="btn btn-secondary btn-sm" onclick="resetDashboardFilters()">重置筛选</button>
+        </div>
+        <div style="display:flex;flex-wrap:wrap;gap:8px">
+          ${renderDashboardFilterButton('brand', '品牌', 'tag')}
+          ${renderDashboardFilterButton('region', '区域', 'map-pin')}
+          ${renderDashboardFilterButton('activityType', '类别', 'shapes')}
+          ${renderDashboardFilterButton('executionFlag', '执行', 'user-check')}
+          ${renderDashboardFilterButton('period', '时段', 'calendar-range')}
+          ${renderDashboardFilterButton('month', '月份', 'calendar-days')}
+        </div>
+        ${renderDashboardFilterPanel()}
+      </div>
+      ${summary.regionShare ? `<div class="card" style="margin-bottom:16px"><div class="card-title"><i data-lucide="pie-chart" style="width:14px;height:14px;vertical-align:-2px;margin-right:6px"></i>${escapeHtml(summary.regionShare.region)} 场次占全国比</div><div class="card-sub">${summary.regionShare.regionCount} / ${summary.regionShare.nationalCount} = ${(summary.regionShare.ratio * 100).toFixed(1)}%</div></div>` : ''}
 
       <!-- 图表区 -->
       <div class="chart-grid" style="margin-bottom:24px">
         <div class="chart-card">
           <div class="card-header">
-            <div><div class="card-title">活动类型分布</div><div class="card-sub">按场次数量</div></div>
+            <div><div class="card-title">月度场次趋势（财年）</div><div class="card-sub">4月 → 次年3月</div></div>
           </div>
-          <canvas id="chartType"></canvas>
+          <canvas id="chartMonthTrend"></canvas>
         </div>
         <div class="chart-card">
           <div class="card-header">
@@ -355,54 +523,70 @@ async function renderDashboard() {
           </div>
           <canvas id="chartBrand"></canvas>
         </div>
+        <div class="chart-card">
+          <div class="card-header">
+            <div><div class="card-title">区域结构分布</div><div class="card-sub">按场次数量</div></div>
+          </div>
+          <canvas id="chartRegion"></canvas>
+        </div>
+        <div class="chart-card">
+          <div class="card-header">
+            <div><div class="card-title">活动类别分布</div><div class="card-sub">仅统计：晚宴/品鉴/培训/纯设计</div></div>
+          </div>
+          <canvas id="chartType"></canvas>
+        </div>
       </div>
 
-      <!-- 最近活动 -->
-      <div class="card">
-        <div class="card-header">
-          <div><div class="card-title">最近活动</div><div class="card-sub">最新录入的10条</div></div>
-          <button class="btn btn-secondary btn-sm" onclick="navigate('activities')">查看全部 →</button>
-        </div>
-        <div class="table-wrapper">
-          <table>
-            <thead>
-              <tr>
-                <th>日期</th><th>城市</th><th>客户</th><th>品牌</th><th>类型</th><th>报价</th><th>成本</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${(dash.recentActivities || []).slice(0,10).map(a => `
-                <tr onclick="showActivityDetail(${a.id})" style="cursor:pointer">
-                  <td>${fmtDateShort(a.date || a.activity_date)}</td>
-                  <td>${a.city || '—'}</td>
-                  <td style="max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${a.client || a.client_name || '—'}</td>
-                  <td><span class="badge badge-${brandColor(a.brand)}">${a.brand || '—'}</span></td>
-                  <td><span class="badge badge-${typeColor(a.activity_type)}">${a.activity_type || '—'}</span></td>
-                  <td class="amount amount-revenue">${fmtMoney(a.quoted_price)}</td>
-                  <td class="amount ${parseFloat(a.total_cost)>0 ? 'amount-cost' : 'amount-neutral'}">${parseFloat(a.total_cost)>0 ? fmtMoney(a.total_cost) : '—'}</td>
-                </tr>
-              `).join('')}
-            </tbody>
-          </table>
-        </div>
-      </div>
     `;
 
     // 绘制图表
+    drawMonthTrendChart(activityByMonth);
     drawTypeChart(activityByType);
     drawBrandChart(activityByBrand);
+    drawRegionChart(activityByRegion);
+    renderLucideIcons();
   } catch (err) {
     container.innerHTML = `<div class="empty-state"><div class="empty-icon">⚠️</div><div class="empty-title">加载失败</div><div class="empty-sub">${err.message}</div></div>`;
   }
 }
 
+function drawMonthTrendChart(data) {
+  const ctx = document.getElementById('chartMonthTrend');
+  if (!ctx) return;
+  charts.monthTrend = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: data.map((d) => d.monthLabel),
+      datasets: [{
+        label: '场次',
+        data: data.map((d) => d.count),
+        backgroundColor: '#7c6af7',
+        borderRadius: 6,
+      }],
+    },
+    options: {
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { grid: { display: false } },
+        y: { beginAtZero: true },
+      },
+    },
+  });
+}
+
 function drawTypeChart(data) {
   const ctx = document.getElementById('chartType');
   if (!ctx) return;
+  const total = data.reduce((s, d) => s + (parseInt(d.count, 10) || 0), 0);
+  const labels = data.map((d) => {
+    const c = parseInt(d.count, 10) || 0;
+    const p = total > 0 ? ((c / total) * 100).toFixed(1) : '0.0';
+    return `${d.activity_type} (${c} / ${p}%)`;
+  });
   charts.type = new Chart(ctx, {
     type: 'doughnut',
     data: {
-      labels: data.map(d => d.activity_type),
+      labels,
       datasets: [{
         data: data.map(d => d.count),
         backgroundColor: ['#7c6af7','#60a5fa','#34d399','#fbbf24','#f87171'],
@@ -447,6 +631,32 @@ function drawBrandChart(data) {
   });
 }
 
+function drawRegionChart(data) {
+  const ctx = document.getElementById('chartRegion');
+  if (!ctx) return;
+  const total = data.reduce((s, d) => s + (parseInt(d.count, 10) || 0), 0);
+  const labels = data.map((d) => {
+    const c = parseInt(d.count, 10) || 0;
+    const p = total > 0 ? ((c / total) * 100).toFixed(1) : '0.0';
+    return `${d.region || '未知'} (${c} / ${p}%)`;
+  });
+  charts.region = new Chart(ctx, {
+    type: 'doughnut',
+    data: {
+      labels,
+      datasets: [{
+        data: data.map((d) => d.count),
+        backgroundColor: ['#7c6af7', '#60a5fa', '#34d399', '#fbbf24', '#f87171', '#a78bfa', '#22d3ee'],
+        borderWidth: 0,
+      }],
+    },
+    options: {
+      plugins: { legend: { position: 'bottom' } },
+      cutout: '60%',
+    },
+  });
+}
+
 /* =============================================
    页面：活动记录
    ============================================= */
@@ -482,18 +692,15 @@ async function renderActivities() {
         </select>
         <select class="filter-select" id="actType" onchange="filterActivities()">
           <option value="">全部类型</option>
-          <option value="晚宴">晚宴</option>
-          <option value="品鉴">品鉴</option>
-          <option value="培训">培训</option>
-          <option value="婚宴">婚宴</option>
-          <option value="宴会">宴会</option>
+        </select>
+        <select class="filter-select" id="actPeriod" onchange="filterActivities()">
+          <option value="">全部时段</option>
+        </select>
+        <select class="filter-select" id="actRegion" onchange="filterActivities()">
+          <option value="">全部区域</option>
         </select>
         <select class="filter-select" id="actBrand" onchange="filterActivities()">
           <option value="">全部品牌</option>
-          <option value="PHD">PHD</option>
-          <option value="X.O">X.O</option>
-          <option value="CLUB">CLUB</option>
-          <option value="REMY">REMY</option>
         </select>
         <button class="btn btn-secondary btn-sm" onclick="toggleSortOrder()">
           日期 <span id="sortIcon">${activitiesState.sortOrder === 'DESC' ? '↓' : '↑'}</span>
@@ -507,6 +714,65 @@ async function renderActivities() {
     <div id="actTable"></div>
     <div id="actPagination"></div>
   `;
+
+  try {
+    const types = await api('GET', '/lookups?category=activity_type');
+    const typeSel = document.getElementById('actType');
+    if (typeSel) {
+      const keep = activitiesState.type;
+      typeSel.innerHTML =
+        '<option value="">全部类型</option>' +
+        types
+          .map(
+            (r) =>
+              `<option value="${escapeHtml(String(r.value))}">${escapeHtml(String(r.label || r.value))}</option>`
+          )
+          .join('');
+      if (keep && [...typeSel.options].some((o) => o.value === keep)) typeSel.value = keep;
+    }
+  } catch (e) {
+    console.warn('活动类型筛选项加载失败', e);
+  }
+  try {
+    const periods = await api('GET', '/lookups?category=activity_period');
+    const periodSel = document.getElementById('actPeriod');
+    if (periodSel) {
+      const keep = activitiesState.period;
+      periodSel.innerHTML =
+        '<option value="">全部时段</option>' +
+        periods
+          .map(
+            (r) =>
+              `<option value="${escapeHtml(String(r.value))}">${escapeHtml(String(r.label || r.value))}</option>`
+          )
+          .join('');
+      if (keep && [...periodSel.options].some((o) => o.value === keep)) periodSel.value = keep;
+    }
+  } catch (e) {
+    console.warn('活动时段筛选项加载失败', e);
+  }
+  try {
+    const regions = await api('GET', '/lookups?category=activity_region');
+    const regionSel = document.getElementById('actRegion');
+    if (regionSel) {
+      const keep = activitiesState.region;
+      regionSel.innerHTML =
+        '<option value="">全部区域</option>' +
+        regions
+          .map(
+            (r) =>
+              `<option value="${escapeHtml(String(r.value))}">${escapeHtml(String(r.label || r.value))}</option>`
+          )
+          .join('');
+      if (keep && [...regionSel.options].some((o) => o.value === keep)) regionSel.value = keep;
+    }
+  } catch (e) {
+    console.warn('活动区域筛选项加载失败', e);
+  }
+  renderBrandOptions();
+  const bsel = document.getElementById('actBrand');
+  const bk = activitiesState.brand;
+  if (bsel && bk && [...bsel.options].some((o) => o.value === bk)) bsel.value = bk;
 
   await loadActivities();
 }
@@ -523,6 +789,8 @@ function debounceSearch() {
 
 function filterActivities() {
   activitiesState.type = document.getElementById('actType')?.value || '';
+  activitiesState.period = document.getElementById('actPeriod')?.value || '';
+  activitiesState.region = document.getElementById('actRegion')?.value || '';
   activitiesState.brand = document.getElementById('actBrand')?.value || '';
   activitiesState.year = document.getElementById('actYear')?.value || '';
   activitiesState.month = document.getElementById('actMonth')?.value || '';
@@ -585,6 +853,14 @@ async function loadActivities() {
         return (d.getMonth() + 1).toString() === activitiesState.month;
       });
     }
+    // 时段筛选
+    if (activitiesState.period) {
+      filtered = filtered.filter(a => (a.period || '日常') === activitiesState.period);
+    }
+    // 区域筛选
+    if (activitiesState.region) {
+      filtered = filtered.filter(a => (a.region || '') === activitiesState.region);
+    }
 
     activitiesState.data = filtered;
 
@@ -604,19 +880,20 @@ async function loadActivities() {
       grouped[key].push(a);
     });
 
-    // 新列顺序：品牌、项目编号、区域、城市、客户、类型、执行、报价、成本、操作
+    // 新列顺序：日期、时段、品牌、项目编号、区域、城市、客户、类型、执行、报价、成本、操作
     let html = `<div class="table-wrapper"><table>
       <thead><tr>
-        <th>日期</th><th>品牌</th><th>项目编号</th><th>区域</th><th>城市</th><th>客户</th>
+        <th>日期</th><th>时段</th><th>品牌</th><th>项目编号</th><th>区域</th><th>城市</th><th>客户</th>
         <th>类型</th><th>执行</th><th>报价</th><th>成本</th><th>操作</th>
       </tr></thead><tbody>`;
 
     Object.entries(grouped).forEach(([month, acts]) => {
-      html += `<tr><td colspan="11" class="group-title">${month}（${acts.length}场）</td></tr>`;
+      html += `<tr><td colspan="12" class="group-title">${month}（${acts.length}场）</td></tr>`;
       acts.forEach(a => {
         html += `
           <tr onclick="showActivityDetail(${a.id})" style="cursor:pointer">
             <td>${fmtDateShort(a.date || a.activity_date)}</td>
+            <td><span class="badge badge-gray">${a.period || '日常'}</span></td>
             <td><span class="badge badge-${brandColor(a.brand)}">${a.brand||'—'}</span></td>
             <td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px" title="${a.project_code||''}">${a.project_code||'—'}</td>
             <td><span style="font-size:11px;color:var(--text-secondary)">${a.region||'—'}</span></td>
@@ -720,52 +997,292 @@ function genProjectCode() {
   if (el) el.value = pc;
 }
 
+// ----- 活动表单下拉（lookup_options /api/lookups）-----
+const ACTIVITY_LOOKUP_DEFS = [
+  { category: 'activity_year_frame_code', selectId: 'actYearFrameCode', allowEmpty: false },
+  { category: 'activity_type', selectId: 'actActivityType', allowEmpty: false },
+  { category: 'activity_period', selectId: 'actPeriod', allowEmpty: false },
+  { category: 'activity_region', selectId: 'actRegion', allowEmpty: true, emptyLabel: '请选择' },
+  { category: 'activity_executor', selectId: 'actExecutor', allowEmpty: false },
+  { category: 'activity_status', selectId: 'actStatus', allowEmpty: false },
+];
+
+const LOOKUP_EDITOR_LABELS = {
+  activity_year_frame_code: '编辑：年框编号',
+  activity_type: '编辑：活动类型',
+  activity_period: '编辑：时段',
+  activity_region: '编辑：区域',
+  activity_executor: '编辑：执行人员',
+  activity_status: '编辑：状态',
+};
+
+let _lookupEditCategory = '';
+
+function populateLookupSelect(el, rows, def, rawDesired) {
+  el.innerHTML = '';
+  if (def.allowEmpty) {
+    const o = document.createElement('option');
+    o.value = '';
+    o.textContent = def.emptyLabel || '请选择';
+    el.appendChild(o);
+  }
+  const seen = new Set();
+  (rows || []).forEach((r) => {
+    if (!r || r.value == null) return;
+    seen.add(String(r.value));
+    const o = document.createElement('option');
+    o.value = r.value;
+    o.textContent = r.label || r.value;
+    el.appendChild(o);
+  });
+
+  let desired;
+  if (rawDesired !== undefined && rawDesired !== null && String(rawDesired) !== '') {
+    desired = String(rawDesired);
+  } else if (def.allowEmpty) {
+    desired = '';
+  } else if (rows && rows.length) {
+    desired = String(rows[0].value);
+  } else {
+    desired = '';
+  }
+
+  if (desired !== '' && !seen.has(desired)) {
+    const o = document.createElement('option');
+    o.value = desired;
+    o.textContent = `${desired}（未在列表中）`;
+    el.appendChild(o);
+  }
+
+  el.value = desired;
+  if (el.value !== desired && el.options.length) {
+    el.selectedIndex = 0;
+  }
+}
+
+async function fillActivityLookupSelects(valueMap = {}) {
+  const pairs = await Promise.all(
+    ACTIVITY_LOOKUP_DEFS.map(async (def) => {
+      const rows = await api('GET', `/lookups?category=${encodeURIComponent(def.category)}`);
+      return [def, rows];
+    })
+  );
+  for (const [def, rows] of pairs) {
+    const el = document.getElementById(def.selectId);
+    if (!el) continue;
+    const hasKey = Object.prototype.hasOwnProperty.call(valueMap, def.selectId);
+    const raw = hasKey ? valueMap[def.selectId] : undefined;
+    populateLookupSelect(el, rows, def, raw);
+  }
+}
+
+function applyNewActivityLookupDefaults() {
+  const p = document.getElementById('actPeriod');
+  if (p && [...p.options].some((o) => o.value === '日常')) p.value = '日常';
+  const ex = document.getElementById('actExecutor');
+  if (ex && [...ex.options].some((o) => o.value === '无')) ex.value = '无';
+  const st = document.getElementById('actStatus');
+  if (st && [...st.options].some((o) => o.value === 'pending')) st.value = 'pending';
+}
+
+function getActivityLookupFormSnapshot() {
+  return {
+    actYearFrameCode: document.getElementById('actYearFrameCode')?.value,
+    actActivityType: document.getElementById('actActivityType')?.value,
+    actPeriod: document.getElementById('actPeriod')?.value,
+    actRegion: document.getElementById('actRegion')?.value,
+    actExecutor: document.getElementById('actExecutor')?.value,
+    actStatus: document.getElementById('actStatus')?.value,
+  };
+}
+
+async function refreshActivityLookupsBehindLookupModal() {
+  try {
+    await fillActivityLookupSelects(getActivityLookupFormSnapshot());
+  } catch (e) {
+    console.error(e);
+  }
+}
+
+function lookupEditorRowHtml(r) {
+  const active = r.is_active ? '启用' : '停用';
+  return `<tr>
+    <td><code style="font-size:12px">${escapeHtml(String(r.value))}</code></td>
+    <td><input type="text" class="form-control lookup-edit-label" data-id="${r.id}" value="${escapeHtml(String(r.label || ''))}" style="font-size:13px;padding:4px 8px"></td>
+    <td><input type="number" class="form-control lookup-edit-sort" data-id="${r.id}" value="${Number(r.sort_order) || 0}" style="font-size:13px;padding:4px 8px;width:64px"></td>
+    <td style="font-size:12px;color:${r.is_active ? 'var(--success)' : 'var(--text-muted)'}">${active}</td>
+    <td style="white-space:nowrap">
+      <button type="button" class="btn btn-xs btn-ghost" onclick="saveLookupOptionRow(${r.id})">保存</button>
+      ${r.is_active ? `<button type="button" class="btn btn-xs btn-ghost" onclick="deactivateLookupOption(${r.id})">停用</button>` : `<button type="button" class="btn btn-xs btn-ghost" onclick="reactivateLookupOption(${r.id})">启用</button>`}
+    </td>
+  </tr>`;
+}
+
+async function showLookupEditModal(category) {
+  _lookupEditCategory = category;
+  const title = document.getElementById('modalLookupTitle');
+  if (title) title.textContent = LOOKUP_EDITOR_LABELS[category] || '编辑选项';
+  const body = document.getElementById('lookupEditorContent');
+  if (body) body.innerHTML = '<div style="padding:16px;color:var(--text-muted)">加载中...</div>';
+  openModal('modalLookup');
+  await renderLookupEditor(category);
+}
+
+async function renderLookupEditor(category) {
+  const body = document.getElementById('lookupEditorContent');
+  if (!body) return;
+  try {
+    const rows = await api('GET', `/lookups?category=${encodeURIComponent(category)}&includeInactive=1`);
+    body.innerHTML = `
+      <div style="margin-bottom:12px">
+        <button type="button" class="btn btn-primary btn-sm" onclick="toggleLookupAddForm()">+ 新增选项</button>
+      </div>
+      <div id="lookupAddForm" style="display:none;margin-bottom:12px;padding:12px;background:var(--bg-primary);border-radius:var(--radius-sm)">
+        <div class="form-grid" style="grid-template-columns:1fr 1fr 80px;gap:8px;margin-bottom:8px">
+          <input type="text" id="lookupNewValue" class="form-control" placeholder="存储值（写入数据库）" style="font-size:13px">
+          <input type="text" id="lookupNewLabel" class="form-control" placeholder="显示名称" style="font-size:13px">
+          <input type="number" id="lookupNewSort" class="form-control" placeholder="排序" value="0" style="font-size:13px">
+        </div>
+        <button type="button" class="btn btn-primary btn-sm" onclick="confirmAddLookupOption()">保存</button>
+      </div>
+      <table class="data-table" style="font-size:13px">
+        <thead><tr><th>值</th><th>显示</th><th>排序</th><th>状态</th><th></th></tr></thead>
+        <tbody id="lookupEditorTbody">${rows.map((r) => lookupEditorRowHtml(r)).join('')}</tbody>
+      </table>
+    `;
+  } catch (err) {
+    body.innerHTML = `<div style="color:var(--danger);padding:12px">加载失败: ${escapeHtml(err.message)}</div>`;
+  }
+}
+
+function toggleLookupAddForm() {
+  const f = document.getElementById('lookupAddForm');
+  if (!f) return;
+  f.style.display = f.style.display === 'none' ? 'block' : 'none';
+}
+
+async function confirmAddLookupOption() {
+  const category = _lookupEditCategory;
+  const value = document.getElementById('lookupNewValue')?.value?.trim();
+  const label = document.getElementById('lookupNewLabel')?.value?.trim();
+  const sort_order = parseInt(document.getElementById('lookupNewSort')?.value, 10) || 0;
+  if (!value || !label) {
+    showToast('请填写存储值与显示名称', 'warning');
+    return;
+  }
+  try {
+    await api('POST', '/lookups', { category, value, label, sort_order });
+    showToast('已新增', 'success');
+    const form = document.getElementById('lookupAddForm');
+    if (form) form.style.display = 'none';
+    await renderLookupEditor(category);
+    await refreshActivityLookupsBehindLookupModal();
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+}
+
+async function saveLookupOptionRow(id) {
+  const category = _lookupEditCategory;
+  const labelInp = document.querySelector(`.lookup-edit-label[data-id="${id}"]`);
+  const sortInp = document.querySelector(`.lookup-edit-sort[data-id="${id}"]`);
+  try {
+    await api('PUT', `/lookups/${id}`, {
+      label: labelInp?.value?.trim(),
+      sort_order: parseInt(sortInp?.value, 10) || 0,
+    });
+    showToast('已保存', 'success');
+    await renderLookupEditor(category);
+    await refreshActivityLookupsBehindLookupModal();
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+}
+
+async function deactivateLookupOption(id) {
+  try {
+    await api('DELETE', `/lookups/${id}`);
+    showToast('已停用', 'success');
+    await renderLookupEditor(_lookupEditCategory);
+    await refreshActivityLookupsBehindLookupModal();
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+}
+
+async function reactivateLookupOption(id) {
+  try {
+    await api('PUT', `/lookups/${id}`, { is_active: 1 });
+    await renderLookupEditor(_lookupEditCategory);
+    await refreshActivityLookupsBehindLookupModal();
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+}
+
 // 打开新建/编辑弹窗
 async function showActivityModal(id = null) {
   document.getElementById('modalActivityTitle').textContent = id ? '编辑活动' : '新建活动';
   document.getElementById('actId').value = id || '';
 
-  // 重置表单
-  ['actYearFrameCode','actActivityType','actCity','actBrandField','actDate','actClient','actRegion','actVenue','actQuotedPrice','actGuestCount','actExecutor','actStatus','actProjectCode','actRemarks'].forEach(fid => {
+  let a = null;
+  if (id) {
+    try {
+      a = await api('GET', `/activities/${id}`);
+    } catch (err) {
+      showToast('加载活动数据失败', 'error');
+      return;
+    }
+  }
+
+  const lookupSnap = a
+    ? {
+        actYearFrameCode: a.year_frame_code || '',
+        actActivityType: a.activity_type || '',
+        actPeriod: a.period || '日常',
+        actRegion: a.region != null && a.region !== undefined ? a.region : '',
+        actExecutor: a.executor != null && String(a.executor).trim() !== '' ? a.executor : '无',
+        actStatus: a.status || 'pending',
+      }
+    : {};
+
+  try {
+    await fillActivityLookupSelects(lookupSnap);
+  } catch (err) {
+    const detail = err && err.message ? String(err.message) : String(err);
+    showToast(
+      `加载下拉选项失败：${detail}。若已执行迁移，请重启后端（结束旧 node 进程后重新 npm start），再硬刷新页面。`,
+      'error'
+    );
+    console.error(err);
+  }
+
+  ['actCity', 'actBrandField', 'actDate', 'actClient', 'actVenue', 'actQuotedPrice', 'actGuestCount', 'actProjectCode', 'actRemarks'].forEach((fid) => {
     const el = document.getElementById(fid);
     if (el) el.value = '';
   });
-  document.getElementById('actStatus').value = 'pending';
-  document.getElementById('actExecutor').value = '无';
 
-  if (id) {
-    try {
-      const a = await api('GET', `/activities/${id}`);
-      document.getElementById('actYearFrameCode').value = a.year_frame_code || 'N220630-RC-PHD';
-      document.getElementById('actActivityType').value = a.activity_type || '晚宴';
-      document.getElementById('actCity').value = a.city || '';
-      document.getElementById('actBrandField').value = a.brand || 'PHD';
-      if (a.date || a.activity_date) {
-        const d = new Date(a.date || a.activity_date);
-        document.getElementById('actDate').value = d.toISOString().split('T')[0];
-      }
-      document.getElementById('actClient').value = a.client || a.client_name || '';
-      document.getElementById('actRegion').value = a.region || '';
-      document.getElementById('actVenue').value = a.venue || '';
-      document.getElementById('actQuotedPrice').value = a.quoted_price || '';
-      document.getElementById('actGuestCount').value = a.guest_count || '';
-      document.getElementById('actExecutor').value = a.executor || '无';
-      document.getElementById('actStatus').value = a.status || 'pending';
-      document.getElementById('actProjectCode').value = a.project_code || '';
-      document.getElementById('actRemarks').value = a.remarks || '';
-    } catch (err) {
-      showToast('加载活动数据失败', 'error');
+  if (a) {
+    document.getElementById('actCity').value = a.city || '';
+    document.getElementById('actBrandField').value = a.brand || 'PHD';
+    if (a.date || a.activity_date) {
+      const d = new Date(a.date || a.activity_date);
+      document.getElementById('actDate').value = d.toISOString().split('T')[0];
     }
+    document.getElementById('actClient').value = a.client || a.client_name || '';
+    document.getElementById('actVenue').value = a.venue || '';
+    document.getElementById('actQuotedPrice').value = a.quoted_price || '';
+    document.getElementById('actGuestCount').value = a.guest_count || '';
+    document.getElementById('actProjectCode').value = a.project_code || '';
+    document.getElementById('actRemarks').value = a.remarks || '';
   } else {
-    document.getElementById('actYearFrameCode').value = 'N220630-RC-PHD';
-    document.getElementById('actActivityType').value = '晚宴';
+    applyNewActivityLookupDefaults();
     document.getElementById('actBrandField').value = 'PHD';
     genProjectCode();
   }
 
   openModal('modalActivity');
-  
-  // 加载酒品库存到选择区域
+
   loadWineInventoryForForm();
 }
 
@@ -846,6 +1363,7 @@ async function saveActivity() {
     client: document.getElementById('actClient').value,
     client_name: document.getElementById('actClient').value,
     region: document.getElementById('actRegion').value,
+    period: document.getElementById('actPeriod').value,
     venue: document.getElementById('actVenue').value,
     quoted_price: parseFloat(document.getElementById('actQuotedPrice').value) || 0,
     guest_count: parseInt(document.getElementById('actGuestCount').value) || null,
@@ -885,6 +1403,7 @@ async function showActivityDetail(id) {
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:16px">
         <div><div class="form-label">项目编号</div><div class="project-code" style="max-width:100%;font-size:12px">${a.project_code||'—'}</div></div>
         <div><div class="form-label">活动日期</div><div>${fmtDate(a.date||a.activity_date)}</div></div>
+        <div><div class="form-label">时段</div><div>${a.period||'日常'}</div></div>
         <div><div class="form-label">城市</div><div>${a.city||'—'}</div></div>
         <div><div class="form-label">客户</div><div>${a.client||a.client_name||'—'}</div></div>
         <div><div class="form-label">品牌</div><div><span class="badge badge-${brandColor(a.brand)}">${a.brand||'—'}</span></div></div>

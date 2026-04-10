@@ -18,6 +18,7 @@ const calendarRoutes = require('./routes/calendar');
 const costRoutes = require('./routes/cost');
 const wineRoutes = require('./routes/wine');
 const brandRoutes = require('./routes/brand');
+const { mountLookupRoutes } = require('./routes/lookup');
 
 const app = express();
 const PORT = process.env.PORT || 3088;
@@ -27,23 +28,9 @@ app.use(cors());
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
 
-// 静态文件（禁用强缓存，避免浏览器一直用旧的 app.js / index.html）
 const publicDir = path.join(__dirname, '../public');
-app.use(
-  express.static(publicDir, {
-    etag: false,
-    lastModified: false,
-    setHeaders(res, filePath) {
-      if (/\.(html|js|css|json)$/i.test(filePath)) {
-        res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
-        res.setHeader('Pragma', 'no-cache');
-        res.setHeader('Expires', '0');
-      }
-    },
-  })
-);
 
-// API 路由
+// 先注册 /api，再挂静态资源：避免旧版 express.static 行为干扰，且新增路由后必须重启 node 才会生效
 console.log('注册 year-frames 路由');
 app.use('/api/year-frames', yearFrameRoutes);
 console.log('注册 activities 路由');
@@ -66,6 +53,8 @@ console.log('注册 wine 路由');
 app.use('/api/wine', wineRoutes);
 console.log('注册 brand 路由');
 app.use('/api/brand', brandRoutes);
+console.log('注册 lookups 路由（app 级 /api/lookups）');
+mountLookupRoutes(app);
 
 // 测试路由
 app.get('/api/test-calendar', (req, res) => {
@@ -81,6 +70,21 @@ app.get('/api/health', (req, res) => {
     database: dbOk ? 'connected' : 'disconnected',
   });
 });
+
+// 静态文件（禁用强缓存，避免浏览器一直用旧的 app.js / index.html）
+app.use(
+  express.static(publicDir, {
+    etag: false,
+    lastModified: false,
+    setHeaders(res, filePath) {
+      if (/\.(html|js|css|json)$/i.test(filePath)) {
+        res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+        res.setHeader('Pragma', 'no-cache');
+        res.setHeader('Expires', '0');
+      }
+    },
+  })
+);
 
 // 前端页面
 app.get('/', (req, res) => {

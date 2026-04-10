@@ -11,11 +11,14 @@ router.get('/', async (req, res) => {
     try {
         const { year, month, yearFrameId } = req.query;
         
+        // strategy B：日历活动类型与 lookup_options（category=activity_type, is_active=1）一致，避免与表单维护分叉
         let query = `
             SELECT id, project_code, activity_type, city, brand, 
                    date as activity_date, quoted_price, executor, status
             FROM activities 
-            WHERE LEFT(date, 7) = ? AND activity_type IN ('晚宴', '品鉴', '培训', '婚宴', '宴会')
+            WHERE LEFT(date, 7) = ? AND activity_type IN (
+                SELECT value FROM lookup_options WHERE category = 'activity_type' AND is_active = 1
+            )
         `;
         const params = [`${year}-${String(month).padStart(2, '0')}`];
         

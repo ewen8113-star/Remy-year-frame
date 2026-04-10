@@ -3,21 +3,31 @@
 ## 项目结构
 
 ```
-Remy Project/
+remy-year-frame/
+├── public/                    # 管理后台静态页（由 Express 托管，默认走同源 /api）
+│   ├── index.html
+│   ├── app.js
+│   └── style.css
 ├── src/
 │   ├── server.js              # 服务器入口
 │   ├── config/
 │   │   └── database.js        # 数据库连接配置
 │   └── routes/
-│       ├── yearFrame.js      # 年框管理
+│       ├── yearFrame.js       # 年框管理
 │       ├── activity.js        # 活动场次
 │       ├── warehouse.js       # 仓储记录
 │       ├── logistics.js       # 物流记录
 │       ├── reimbursement.js   # 报销记录
 │       ├── dashboard.js       # 数据看板
-│       └── backup.js          # 备份管理
+│       ├── backup.js          # 备份管理
+│       ├── calendar.js        # 排期日历
+│       ├── cost.js            # 成本管理聚合
+│       ├── wine.js            # 客户用酒
+│       └── brand.js           # 品牌字典
+├── migrations/                # SQL 迁移片段（按需执行）
 ├── backups/                   # 备份文件目录
-├── .env                       # 环境变量配置
+├── init.sql                   # 初始化 schema 参考
+├── .env                       # 环境变量配置（本地创建）
 ├── .env.example               # 环境变量模板
 └── package.json
 ```
@@ -69,6 +79,37 @@ Remy Project/
 - `POST /api/backup/import` - 导入数据
 - `GET /api/backup/download/:filename` - 下载备份文件
 
+### 排期日历
+- `GET /api/calendar?year=2026&month=4&yearFrameId=` - 指定年月的活动列表（`yearFrameId` 可选）
+- `GET /api/calendar/activity/:id` - 单个活动详情
+
+### 成本管理
+- `GET /api/cost/stats` - 成本统计
+- `GET /api/cost/activities` - 活动成本相关列表
+- `GET /api/cost/warehouse` - 仓储成本视图
+- `GET /api/cost/logistics` - 物流成本视图
+
+### 客户用酒
+- `GET /api/wine` - 酒款目录
+- `GET /api/wine/stock-in` - 入库记录
+- `GET /api/wine/usage` - 领用记录
+- `POST /api/wine/stock-in` - 新建入库
+- `POST /api/wine/stock-in/batch` - 批量入库
+- `POST /api/wine/usage` - 新建领用
+- `PUT /api/wine/usage/:id` - 更新领用
+- `DELETE /api/wine/usage/:id` - 删除领用
+- `PUT /api/wine/:wine_code` - 更新酒款信息
+
+### 品牌字典
+- `GET /api/brand` - 品牌列表
+- `GET /api/brand/:id` - 品牌详情
+- `POST /api/brand` - 创建品牌
+- `PUT /api/brand/:id` - 更新品牌
+- `DELETE /api/brand/:id` - 删除品牌
+
+### 健康检查
+- `GET /api/health` - 服务与数据库连接状态
+
 ## 启动步骤
 
 ### 1. 配置数据库密码
@@ -82,7 +123,7 @@ DB_PASSWORD=你的MySQL密码
 ### 2. 安装依赖
 
 ```bash
-cd "Remy Project"
+cd remy-year-frame
 npm install
 ```
 
@@ -94,15 +135,11 @@ npm start
 npm run dev
 ```
 
-服务运行在 http://localhost:3088
+服务运行在 http://localhost:3088（端口可由环境变量 `PORT` 修改）。
 
-## 前端连接
+## 前端
 
-前端需要修改 API 地址，从 IndexedDB 改为调用后端 API：
-
-```
-http://localhost:3088/api/activities?yearFrameId=1
-```
+`public/` 下的页面由 Node 服务托管：浏览器访问根路径即可，前端默认请求同源 `/api`。若用 `file://` 打开 HTML，可在控制台设置 `localStorage.remy_apiBase` 指向完整 API 根地址（如 `http://127.0.0.1:3088/api`），详见 `public/app.js` 顶部说明。
 
 ## 数据库
 

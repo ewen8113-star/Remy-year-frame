@@ -9,6 +9,7 @@
   <link rel="stylesheet" href="style.css?v=20260409fix3">
   <!-- Chart.js -->
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <script src="https://unpkg.com/lucide@latest"></script>
 </head>
 <body>
   <!-- 侧边栏 -->
@@ -120,22 +121,16 @@
         <input type="hidden" id="actId">
         <div class="form-grid">
           <div class="form-group">
-            <label class="form-label">年框编号 <span class="required">*</span></label>
-            <select class="form-control" id="actYearFrameCode" onchange="genProjectCode()">
-              <option value="N220630-RC-PHD">N220630-RC-PHD</option>
-              <option value="N230901-RM-X.O">N230901-RM-X.O</option>
-              <option value="N230530-RM-CLUB">N230530-RM-CLUB</option>
-            </select>
+            <label class="form-label">年框编号 <span class="required">*</span>
+              <button type="button" class="btn btn-xs btn-ghost" onclick="showLookupEditModal('activity_year_frame_code')" title="编辑年框编号选项" style="margin-left:6px;font-size:11px">编辑</button>
+            </label>
+            <select class="form-control" id="actYearFrameCode" onchange="genProjectCode()"></select>
           </div>
           <div class="form-group">
-            <label class="form-label">活动类型 <span class="required">*</span></label>
-            <select class="form-control" id="actActivityType" onchange="genProjectCode()">
-              <option value="晚宴">晚宴</option>
-              <option value="品鉴">品鉴</option>
-              <option value="培训">培训</option>
-              <option value="婚宴">婚宴</option>
-              <option value="宴会">宴会</option>
-            </select>
+            <label class="form-label">活动类型 <span class="required">*</span>
+              <button type="button" class="btn btn-xs btn-ghost" onclick="showLookupEditModal('activity_type')" title="编辑活动类型选项" style="margin-left:6px;font-size:11px">编辑</button>
+            </label>
+            <select class="form-control" id="actActivityType" onchange="genProjectCode()"></select>
           </div>
           <div class="form-group">
             <label class="form-label">城市 <span class="required">*</span></label>
@@ -144,7 +139,7 @@
           <div class="form-group">
             <label class="form-label">
               品牌
-              <button type="button" class="btn btn-xs btn-ghost" onclick="showBrandModal()" title="管理品牌" style="margin-left:6px;font-size:11px">⚙️ 管理</button>
+              <button type="button" class="btn btn-xs btn-ghost" onclick="showBrandModal()" title="编辑品牌" style="margin-left:6px;font-size:11px">✏️ 编辑</button>
             </label>
             <select class="form-control" id="actBrandField" onchange="genProjectCode()"></select>
           </div>
@@ -153,20 +148,20 @@
             <input type="date" class="form-control" id="actDate" onchange="genProjectCode()">
           </div>
           <div class="form-group">
+            <label class="form-label">时段
+              <button type="button" class="btn btn-xs btn-ghost" onclick="showLookupEditModal('activity_period')" title="编辑时段选项" style="margin-left:6px;font-size:11px">编辑</button>
+            </label>
+            <select class="form-control" id="actPeriod"></select>
+          </div>
+          <div class="form-group">
             <label class="form-label">客户名称</label>
             <input type="text" class="form-control" id="actClient" placeholder="客户/场所名称">
           </div>
           <div class="form-group">
-            <label class="form-label">区域</label>
-            <select class="form-control" id="actRegion">
-              <option value="">请选择</option>
-              <option value="东区">东区</option>
-              <option value="北区">北区</option>
-              <option value="南区">南区</option>
-              <option value="西南区">西南区</option>
-              <option value="东南区">东南区</option>
-              <option value="内部">内部</option>
-            </select>
+            <label class="form-label">区域
+              <button type="button" class="btn btn-xs btn-ghost" onclick="showLookupEditModal('activity_region')" title="编辑区域选项" style="margin-left:6px;font-size:11px">编辑</button>
+            </label>
+            <select class="form-control" id="actRegion"></select>
           </div>
           <div class="form-group">
             <label class="form-label">场地</label>
@@ -181,19 +176,16 @@
             <input type="number" class="form-control" id="actGuestCount" placeholder="0">
           </div>
           <div class="form-group">
-            <label class="form-label">执行人员</label>
-            <select class="form-control" id="actExecutor">
-              <option value="无">无</option>
-              <option value="有">有</option>
-            </select>
+            <label class="form-label">执行人员
+              <button type="button" class="btn btn-xs btn-ghost" onclick="showLookupEditModal('activity_executor')" title="编辑执行人员选项" style="margin-left:6px;font-size:11px">编辑</button>
+            </label>
+            <select class="form-control" id="actExecutor"></select>
           </div>
           <div class="form-group">
-            <label class="form-label">状态</label>
-            <select class="form-control" id="actStatus">
-              <option value="pending">待执行</option>
-              <option value="done">已完成</option>
-              <option value="cancelled">已取消</option>
-            </select>
+            <label class="form-label">状态
+              <button type="button" class="btn btn-xs btn-ghost" onclick="showLookupEditModal('activity_status')" title="编辑状态选项" style="margin-left:6px;font-size:11px">编辑</button>
+            </label>
+            <select class="form-control" id="actStatus"></select>
           </div>
           <div class="form-group form-full">
             <label class="form-label">项目编号（自动生成）</label>
@@ -280,10 +272,18 @@
 
   <div class="modal" id="modalBrand" style="max-width:500px">
     <div class="modal-header">
-      <span class="modal-title">⚙️ 管理品牌</span>
+      <span class="modal-title">✏️ 编辑品牌</span>
       <button type="button" class="modal-close" onclick="closeModal()">✕</button>
     </div>
     <div class="modal-body" style="max-height:70vh;overflow-y:auto" id="brandContent"></div>
+  </div>
+
+  <div class="modal" id="modalLookup" style="max-width:520px">
+    <div class="modal-header">
+      <span class="modal-title" id="modalLookupTitle">编辑选项</span>
+      <button type="button" class="modal-close" onclick="closeModal()">✕</button>
+    </div>
+    <div class="modal-body" style="max-height:70vh;overflow-y:auto" id="lookupEditorContent"></div>
   </div>
 
   <div class="modal" id="modalLogistics">
@@ -412,6 +412,6 @@
   <!-- 全局 Toast -->
   <div class="toast-container" id="toastContainer"></div>
 
-  <script src="app.js?v=20260409fix18"></script>
+  <script src="app.js?v=20260410lookup5"></script>
 </body>
 </html>

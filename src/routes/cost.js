@@ -11,15 +11,19 @@ router.get('/stats', async (req, res) => {
     try {
         const { yearFrameId } = req.query;
         
-        let yfCondition = yearFrameId ? ' AND yf.id = ?' : '';
+        const actYf = yearFrameId ? ' AND a.year_frame_id = ?' : '';
         let params = yearFrameId ? [yearFrameId] : [];
-        
-        // 场次成本 - 只统计活动
+        const whYf = yearFrameId ? ' AND year_frame_id = ?' : '';
+        const logYf = yearFrameId ? ' AND year_frame_id = ?' : '';
+
+        // 场次成本 - strategy B：活动类型与 lookup_options 对齐（category=activity_type）
         const [activities] = await db.execute(`
             SELECT COALESCE(SUM(a.total_cost), 0) as total_cost, COUNT(*) as count
             FROM activities a
-            WHERE a.activity_type IN ('晚宴', '品鉴', '培训', '婚宴', '宴会')
-            ${yfCondition}
+            WHERE a.activity_type IN (
+                SELECT value FROM lookup_options WHERE category = 'activity_type' AND is_active = 1
+            )
+            ${actYf}
         `, params);
         
         // 仓储成本
@@ -27,16 +31,16 @@ router.get('/stats', async (req, res) => {
             SELECT COALESCE(SUM(actual_cost), 0) as total_cost, COUNT(*) as count
             FROM warehouse
             WHERE 1=1
-            ${yfCondition}
-        `, params);
+            ${whYf}
+        `, yearFrameId ? [yearFrameId] : []);
         
         // 物流成本
         const [logistics] = await db.execute(`
             SELECT COALESCE(SUM(fee), 0) as total_cost, COUNT(*) as count
             FROM logistics
             WHERE 1=1
-            ${yfCondition}
-        `, params);
+            ${logYf}
+        `, yearFrameId ? [yearFrameId] : []);
         
         // 报销成本 - 使用 amount 字段
         let reimbQuery = `
@@ -79,7 +83,9 @@ router.get('/activities', async (req, res) => {
             SELECT a.id, a.project_code, a.activity_type, a.city, a.region,
                    a.date as activity_date, a.quoted_price, a.total_cost, a.status
             FROM activities a
-            WHERE a.activity_type IN ('晚宴', '品鉴', '培训', '婚宴', '宴会')
+            WHERE a.activity_type IN (
+                SELECT value FROM lookup_options WHERE category = 'activity_type' AND is_active = 1
+            )
         `;
         let params = [];
         

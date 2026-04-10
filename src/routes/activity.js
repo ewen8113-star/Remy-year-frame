@@ -75,19 +75,19 @@ router.post('/', async (req, res) => {
   try {
     const {
       year_frame_id, year_frame_code, project_code, activity_type,
-      city, brand, client, client_name, venue, date, guest_count,
+      city, brand, client, client_name, venue, date, period, guest_count,
       quoted_price, executor, remarks, wine_details
     } = req.body;
     
     const [result] = await db.query(`
       INSERT INTO activities (
         year_frame_id, year_frame_code, project_code, activity_type,
-        city, brand, client, client_name, venue, date, guest_count,
+        city, brand, client, client_name, venue, date, period, guest_count,
         quoted_price, executor, remarks, wine_details
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `, [
       year_frame_id, year_frame_code, project_code, activity_type,
-      city, brand, client, client_name, venue, date, guest_count,
+      city, brand, client, client_name, venue, date, period || '日常', guest_count,
       quoted_price, executor, remarks, JSON.stringify(wine_details || {})
     ]);
     
@@ -111,6 +111,7 @@ router.put('/:id', async (req, res) => {
       'client_name',
       'venue',
       'date',
+      'period',
       'guest_count',
       'quoted_price',
       'total_cost',
