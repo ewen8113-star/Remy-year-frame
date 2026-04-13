@@ -104,8 +104,11 @@ function switchYear(year) {
     activityType: '',
     executionFlag: '',
     period: '',
+    year: '',
     month: '',
+    compareRegion: '',
   };
+  dashboardDrillRegion = null;
   loadYearFrames().then(() => navigate(currentPage));
 }
 
@@ -350,19 +353,66 @@ let dashboardState = {
   activityType: '',
   executionFlag: '',
   period: '',
+  year: '',
   month: '',
+  /** 右侧对比：空=不对比；「全国」或其它区域 value */
+  compareRegion: '',
 };
-let dashboardFilterOptions = null;
-let dashboardPanelKey = '';
+/** 区域环形图下钻：选中的区域名，与数据详情筛选独立 */
+let dashboardDrillRegion = null;
 
-const DASHBOARD_FILTER_META = {
-  brand: { title: '品牌', icon: 'tag' },
-  region: { title: '区域', icon: 'map-pin' },
-  activityType: { title: '类别', icon: 'shapes' },
-  executionFlag: { title: '执行', icon: 'user-check' },
-  period: { title: '时段', icon: 'calendar-range' },
-  month: { title: '月份', icon: 'calendar-days' },
-};
+/** 与后端 ALLOWED_TYPES 一致，用于区域对比时类别柱图类目顺序 */
+const DASHBOARD_ACTIVITY_TYPES = ['晚宴', '品鉴', '培训', '纯设计'];
+
+/** 自然月 1–12（需配合年份筛选，便于对齐财年内的日历月） */
+function dashboardMonthSelectOptionsHtml() {
+  return (
+    '<option value="">月份</option>' +
+    [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+      .map((n) => `<option value="${n}">${n}月</option>`)
+      .join('')
+  );
+}
+
+function dashboardYearSelectOptionsHtml() {
+  return (
+    '<option value="">年份</option>' +
+    '<option value="2025">2025年</option>' +
+    '<option value="2026">2026年</option>'
+  );
+}
+
+/** 左侧主口径序列（深色）与右侧对比口径序列（浅色） */
+const DASHBOARD_COMPARE_COLOR_REGION = '#5b21b6';
+const DASHBOARD_COMPARE_COLOR_NATIONAL = '#94a3b8';
+
+/**
+ * 单选区域时用于双系列图表；优先顶层 regionNationalCompare，
+ * 否则从 summary.regionShare 内嵌的对比序列读取（避免代理/缓存丢字段）。
+ */
+function resolveDashboardChartCompare(dash) {
+  if (!dash) return null;
+  const top = dash.regionNationalCompare;
+  if (top && Array.isArray(top.nationalActivityByMonth) && top.nationalActivityByMonth.length > 0) {
+    return top;
+  }
+  const rs = dash.summary && dash.summary.regionShare;
+  if (rs && Array.isArray(rs.nationalActivityByMonth) && rs.nationalActivityByMonth.length > 0) {
+    return {
+      region: rs.region || rs.primaryLabel,
+      compareLabel: rs.compareLabel,
+      compareMode: 'national',
+      primaryTotalCount: rs.regionCount,
+      compareTotalCount: rs.compareCount,
+      nationalActivityByMonth: rs.nationalActivityByMonth,
+      nationalActivityByType: rs.nationalActivityByType,
+      nationalActivityByBrand: rs.nationalActivityByBrand,
+      nationalActivityByRegion: rs.nationalActivityByRegion,
+    };
+  }
+  if (top && (top.nationalActivityByBrand || top.nationalActivityByType)) return top;
+  return null;
+}
 
 function renderLucideIcons() {
   if (typeof window !== 'undefined' && window.lucide && typeof window.lucide.createIcons === 'function') {
@@ -370,71 +420,102 @@ function renderLucideIcons() {
   }
 }
 
-function normalizeFilterOptions(options) {
-  return (options || []).map((opt) => {
-    if (typeof opt === 'string') return { value: opt, label: opt };
-    return { value: String(opt.value || ''), label: String(opt.label || opt.value || '') };
-  });
-}
-
-function filterLabelByValue(key, value) {
-  if (!value || !dashboardFilterOptions) return '全部';
-  const map = {
-    brand: normalizeFilterOptions(dashboardFilterOptions.brands),
-    region: normalizeFilterOptions(dashboardFilterOptions.regions),
-    activityType: normalizeFilterOptions(dashboardFilterOptions.activityTypes),
-    executionFlag: normalizeFilterOptions(dashboardFilterOptions.executionFlags),
-    period: normalizeFilterOptions(dashboardFilterOptions.periods),
-    month: normalizeFilterOptions(dashboardFilterOptions.fiscalMonths),
-  };
-  const hit = (map[key] || []).find((x) => x.value === value);
-  return hit ? hit.label : value;
-}
-
-function renderDashboardFilterButton(key, title, icon) {
-  const label = filterLabelByValue(key, dashboardState[key]);
-  const isOpen = dashboardPanelKey === key;
-  return `<button class="btn btn-secondary btn-sm ${isOpen ? 'active' : ''}" onclick="openDashboardFilterPanel('${key}')"><i data-lucide="${icon}" style="width:14px;height:14px;vertical-align:-2px;margin-right:4px"></i>${escapeHtml(title)}：${escapeHtml(label)}</button>`;
-}
-
-function dashboardOptionsByKey(key) {
-  if (!dashboardFilterOptions) return [];
-  const optionsMap = {
-    brand: normalizeFilterOptions(dashboardFilterOptions.brands),
-    region: normalizeFilterOptions(dashboardFilterOptions.regions),
-    activityType: normalizeFilterOptions(dashboardFilterOptions.activityTypes),
-    executionFlag: normalizeFilterOptions(dashboardFilterOptions.executionFlags),
-    period: normalizeFilterOptions(dashboardFilterOptions.periods),
-    month: normalizeFilterOptions(dashboardFilterOptions.fiscalMonths),
-  };
-  return optionsMap[key] || [];
-}
-
-function openDashboardFilterPanel(key) {
-  dashboardPanelKey = dashboardPanelKey === key ? '' : key;
+function filterDashboard() {
+  dashboardState.year = document.getElementById('dashFilterYear')?.value || '';
+  dashboardState.month = document.getElementById('dashFilterMonth')?.value || '';
+  dashboardState.activityType = document.getElementById('dashFilterType')?.value || '';
+  dashboardState.period = document.getElementById('dashFilterPeriod')?.value || '';
+  dashboardState.region = document.getElementById('dashFilterRegion')?.value || '';
+  dashboardState.brand = document.getElementById('dashFilterBrand')?.value || '';
+  dashboardState.executionFlag = document.getElementById('dashFilterExecution')?.value || '';
+  dashboardState.compareRegion = document.getElementById('dashCompareRegion')?.value || '';
   renderDashboard();
 }
 
-function chooseDashboardFilter(key, value) {
-  dashboardState[key] = value || '';
-  dashboardPanelKey = '';
-  renderDashboard();
-}
+async function populateDashboardFilterSelects() {
+  const yearSel = document.getElementById('dashFilterYear');
+  if (yearSel) yearSel.value = dashboardState.year || '';
+  const monthSel = document.getElementById('dashFilterMonth');
+  if (monthSel) monthSel.value = dashboardState.month || '';
 
-function renderDashboardFilterPanel() {
-  if (!dashboardPanelKey) return '';
-  const meta = DASHBOARD_FILTER_META[dashboardPanelKey];
-  const options = dashboardOptionsByKey(dashboardPanelKey);
-  const cur = dashboardState[dashboardPanelKey] || '';
-  return `
-    <div class="card" style="margin-top:10px;padding:12px">
-      <div class="card-sub" style="margin-bottom:8px">${escapeHtml(meta.title)}（单选）</div>
-      <div style="display:flex;flex-wrap:wrap;gap:8px">
-        <button class="btn btn-secondary btn-sm ${cur === '' ? 'active' : ''}" onclick="chooseDashboardFilter('${dashboardPanelKey}','')">全部</button>
-        ${options.map((o) => `<button class="btn btn-secondary btn-sm ${cur === o.value ? 'active' : ''}" onclick="chooseDashboardFilter('${dashboardPanelKey}','${escapeHtml(String(o.value))}')">${escapeHtml(o.label)}</button>`).join('')}
-      </div>
-    </div>
-  `;
+  try {
+    const types = await api('GET', '/lookups?category=activity_type');
+    const typeSel = document.getElementById('dashFilterType');
+    if (typeSel) {
+      const keep = dashboardState.activityType;
+      typeSel.innerHTML =
+        '<option value="">类型</option>' +
+        types
+          .map(
+            (r) =>
+              `<option value="${escapeHtml(String(r.value))}">${escapeHtml(String(r.label || r.value))}</option>`
+          )
+          .join('');
+      if (keep && [...typeSel.options].some((o) => o.value === keep)) typeSel.value = keep;
+    }
+  } catch (e) {
+    console.warn('数据看板活动类型筛选项加载失败', e);
+  }
+  try {
+    const periods = await api('GET', '/lookups?category=activity_period');
+    const periodSel = document.getElementById('dashFilterPeriod');
+    if (periodSel) {
+      const keep = dashboardState.period;
+      periodSel.innerHTML =
+        '<option value="">时段</option>' +
+        periods
+          .map(
+            (r) =>
+              `<option value="${escapeHtml(String(r.value))}">${escapeHtml(String(r.label || r.value))}</option>`
+          )
+          .join('');
+      if (keep && [...periodSel.options].some((o) => o.value === keep)) periodSel.value = keep;
+    }
+  } catch (e) {
+    console.warn('数据看板时段筛选项加载失败', e);
+  }
+  try {
+    const regions = await api('GET', '/lookups?category=activity_region');
+    const regionSel = document.getElementById('dashFilterRegion');
+    if (regionSel) {
+      const keep = dashboardState.region;
+      regionSel.innerHTML =
+        '<option value="">区域</option>' +
+        regions
+          .map(
+            (r) =>
+              `<option value="${escapeHtml(String(r.value))}">${escapeHtml(String(r.label || r.value))}</option>`
+          )
+          .join('');
+      if (keep && [...regionSel.options].some((o) => o.value === keep)) regionSel.value = keep;
+    }
+    const cmpSel = document.getElementById('dashCompareRegion');
+    if (cmpSel) {
+      const keepCmp = dashboardState.compareRegion;
+      cmpSel.innerHTML =
+        '<option value="">不对比</option>' +
+        '<option value="全国">全国</option>' +
+        regions
+          .map(
+            (r) =>
+              `<option value="${escapeHtml(String(r.value))}">${escapeHtml(String(r.label || r.value))}</option>`
+          )
+          .join('');
+      if (keepCmp && [...cmpSel.options].some((o) => o.value === keepCmp)) cmpSel.value = keepCmp;
+      else cmpSel.value = '';
+      dashboardState.compareRegion = cmpSel.value || '';
+    }
+  } catch (e) {
+    console.warn('数据看板区域/对比区域筛选项加载失败', e);
+  }
+
+  renderBrandOptions();
+  const bsel = document.getElementById('dashFilterBrand');
+  const bk = dashboardState.brand;
+  if (bsel && bk && [...bsel.options].some((o) => o.value === bk)) bsel.value = bk;
+
+  const exSel = document.getElementById('dashFilterExecution');
+  if (exSel) exSel.value = dashboardState.executionFlag || '';
 }
 
 function resetDashboardFilters() {
@@ -444,10 +525,65 @@ function resetDashboardFilters() {
     activityType: '',
     executionFlag: '',
     period: '',
+    year: '',
     month: '',
+    compareRegion: '',
   };
-  dashboardPanelKey = '';
+  dashboardDrillRegion = null;
   renderDashboard();
+}
+
+function clearDashboardRegionDrill() {
+  dashboardDrillRegion = null;
+  renderDashboard();
+}
+
+function toggleDashboardDrillForFilteredRegion() {
+  const r = dashboardState.region;
+  if (!r) return;
+  dashboardDrillRegion = dashboardDrillRegion === r ? null : r;
+  renderDashboard();
+}
+
+function renderDashboardRegionDrillPanel(region, cityBreakdown, hasRegionCompare) {
+  if (!region) {
+    const hint = hasRegionCompare
+      ? '在区域对比图中点击左侧主区域（深紫）条形，或使用下方按钮，展开城市排行'
+      : '点击环形图扇区查看该区域内城市场次排行';
+    return `<div class="card-sub dashboard-region-drill-hint" style="margin-top:10px">${hint}</div>`;
+  }
+  const rows = (cityBreakdown || [])
+    .filter((r) => (r.region || '') === region)
+    .map((r) => ({
+      city: r.city || '未知',
+      count: parseInt(r.count, 10) || 0,
+      revenue: parseFloat(r.revenue) || 0,
+    }))
+    .sort((a, b) => b.count - a.count);
+  const total = rows.reduce((s, r) => s + r.count, 0);
+  const head = `
+    <div class="dashboard-region-drill">
+      <div class="dashboard-region-drill-head">
+        <div class="card-sub" style="margin:0"><strong>${escapeHtml(region)}</strong> · 城市分布（共 ${total} 场）</div>
+        <button type="button" class="btn btn-secondary btn-sm" onclick="clearDashboardRegionDrill()">关闭下钻</button>
+      </div>`;
+  if (!rows.length) {
+    return `${head}<div class="card-sub">暂无城市明细</div></div>`;
+  }
+  const body = rows
+    .map((r) => {
+      const pct = total > 0 ? ((r.count / total) * 100).toFixed(1) : '0.0';
+      return `<tr><td>${escapeHtml(r.city)}</td><td style="text-align:right;font-variant-numeric:tabular-nums">${r.count}</td><td style="text-align:right;font-variant-numeric:tabular-nums">${pct}%</td><td style="text-align:right;font-variant-numeric:tabular-nums">${fmtMoney(r.revenue)}</td></tr>`;
+    })
+    .join('');
+  return `${head}
+      <div class="table-wrapper" style="margin-top:8px">
+        <table>
+          <thead><tr><th>城市</th><th style="text-align:right">场次</th><th style="text-align:right">区内占比</th><th style="text-align:right">报价</th></tr></thead>
+          <tbody>${body}</tbody>
+        </table>
+      </div>
+    </div>`;
 }
 
 function dashboardQueryString() {
@@ -458,7 +594,9 @@ function dashboardQueryString() {
   if (dashboardState.activityType) sp.set('activityTypes', dashboardState.activityType);
   if (dashboardState.executionFlag) sp.set('executionFlags', dashboardState.executionFlag);
   if (dashboardState.period) sp.set('periods', dashboardState.period);
+  if (dashboardState.year) sp.set('activityYear', dashboardState.year);
   if (dashboardState.month) sp.set('months', dashboardState.month);
+  if (dashboardState.compareRegion) sp.set('compareRegion', dashboardState.compareRegion);
   const q = sp.toString();
   return q ? `?${q}` : '';
 }
@@ -466,14 +604,57 @@ function dashboardQueryString() {
 async function renderDashboard() {
   const container = document.getElementById('pageContainer');
   try {
-    const query = dashboardQueryString();
-    const [options, dash] = await Promise.all([
-      api('GET', '/dashboard/options' + (currentYearFrameId ? `?yearFrameId=${currentYearFrameId}` : '')),
-      api('GET', '/dashboard' + query),
-    ]);
+    Object.values(charts).forEach((c) => c && c.destroy());
+    charts = {};
 
-    const { summary, activityByType, activityByBrand, activityByRegion, activityByMonth } = dash;
-    dashboardFilterOptions = options;
+    const query = dashboardQueryString();
+    const dash = await api('GET', `/dashboard${query}${query ? '&' : '?'}_ts=${Date.now()}`);
+
+    const {
+      summary,
+      activityByType,
+      activityByBrand,
+      activityByRegion,
+      activityByMonth,
+      cityBreakdown,
+    } = dash;
+    /** 仅当用户在右侧显式选择对比区域后，才展示双系列与对比卡片（避免误用接口残留字段） */
+    let chartCompare = dashboardState.compareRegion
+      ? resolveDashboardChartCompare(dash)
+      : null;
+
+    const primaryRegion = String(dashboardState.region || '').trim();
+    const compareRegion = String(dashboardState.compareRegion || '').trim();
+    const isSameRegionCompare = primaryRegion && compareRegion && primaryRegion === compareRegion;
+    if (isSameRegionCompare) {
+      chartCompare = {
+        region: primaryRegion,
+        compareLabel: compareRegion,
+        compareMode: 'regional',
+        primaryTotalCount: Number(summary.activityCount || 0),
+        compareTotalCount: Number(summary.activityCount || 0),
+        nationalActivityByMonth: activityByMonth,
+        nationalActivityByType: activityByType,
+        nationalActivityByBrand: activityByBrand,
+        nationalActivityByRegion: activityByRegion,
+      };
+    }
+
+    const effectiveRegionShare = isSameRegionCompare
+      ? {
+          region: primaryRegion,
+          compareLabel: compareRegion,
+          compareTarget: compareRegion,
+          regionCount: Number(summary.activityCount || 0),
+          compareCount: Number(summary.activityCount || 0),
+          ratio: 1,
+        }
+      : summary.regionShare;
+
+    const regionKeys = new Set((activityByRegion || []).map((d) => d.region || ''));
+    if (dashboardDrillRegion && !regionKeys.has(dashboardDrillRegion)) {
+      dashboardDrillRegion = null;
+    }
 
     container.innerHTML = `
       <!-- 统计卡片 -->
@@ -505,44 +686,61 @@ async function renderDashboard() {
       </div>
       <div class="card" style="margin:16px 0">
         <div class="card-header">
-          <div><div class="card-title">透视筛选</div><div class="card-sub">点击按钮弹出小面板单选，未选择时显示全部</div></div>
+          <div><div class="card-title">数据详情</div></div>
           <button class="btn btn-secondary btn-sm" onclick="resetDashboardFilters()">重置筛选</button>
         </div>
-        <div style="display:flex;flex-wrap:wrap;gap:8px">
-          ${renderDashboardFilterButton('brand', '品牌', 'tag')}
-          ${renderDashboardFilterButton('region', '区域', 'map-pin')}
-          ${renderDashboardFilterButton('activityType', '类别', 'shapes')}
-          ${renderDashboardFilterButton('executionFlag', '执行', 'user-check')}
-          ${renderDashboardFilterButton('period', '时段', 'calendar-range')}
-          ${renderDashboardFilterButton('month', '月份', 'calendar-days')}
+        <div class="dashboard-detail-split" style="display:grid;grid-template-columns:1fr 1fr;gap:16px;align-items:start;margin-top:12px">
+          <div>
+            <div class="card-sub" style="margin-bottom:8px">主口径（左侧）：品牌、时段、类型等与下方关键数据一致；区域为主数据区域。</div>
+            <div class="toolbar" style="margin:0;border:none;padding:0;background:transparent">
+              <div class="toolbar-left" style="flex-wrap:wrap">
+                <select class="filter-select" id="dashFilterYear" onchange="filterDashboard()">${dashboardYearSelectOptionsHtml()}</select>
+                <select class="filter-select" id="dashFilterMonth" onchange="filterDashboard()">${dashboardMonthSelectOptionsHtml()}</select>
+                <select class="filter-select" id="dashFilterType" onchange="filterDashboard()"><option value="">类型</option></select>
+                <select class="filter-select" id="dashFilterPeriod" onchange="filterDashboard()"><option value="">时段</option></select>
+                <select class="filter-select" id="dashFilterRegion" onchange="filterDashboard()"><option value="">区域</option></select>
+                <select class="filter-select" id="dashFilterBrand" onchange="filterDashboard()"><option value="">品牌</option></select>
+                <select class="filter-select" id="dashFilterExecution" onchange="filterDashboard()">
+                  <option value="">执行</option>
+                  <option value="有">有</option>
+                  <option value="无">无</option>
+                </select>
+              </div>
+            </div>
+          </div>
+          <div>
+            <div class="card-sub" style="margin-bottom:8px">对比口径（右侧）：继承左侧除「区域」外的条件；仅选对比区域或全国。</div>
+            <select class="filter-select" id="dashCompareRegion" onchange="filterDashboard()" style="max-width:100%"><option value="">不对比</option><option value="全国">全国</option></select>
+          </div>
         </div>
-        ${renderDashboardFilterPanel()}
       </div>
-      ${summary.regionShare ? `<div class="card" style="margin-bottom:16px"><div class="card-title"><i data-lucide="pie-chart" style="width:14px;height:14px;vertical-align:-2px;margin-right:6px"></i>${escapeHtml(summary.regionShare.region)} 场次占全国比</div><div class="card-sub">${summary.regionShare.regionCount} / ${summary.regionShare.nationalCount} = ${(summary.regionShare.ratio * 100).toFixed(1)}%</div></div>` : ''}
+      ${chartCompare && effectiveRegionShare ? `<div class="card" style="margin-bottom:16px"><div class="card-title"><i data-lucide="columns-2" style="width:14px;height:14px;vertical-align:-2px;margin-right:6px"></i>场次对比</div><div class="card-sub"><strong>${escapeHtml(effectiveRegionShare.region)}</strong> vs <strong>${escapeHtml(effectiveRegionShare.compareLabel || effectiveRegionShare.compareTarget || '')}</strong>：${effectiveRegionShare.regionCount} / ${effectiveRegionShare.compareCount} = ${(effectiveRegionShare.ratio * 100).toFixed(1)}%</div></div>` : ''}
 
       <!-- 图表区 -->
       <div class="chart-grid" style="margin-bottom:24px">
         <div class="chart-card">
           <div class="card-header">
-            <div><div class="card-title">月度场次趋势（财年）</div><div class="card-sub">4月 → 次年3月</div></div>
+            <div><div class="card-title">月度场次趋势（财年）</div><div class="card-sub">${chartCompare ? '4月 → 次年3月 · 深紫=左侧主口径 · 浅灰=右侧对比' : '4月 → 次年3月'}</div></div>
           </div>
           <canvas id="chartMonthTrend"></canvas>
         </div>
         <div class="chart-card">
           <div class="card-header">
-            <div><div class="card-title">品牌报价分布</div><div class="card-sub">按报价金额</div></div>
+            <div><div class="card-title">品牌报价分布</div><div class="card-sub">${chartCompare ? '按报价金额 · 深紫=左侧主口径 · 浅灰=右侧对比' : '按报价金额'}</div></div>
           </div>
           <canvas id="chartBrand"></canvas>
         </div>
         <div class="chart-card">
           <div class="card-header">
-            <div><div class="card-title">区域结构分布</div><div class="card-sub">按场次数量</div></div>
+            <div><div class="card-title">区域结构分布</div><div class="card-sub">${chartCompare?.compareMode === 'national' && chartCompare?.nationalActivityByRegion?.length > 1 ? '深紫=左侧主区域，浅灰=其它区域（对比=全国时）· 点击深紫条可城市下钻' : chartCompare ? '深紫=左侧主口径场次 · 浅灰=右侧对比场次 · 点击深紫条可城市下钻' : '按场次数量 · 点击扇区下钻城市'}</div></div>
           </div>
           <canvas id="chartRegion"></canvas>
+          ${chartCompare ? `<div style="margin-top:8px"><button type="button" class="btn btn-secondary btn-sm" onclick="toggleDashboardDrillForFilteredRegion()">${dashboardDrillRegion ? '收起' : '展开'}左侧区域城市排行</button></div>` : ''}
+          ${renderDashboardRegionDrillPanel(dashboardDrillRegion, cityBreakdown, !!chartCompare)}
         </div>
         <div class="chart-card">
           <div class="card-header">
-            <div><div class="card-title">活动类别分布</div><div class="card-sub">仅统计：晚宴/品鉴/培训/纯设计</div></div>
+            <div><div class="card-title">活动类别分布</div><div class="card-sub">${chartCompare ? '场次对比 · 深紫=左侧主口径 · 浅灰=右侧对比' : '仅统计：晚宴/品鉴/培训/纯设计'}</div></div>
           </div>
           <canvas id="chartType"></canvas>
         </div>
@@ -551,10 +749,15 @@ async function renderDashboard() {
     `;
 
     // 绘制图表
-    drawMonthTrendChart(activityByMonth);
-    drawTypeChart(activityByType);
-    drawBrandChart(activityByBrand);
-    drawRegionChart(activityByRegion);
+    drawMonthTrendChart(activityByMonth, chartCompare);
+    drawTypeChart(activityByType, chartCompare);
+    drawBrandChart(activityByBrand, chartCompare);
+    drawRegionChart(
+      activityByRegion,
+      chartCompare,
+      chartCompare && effectiveRegionShare ? effectiveRegionShare : null
+    );
+    await populateDashboardFilterSelects();
     renderLucideIcons();
   } catch (err) {
     container.innerHTML = `<div class="empty-state"><div class="empty-icon"><i data-lucide="triangle-alert" style="width:20px;height:20px"></i></div><div class="empty-title">加载失败</div><div class="empty-sub">${err.message}</div></div>`;
@@ -562,13 +765,49 @@ async function renderDashboard() {
   }
 }
 
-function drawMonthTrendChart(data) {
+function drawMonthTrendChart(data, compare) {
   const ctx = document.getElementById('chartMonthTrend');
   if (!ctx) return;
+  const sec = getComputedStyle(document.documentElement).getPropertyValue('--text-secondary').trim();
+  const labels = data.map((d) => d.monthLabel);
+  if (compare && compare.nationalActivityByMonth) {
+    const nat = compare.nationalActivityByMonth;
+    charts.monthTrend = new Chart(ctx, {
+      type: 'bar',
+      data: {
+        labels,
+        datasets: [
+          {
+            label: compare.region || '主口径',
+            data: data.map((d) => d.count),
+            backgroundColor: DASHBOARD_COMPARE_COLOR_REGION,
+            borderRadius: 6,
+          },
+          {
+            label: compare.compareLabel || '对比',
+            data: nat.map((d) => d.count),
+            backgroundColor: DASHBOARD_COMPARE_COLOR_NATIONAL,
+            borderRadius: 6,
+          },
+        ],
+      },
+      options: {
+        datasets: { bar: { categoryPercentage: 0.72, barPercentage: 0.85 } },
+        plugins: {
+          legend: { display: true, labels: { color: sec, padding: 12, font: { size: 11 } } },
+        },
+        scales: {
+          x: { grid: { display: false }, ticks: { color: sec } },
+          y: { beginAtZero: true, ticks: { color: sec } },
+        },
+      },
+    });
+    return;
+  }
   charts.monthTrend = new Chart(ctx, {
     type: 'bar',
     data: {
-      labels: data.map((d) => d.monthLabel),
+      labels,
       datasets: [{
         label: '场次',
         data: data.map((d) => d.count),
@@ -586,9 +825,53 @@ function drawMonthTrendChart(data) {
   });
 }
 
-function drawTypeChart(data) {
+function drawTypeChart(data, compare) {
   const ctx = document.getElementById('chartType');
   if (!ctx) return;
+  const sec = getComputedStyle(document.documentElement).getPropertyValue('--text-secondary').trim();
+
+  if (compare && compare.nationalActivityByType) {
+    const regMap = new Map((data || []).map((r) => [r.activity_type, parseInt(r.count, 10) || 0]));
+    const natMap = new Map((compare.nationalActivityByType || []).map((r) => [r.activity_type, parseInt(r.count, 10) || 0]));
+    const labels = DASHBOARD_ACTIVITY_TYPES;
+    charts.type = new Chart(ctx, {
+      type: 'bar',
+      data: {
+        labels,
+        datasets: [
+          {
+            label: compare.region || '主口径',
+            data: labels.map((t) => regMap.get(t) || 0),
+            backgroundColor: DASHBOARD_COMPARE_COLOR_REGION,
+            borderRadius: 6,
+          },
+          {
+            label: compare.compareLabel || '对比',
+            data: labels.map((t) => natMap.get(t) || 0),
+            backgroundColor: DASHBOARD_COMPARE_COLOR_NATIONAL,
+            borderRadius: 6,
+          },
+        ],
+      },
+      options: {
+        datasets: { bar: { categoryPercentage: 0.72, barPercentage: 0.85 } },
+        plugins: {
+          legend: { display: true, labels: { color: sec, padding: 12, font: { size: 11 } } },
+          tooltip: {
+            callbacks: {
+              label: (c) => ` ${c.dataset.label}: ${c.raw} 场`,
+            },
+          },
+        },
+        scales: {
+          x: { grid: { display: false }, ticks: { color: sec, font: { size: 11 } } },
+          y: { beginAtZero: true, ticks: { color: sec } },
+        },
+      },
+    });
+    return;
+  }
+
   const total = data.reduce((s, d) => s + (parseInt(d.count, 10) || 0), 0);
   const labels = data.map((d) => {
     const c = parseInt(d.count, 10) || 0;
@@ -608,7 +891,7 @@ function drawTypeChart(data) {
     },
     options: {
       plugins: {
-        legend: { position: 'bottom', labels: { color: getComputedStyle(document.documentElement).getPropertyValue('--text-secondary').trim(), padding: 12, font: { size: 12 } } },
+        legend: { position: 'bottom', labels: { color: sec, padding: 12, font: { size: 12 } } },
         tooltip: {
           callbacks: { label: ctx => ` ${ctx.label}: ${ctx.raw} 场` }
         }
@@ -618,9 +901,63 @@ function drawTypeChart(data) {
   });
 }
 
-function drawBrandChart(data) {
+function buildBrandCompareRows(regional, national) {
+  const m = new Map();
+  (regional || []).forEach((r) => {
+    const b = r.brand || '未知';
+    m.set(b, { brand: b, reg: parseFloat(r.revenue) || 0, nat: 0 });
+  });
+  (national || []).forEach((r) => {
+    const b = r.brand || '未知';
+    const row = m.get(b) || { brand: b, reg: 0, nat: 0 };
+    row.nat = parseFloat(r.revenue) || 0;
+    m.set(b, row);
+  });
+  const arr = [...m.values()];
+  arr.sort((a, b) => Math.max(b.reg, b.nat) - Math.max(a.reg, a.nat));
+  return arr.slice(0, 15);
+}
+
+function drawBrandChart(data, compare) {
   const ctx = document.getElementById('chartBrand');
   if (!ctx) return;
+  const sec = getComputedStyle(document.documentElement).getPropertyValue('--text-secondary').trim();
+  const borderCol = getComputedStyle(document.documentElement).getPropertyValue('--border').trim();
+
+  if (compare && compare.nationalActivityByBrand) {
+    const rows = buildBrandCompareRows(data, compare.nationalActivityByBrand);
+    const labels = rows.map((r) => r.brand);
+    charts.brand = new Chart(ctx, {
+      type: 'bar',
+      data: {
+        labels,
+        datasets: [
+          {
+            label: compare.region || '主口径',
+            data: rows.map((r) => r.reg),
+            backgroundColor: DASHBOARD_COMPARE_COLOR_REGION,
+            borderRadius: 6,
+          },
+          {
+            label: compare.compareLabel || '对比',
+            data: rows.map((r) => r.nat),
+            backgroundColor: DASHBOARD_COMPARE_COLOR_NATIONAL,
+            borderRadius: 6,
+          },
+        ],
+      },
+      options: {
+        datasets: { bar: { categoryPercentage: 0.72, barPercentage: 0.85 } },
+        plugins: { legend: { display: true, labels: { color: sec, padding: 12, font: { size: 11 } } } },
+        scales: {
+          x: { ticks: { color: sec, font: { size: 11 } }, grid: { display: false } },
+          y: { ticks: { color: sec, font: { size: 11 }, callback: (v) => '¥' + (v / 10000).toFixed(0) + 'w' }, grid: { color: borderCol } },
+        },
+      },
+    });
+    return;
+  }
+
   const colors = { 'X.O': '#fbbf24', 'PHD': '#7c6af7', 'CLUB': '#60a5fa', 'REMY': '#34d399' };
   charts.brand = new Chart(ctx, {
     type: 'bar',
@@ -636,21 +973,141 @@ function drawBrandChart(data) {
     options: {
       plugins: { legend: { display: false } },
       scales: {
-        x: { ticks: { color: getComputedStyle(document.documentElement).getPropertyValue('--text-secondary').trim(), font: { size: 11 } }, grid: { display: false } },
-        y: { ticks: { color: getComputedStyle(document.documentElement).getPropertyValue('--text-secondary').trim(), font: { size: 11 }, callback: v => '¥' + (v/10000).toFixed(0) + 'w' }, grid: { color: getComputedStyle(document.documentElement).getPropertyValue('--border').trim() } }
+        x: { ticks: { color: sec, font: { size: 11 } }, grid: { display: false } },
+        y: { ticks: { color: sec, font: { size: 11 }, callback: v => '¥' + (v/10000).toFixed(0) + 'w' }, grid: { color: borderCol } }
       }
     }
   });
 }
 
-function drawRegionChart(data) {
+function drawRegionChart(data, compare, regionShare) {
   const ctx = document.getElementById('chartRegion');
   if (!ctx) return;
+  const sec = getComputedStyle(document.documentElement).getPropertyValue('--text-secondary').trim();
+
+  if (compare && regionShare) {
+    const natReg = compare.nationalActivityByRegion;
+    const isNational = compare.compareMode === 'national';
+    const primaryMark = String(dashboardState.region || '').trim();
+    const highlightName = primaryMark || String(compare.region || regionShare.region || '').trim();
+    const useMultiBar = isNational && Array.isArray(natReg) && natReg.length > 1;
+
+    if (useMultiBar) {
+      const natRows = [...natReg].sort((a, b) => (parseInt(b.count, 10) || 0) - (parseInt(a.count, 10) || 0));
+      const labels = natRows.map((r) => r.region || '未知');
+      const counts = natRows.map((r) => parseInt(r.count, 10) || 0);
+      const bg = natRows.map((r) => {
+        const name = String(r.region || '').trim();
+        return highlightName && name === highlightName ? DASHBOARD_COMPARE_COLOR_REGION : DASHBOARD_COMPARE_COLOR_NATIONAL;
+      });
+      charts.region = new Chart(ctx, {
+        type: 'bar',
+        data: {
+          labels,
+          datasets: [
+            {
+              label: '场次',
+              data: counts,
+              backgroundColor: bg,
+              borderRadius: 4,
+            },
+          ],
+        },
+        options: {
+          indexAxis: 'y',
+          plugins: {
+            legend: { display: false },
+            tooltip: {
+              callbacks: {
+                label: (ctx) => {
+                  const i = ctx.dataIndex;
+                  const row = natRows[i];
+                  const n = parseInt(row?.count, 10) || 0;
+                  const rev = Number(row?.revenue || 0);
+                  const isSel = highlightName && String(row?.region || '').trim() === highlightName;
+                  return ` ${n} 场 · 报价 ${fmtMoney(rev)}${isSel ? ' · 左侧主区域' : ''}`;
+                },
+                footer: () => '对比=全国时展示各区域；深紫=左侧所选区域 · 点击深紫条：城市下钻',
+              },
+            },
+          },
+          scales: {
+            x: { beginAtZero: true, ticks: { color: sec } },
+            y: { ticks: { color: sec, font: { size: 11 } }, grid: { display: false } },
+          },
+          onClick: (evt, elements) => {
+            if (!elements || !elements.length) return;
+            const idx = elements[0].index;
+            const row = natRows[idx];
+            const name = String(row?.region || '').trim();
+            if (highlightName && name === highlightName) {
+              dashboardDrillRegion = dashboardDrillRegion === name ? null : name;
+              renderDashboard();
+            }
+          },
+        },
+      });
+      return;
+    }
+
+    const pl = compare.region || regionShare.region || '主口径';
+    const cl = compare.compareLabel || '对比';
+    const rc = Number(compare.primaryTotalCount ?? regionShare.regionCount ?? 0);
+    const cc = Number(compare.compareTotalCount ?? regionShare.compareCount ?? 0);
+    charts.region = new Chart(ctx, {
+      type: 'bar',
+      data: {
+        labels: [pl, cl],
+        datasets: [
+          {
+            label: '场次',
+            data: [rc, cc],
+            backgroundColor: [DASHBOARD_COMPARE_COLOR_REGION, DASHBOARD_COMPARE_COLOR_NATIONAL],
+            borderRadius: 6,
+          },
+        ],
+      },
+      options: {
+        indexAxis: 'y',
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            callbacks: {
+              footer: () => '点击左侧（深紫）条形：城市下钻（需左侧已选单一区域）',
+            },
+          },
+        },
+        scales: {
+          x: { beginAtZero: true, ticks: { color: sec } },
+          y: { ticks: { color: sec, font: { size: 11 } }, grid: { display: false } },
+        },
+        onClick: (evt, elements) => {
+          if (!elements || !elements.length) return;
+          const idx = elements[0].index;
+          if (idx !== 0) return;
+          const r = dashboardState.region;
+          if (!r) return;
+          dashboardDrillRegion = dashboardDrillRegion === r ? null : r;
+          renderDashboard();
+        },
+      },
+    });
+    return;
+  }
+
   const total = data.reduce((s, d) => s + (parseInt(d.count, 10) || 0), 0);
   const labels = data.map((d) => {
     const c = parseInt(d.count, 10) || 0;
     const p = total > 0 ? ((c / total) * 100).toFixed(1) : '0.0';
     return `${d.region || '未知'} (${c} / ${p}%)`;
+  });
+  const bg = ['#7c6af7', '#60a5fa', '#34d399', '#fbbf24', '#f87171', '#a78bfa', '#22d3ee'];
+  const drill = dashboardDrillRegion;
+  const backgroundColor = data.map((d, i) => {
+    const r = d.region || '';
+    if (drill && r === drill) return bg[i % bg.length];
+    if (drill) return withAlphaHex(bg[i % bg.length], 0.35);
+    return bg[i % bg.length];
   });
   charts.region = new Chart(ctx, {
     type: 'doughnut',
@@ -658,15 +1115,39 @@ function drawRegionChart(data) {
       labels,
       datasets: [{
         data: data.map((d) => d.count),
-        backgroundColor: ['#7c6af7', '#60a5fa', '#34d399', '#fbbf24', '#f87171', '#a78bfa', '#22d3ee'],
+        backgroundColor,
         borderWidth: 0,
+        hoverOffset: 6,
       }],
     },
     options: {
-      plugins: { legend: { position: 'bottom' } },
+      plugins: {
+        legend: { position: 'bottom' },
+        tooltip: {
+          callbacks: {
+            footer: () => '点击扇区：城市下钻 / 再点同一扇区关闭',
+          },
+        },
+      },
       cutout: '60%',
+      onClick: (evt, elements) => {
+        if (!elements || !elements.length) return;
+        const i = elements[0].index;
+        const row = data[i];
+        if (!row) return;
+        const r = row.region || '';
+        dashboardDrillRegion = dashboardDrillRegion === r ? null : r;
+        renderDashboard();
+      },
     },
   });
+}
+
+function withAlphaHex(hex, alpha) {
+  const h = String(hex || '').replace('#', '');
+  if (h.length !== 6) return hex;
+  const a = Math.round(Math.max(0, Math.min(1, alpha)) * 255);
+  return `#${h}${a.toString(16).padStart(2, '0')}`;
 }
 
 /* =============================================
@@ -3139,11 +3620,13 @@ function renderBrandOptions() {
   const selects = [
     document.getElementById('actBrandField'),
     document.getElementById('actBrand'),
+    document.getElementById('dashFilterBrand'),
   ];
   selects.forEach(sel => {
     if (!sel) return;
     const currentVal = sel.value;
-    sel.innerHTML = '<option value="">全部品牌</option>' +
+    const emptyLabel = sel.id === 'dashFilterBrand' ? '品牌' : '全部品牌';
+    sel.innerHTML = `<option value="">${emptyLabel}</option>` +
       _brandCache.map(b => `<option value="${b.brand_code}">${b.brand_name}</option>`).join('');
     if (currentVal && _brandCache.find(b => b.brand_code === currentVal)) {
       sel.value = currentVal;
