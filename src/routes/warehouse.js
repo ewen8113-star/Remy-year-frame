@@ -4,6 +4,7 @@ const db = require('../config/database');
 
 const WAREHOUSE_REGIONS = ['东区', '北区', '南区'];
 const TRAD_TO_SIMP = { '東區': '东区', '北區': '北区', '南區': '南区' };
+const WAREHOUSE_BRANDS = ['PHD', 'X.O', 'CLUB', 'REMY'];
 
 const WAREHOUSE_ROW_SQL = `
   SELECT
@@ -11,12 +12,14 @@ const WAREHOUSE_ROW_SQL = `
     w.year_frame_id,
     w.month,
     w.\`region\` AS region,
+    w.brand,
     w.wine_name,
     w.specifications,
     w.quantity,
     w.unit_price,
     w.quoted_price,
     w.actual_cost,
+    w.no_actual_cost,
     w.remarks,
     w.created_at,
     w.updated_at,
@@ -49,6 +52,16 @@ function canonicalWarehouseRegionFromBody(body) {
   return WAREHOUSE_REGIONS.includes(s) ? s : null;
 }
 
+/** 品牌：PHD、X.O、CLUB、REMY */
+function canonicalWarehouseBrandFromBody(body) {
+  if (!body) return null;
+  const raw = body.brand != null ? body.brand : body.Brand;
+  if (raw == null) return null;
+  const s = String(raw).replace(/^\uFEFF/, '').trim().normalize('NFKC');
+  if (!s) return null;
+  return WAREHOUSE_BRANDS.includes(s) ? s : null;
+}
+
 async function fetchWarehouseRowById(id) {
   const [rows] = await db.query(WAREHOUSE_ROW_SQL, [id]);
   return rows.length ? serializeWarehouseRow(rows[0]) : null;
@@ -65,12 +78,14 @@ router.get('/', async (req, res) => {
         w.year_frame_id,
         w.month,
         w.\`region\` AS region,
+        w.brand,
         w.wine_name,
         w.specifications,
         w.quantity,
         w.unit_price,
         w.quoted_price,
         w.actual_cost,
+        w.no_actual_cost,
         w.remarks,
         w.created_at,
         w.updated_at,
@@ -147,7 +162,7 @@ router.get('/:id', async (req, res) => {
 // 创建仓储记录
 router.post('/', async (req, res) => {
   try {
-    const { month, wine_name, specifications, quantity, unit_price, quoted_price, actual_cost, remarks } = req.body;
+    const { month, wine_name, specifications, quantity, unit_price, quoted_price, actual_cost, no_actual_cost, remarks } = req.body;
     const yfid = parseInt(req.body.year_frame_id, 10);
     if (!Number.isFinite(yfid)) {
       return res.status(400).json({ error: '无效的年框（年份）选择' });
@@ -156,15 +171,24 @@ router.post('/', async (req, res) => {
     if (!regionNorm) {
       return res.status(400).json({ error: '区域无效或缺失：请选择 东区、北区 或 南区' });
     }
+    const brandNorm = canonicalWarehouseBrandFromBody(req.body);
+    if (!brandNorm) {
+      return res.status(400).json({ error: '品牌无效或缺失：请选择 PHD、X.O、CLUB 或 REMY' });
+    }
     const wn = wine_name != null ? wine_name : '';
     const sp = specifications != null ? specifications : '';
+    const monthVal =
+      month != null && String(month).trim() !== '' ? String(month).trim() : null;
+
+    const noActualCost = no_actual_cost === true || no_actual_cost === 1 || String(no_actual_cost) === '1' ? 1 : 0;
+    const actualCostVal = noActualCost ? 0 : (actual_cost || 0);
 
     const [result] = await db.query(
       `
-      INSERT INTO warehouse (year_frame_id, month, \`region\`, wine_name, specifications, quantity, unit_price, quoted_price, actual_cost, remarks)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO warehouse (year_frame_id, month, \`region\`, brand, wine_name, specifications, quantity, unit_price, quoted_price, actual_cost, no_actual_cost, remarks)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `,
-      [yfid, month, regionNorm, wn, sp, quantity, unit_price, quoted_price, actual_cost || 0, remarks]
+      [yfid, monthVal, regionNorm, brandNorm, wn, sp, quantity, unit_price, quoted_price, actualCostVal, noActualCost, remarks]
     );
 
     const saved = await fetchWarehouseRowById(result.insertId);
@@ -197,7 +221,7 @@ router.put('/:id', async (req, res) => {
     if (!Number.isFinite(nid)) {
       return res.status(400).json({ error: '无效的记录 ID' });
     }
-    const { month, wine_name, specifications, quantity, unit_price, quoted_price, actual_cost, remarks } = req.body;
+    const { month, wine_name, specifications, quantity, unit_price, quoted_price, actual_cost, no_actual_cost, remarks } = req.body;
     const yfid = parseInt(req.body.year_frame_id, 10);
     if (!Number.isFinite(yfid)) {
       return res.status(400).json({ error: '无效的年框（年份）选择' });
@@ -206,19 +230,28 @@ router.put('/:id', async (req, res) => {
     if (!regionNorm) {
       return res.status(400).json({ error: '区域无效或缺失：请选择 东区、北区 或 南区' });
     }
+    const brandNorm = canonicalWarehouseBrandFromBody(req.body);
+    if (!brandNorm) {
+      return res.status(400).json({ error: '品牌无效或缺失：请选择 PHD、X.O、CLUB 或 REMY' });
+    }
     const wn = wine_name != null ? wine_name : '';
     const sp = specifications != null ? specifications : '';
+    const monthVal =
+      month != null && String(month).trim() !== '' ? String(month).trim() : null;
+
+    const noActualCost = no_actual_cost === true || no_actual_cost === 1 || String(no_actual_cost) === '1' ? 1 : 0;
+    const actualCostVal = noActualCost ? 0 : actual_cost;
 
     await db.query(
       `
       UPDATE warehouse SET
         year_frame_id = ?,
-        month = ?, \`region\` = ?, wine_name = ?, specifications = ?,
+        month = ?, \`region\` = ?, brand = ?, wine_name = ?, specifications = ?,
         quantity = ?, unit_price = ?, quoted_price = ?,
-        actual_cost = ?, remarks = ?
+        actual_cost = ?, no_actual_cost = ?, remarks = ?
       WHERE id = ?
     `,
-      [yfid, month, regionNorm, wn, sp, quantity, unit_price, quoted_price, actual_cost, remarks, nid]
+      [yfid, monthVal, regionNorm, brandNorm, wn, sp, quantity, unit_price, quoted_price, actualCostVal, noActualCost, remarks, nid]
     );
 
     const saved = await fetchWarehouseRowById(nid);

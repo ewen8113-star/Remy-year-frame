@@ -29,8 +29,9 @@ CREATE TABLE IF NOT EXISTS activities (
     guest_count INT,
     quoted_price DECIMAL(12,2),
     total_cost DECIMAL(12,2) DEFAULT 0,
+    no_cost TINYINT(1) NOT NULL DEFAULT 0,
     executor VARCHAR(100),
-    status ENUM('pending','completed','cancelled') DEFAULT 'pending',
+    status VARCHAR(32) NOT NULL DEFAULT 'pending',
     remarks TEXT,
     wine_details JSON,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -44,12 +45,14 @@ CREATE TABLE IF NOT EXISTS warehouse (
     year_frame_id INT NOT NULL,
     month VARCHAR(20),
     region VARCHAR(32),
+    brand VARCHAR(20) NOT NULL DEFAULT 'PHD',
     wine_name VARCHAR(100),
     specifications VARCHAR(50),
     quantity INT,
     unit_price DECIMAL(10,2),
     quoted_price DECIMAL(12,2),
     actual_cost DECIMAL(12,2) DEFAULT 0,
+    no_actual_cost TINYINT(1) NOT NULL DEFAULT 0,
     remarks TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -101,6 +104,36 @@ CREATE TABLE IF NOT EXISTS backup_records (
     record_count INT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (year_frame_id) REFERENCES year_frames(id)
+);
+
+-- 7. 用户表（登录/权限）
+CREATE TABLE IF NOT EXISTS users (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    username VARCHAR(64) NOT NULL UNIQUE,
+    password_hash VARCHAR(255) NOT NULL,
+    role ENUM('admin','operator') NOT NULL DEFAULT 'operator',
+    is_active TINYINT(1) NOT NULL DEFAULT 1,
+    last_login_at DATETIME NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+);
+
+-- 8. 道具维修表
+CREATE TABLE IF NOT EXISTS prop_repairs (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    year_frame_id INT NOT NULL,
+    brand_id INT NOT NULL,
+    repair_date DATE NOT NULL,
+    region VARCHAR(32) NOT NULL,
+    items JSON NOT NULL,
+    quoted_price DECIMAL(10,2) NOT NULL DEFAULT 0,
+    total_amount DECIMAL(10,2) NOT NULL DEFAULT 0,
+    no_cost TINYINT(1) NOT NULL DEFAULT 0,
+    remarks TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    FOREIGN KEY (year_frame_id) REFERENCES year_frames(id),
+    FOREIGN KEY (brand_id) REFERENCES brand_inventory(id)
 );
 
 -- 插入初始年框数据

@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate">
+  <meta http-equiv="Pragma" content="no-cache">
+  <title>登录 - 人头马年框项目管理</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css?v=20260414auth-login">
+</head>
+<body>
+  <main style="width:100%;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px;">
+    <div class="card" style="width:min(420px,100%);padding:28px;">
+      <div class="card-title" style="font-size:24px;margin-bottom:6px;">欢迎登录</div>
+      <div class="card-sub" style="margin-bottom:18px;">人头马年框项目管理系统</div>
+      <form id="loginForm" onsubmit="submitLogin(event)">
+        <div class="form-group" style="margin-bottom:12px;">
+          <label class="form-label">用户名</label>
+          <input class="form-control" id="username" autocomplete="username" required>
+        </div>
+        <div class="form-group" style="margin-bottom:16px;">
+          <label class="form-label">密码</label>
+          <input class="form-control" id="password" type="password" autocomplete="current-password" required>
+        </div>
+        <div id="loginError" style="display:none;margin-bottom:12px;color:var(--danger);font-size:13px;"></div>
+        <button class="btn btn-primary" id="loginBtn" type="submit" style="width:100%;">登录</button>
+        <div style="margin-top:12px;text-align:center;font-size:13px;color:var(--text-secondary);">
+          还没有账号？
+          <a href="/register.html" style="color:var(--accent);text-decoration:none;">去注册</a>
+        </div>
+      </form>
+    </div>
+  </main>
+  <script src="login.js?v=20260414auth-login"></script>
+</body>
+</html>

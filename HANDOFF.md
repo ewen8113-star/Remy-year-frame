@@ -7,77 +7,91 @@
 
 ## 日期
 
-- **交接日**：2026-04-10（周五）
-- **下一工作日**：2026-04-13（周一）
+- **交接日**：2026-04-14（周二）
+- **下一工作日**：2026-04-15（周三）
 
 ---
 
 ## 当天完成
 
-- 修复活动弹窗叠层关闭问题：引入 modal 栈，关闭子弹窗不再把父弹窗一起关掉。
-- 活动表单主数据改为可维护：接入 `lookup_options` 与 `/api/lookups`，支持年框编号、活动类别、时段、区域、执行、状态的动态选项与前端编辑弹窗。
-- 活动表单新增“时段”字段（`日常/中秋/CNY新春`），活动记录列表新增“时段”列，并支持时段筛选与区域筛选。
-- 新增迁移脚本：`activities.period` 字段迁移、`lookup_options` 种子增强（包含 `东区-婚宴`）。
-- 数据清洗：按规则批量更新时段（中秋窗口/CNY窗口），并确认婚宴历史类型当前库内为 0 条。
-- 数据看板重构为透视联动：KPI 口径调整、财年 4->3 月趋势、区域/类别分布含数值占比、区域对全国场次占比。
-- 看板筛选交互改为“按钮 + 弹出小面板单选（默认全部）”；移除看板明细列表；看板图标统一替换为 Lucide。
-- 修复活动弹窗字段不可选问题：活动列表筛选 `id` 与弹窗字段冲突，已改为独立筛选 `actFilterPeriod/actFilterRegion`。
-- 全站图标第一、二步继续推进：导航、看板、主要按钮/Toast/空状态/品牌管理等替换为 Lucide，并补充动态渲染钩子。
-- 左下角版本升级为 `ver.2026.04.10`，同步 `public/version.json`；主题切换图标缩小为原一半并与版本号右对齐。
+- 完成“场次信息 Excel 导入（先预览后落库）”脚本化：
+  - `src/scripts/importActivitiesFromExcel.js`
+  - 支持 preview/apply、冲突清单、事务写入、备份与结果报告。
+- 修复成本导入差异：
+  - 补映射 `快递（闪送） -> express`、`物流 -> logistics`
+  - 修复重复 `project_code` 更新错位问题（按冲突行顺序匹配 DB 行更新）
+  - 25年度成本总额校验对齐：`424668.23`。
+- 活动模块 UI/字段升级：
+  - 场次列表列顺序调整为：日期、项目编号、时段、品牌、区域、归属、城市、客户、类型、执行、操作
+  - 新增“归属”字段（新建/编辑/列表显示）
+  - 新增“归属”筛选与“重置筛选”按钮。
+- lookup 主数据增强：
+  - 新增 `activity_belonging` 分类与种子值（RC-Off/RC-On/RC-Training/RM-CLUB婚宴/RM-X.O婚宴/区域）
+  - 活动表单“归属”接入 lookup 可维护编辑。
+- 暗色样式修复：
+  - 修复活动日期控件图标在暗色下不可见（WebKit/Firefox 兼容）。
+- 登录/权限体系落地（当前 main 已具备）：
+  - 后端：`express-session`、`/api/auth/*`、`/api/users/*`、鉴权中间件、admin 写权限控制。
+  - 前端：`login/register` 页面、主界面登录态校验、退出登录、系统侧边栏“用户管理”入口。
+  - 安全约束：最后一个 admin 不可降级/停用，当前管理员不可自锁。
 
 ---
 
 ## 当天未完成 / 进行中
 
-- P1：数据看板“区域 -> 城市下钻”交互与联动明细（已完成后端 `cityBreakdown` 数据输出，前端下钻 UI 未做）。
-- P2：数据看板导出能力（Excel/xlsx）暂缓，待数据库结构与口径最终稳定后实现。
+- “修改密码（本人）/管理员重置密码”尚未实现。
+- 生产服务器部署（Nginx + HTTPS + PM2）仅给出步骤，未实际执行上线。
 
 ---
 
 ## 重要结论与备忘
 
-- 活动类别口径固定为：`晚宴 / 品鉴 / 培训 / 纯设计`；看板统计排除其它类型。
-- 时段口径统一为：`日常 / 中秋 / CNY新春`。
-- 费用承担方本期不单独建字段，先由区域维度承载（例如 `东区-婚宴`）。
-- 看板筛选默认“全部”；用户希望更直观交互，已从循环切换改为弹出单选面板。
-- 若新增后端路由后前端仍 404，优先排查旧 node 进程占端口，需杀掉旧进程后重启服务。
-- 主题图标大小与布局已调整：`9x9`，底部栏 `space-between` 对齐版本号。
+- 登录失败优先排查端口占用：`EADDRINUSE` 时新代码不会生效，需先杀旧进程再 `npm run start`。
+- 当前环境已有管理员：
+  - `admin`（默认）
+  - `Synrox`（来自 `.env` 初始化）
+- 公开注册默认 `operator`，提权通过“系统 > 用户管理”完成。
+- `.env` 需配置：`SESSION_SECRET`、`ADMIN_USERNAME`、`ADMIN_PASSWORD`。
 
 ---
 
 ## 阻塞与依赖
 
-- 无（本地服务正常，MySQL 已连接）。
+- 无阻塞（本地 MySQL 正常，登录链路可跑通）。
 
 ---
 
 ## 涉及文件与提交
 
-- 文件/目录：
+- 文件/目录（本次关键）：
+  - `src/server.js`
+  - `src/routes/auth.js`
+  - `src/routes/user.js`
+  - `src/middleware/auth.js`
+  - `src/scripts/addUsersAuthTable.js`
+  - `public/login.html`
+  - `public/login.js`
+  - `public/register.html`
+  - `public/register.js`
   - `public/app.js`
   - `public/index.html`
-  - `public/style.css`
-  - `src/routes/dashboard.js`
   - `src/routes/activity.js`
-  - `src/routes/lookup.js`
+  - `src/scripts/importActivitiesFromExcel.js`
   - `src/scripts/addLookupOptionsTable.js`
-  - `src/scripts/addActivityPeriodColumn.js`
-  - `src/server.js`
   - `package.json`
-  - `src/routes/calendar.js`
-  - `src/routes/cost.js`
+  - `package-lock.json`
+  - `.env.example`
   - `README.md`
   - `HANDOFF.md`
-  - `public/version.json`
 - Git：`待本次提交`
 
 ---
 
 ## 第二天计划
 
-1. 完成看板“区域 -> 城市下钻”前端交互（点击区域图后展示城市排行/明细）。
-2. 增加看板图表可切换指标（场次/金额），并补充区域 vs 全国的同比展示样式。
-3. 评估并设计导出能力（CSV 过渡或直接 xlsx），明确字段与筛选对齐策略。
+1. 增加“修改密码（本人）”与“管理员重置密码”。
+2. 登录态与权限做一轮端到端回归（admin/operator 注册/提权/降级/停用边界）。
+3. 准备服务器部署（Ubuntu + Nginx + PM2 + HTTPS）并执行首发。
 
 ---
 
@@ -85,7 +99,7 @@
 
 <!-- 例如：「正在做仓储模块 region 字段与前端联动」 -->
 
-> 看板已完成筛选与核心图表重构，下一步优先做区域城市下钻和导出能力。
+> 登录/注册/用户管理与 Excel 导入修复已完成，下一步优先做密码管理与生产部署。
 
 ---
 

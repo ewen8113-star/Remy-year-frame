@@ -23,14 +23,24 @@ const API = resolveApiBase();
 let currentYear = localStorage.getItem('remy_activeYear') || '25';
 let currentYearFrameId = null;
 let currentPage = localStorage.getItem('remy_currentPage') || 'dashboard';
-let activitiesState = { page: 1, search: '', type: '', period: '', region: '', brand: '', year: '', month: '', sortOrder: 'DESC', data: [], total: 0 };
+let currentUser = null;
+let currentUserRole = 'operator';
+let activitiesState = { page: 1, search: '', type: '', period: '', region: '', belonging: '', brand: '', year: '', month: '', sortOrder: 'DESC', data: [], total: 0 };
+/** activity_belonging：存储值 → 显示名（与场次页筛选项同源） */
+let actBelongingLabelByValue = {};
+let materialPageState = { filterBrandId: '' };
+let propRepairPageState = { filterBrandId: '' };
 let logisticsState = { data: [], selectedIds: new Set() };
 let warehouseState = { data: [], selectedIds: new Set() };
 let charts = {};
-let costNoCostYMFilter = localStorage.getItem('remy_costNoCostYMFilter') || 'all';
-let pendingDeleteActivityId = null;
-let pendingDeleteActivityAt = 0;
-const DELETE_CONFIRM_MS = 8000;
+let costPendingYMFilter = localStorage.getItem('remy_costPendingYMFilter') || localStorage.getItem('remy_costNoCostYMFilter') || 'all';
+let costWithCostYMFilter = localStorage.getItem('remy_costWithCostYMFilter') || 'all';
+let costMarkedNoCostYMFilter = localStorage.getItem('remy_costMarkedNoCostYMFilter') || 'all';
+let costSectionCollapsed = {
+  pending: localStorage.getItem('remy_costSectionCollapsed_pending') === '1',
+  withCost: localStorage.getItem('remy_costSectionCollapsed_withCost') === '1',
+  noCost: localStorage.getItem('remy_costSectionCollapsed_noCost') === '1',
+};
 
 // ===== 初始化 =====
 document.addEventListener('DOMContentLoaded', async () => {
@@ -38,6 +48,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     showToast('请通过 node 启动项目后在浏览器访问 http://localhost:端口/（不要直接打开 html 文件）', 'warning');
   }
   applyTheme(localStorage.getItem('remy_theme') || 'dark');
+  await ensureLoggedIn();
+  renderAuthUser();
   loadAppVersion();
   await loadYearFrames();
   await initBrands();
@@ -51,6 +63,7 @@ async function api(method, path, body = null) {
   const opts = {
     method,
     headers: { 'Content-Type': 'application/json' },
+    credentials: 'include',
   };
   if (body) opts.body = JSON.stringify(body);
   try {
@@ -65,6 +78,12 @@ async function api(method, path, body = null) {
       );
     }
     if (!res.ok) {
+      const auth401NoRedirect = new Set(['/auth/me', '/auth/login', '/auth/register', '/auth/logout']);
+      if (res.status === 401 && !auth401NoRedirect.has(String(path))) {
+        if (typeof window !== 'undefined' && !window.location.pathname.endsWith('/login.html')) {
+          window.location.href = '/login.html';
+        }
+      }
       throw new Error(data.error || data.message || `请求失败 (${res.status})，URL：${url}`);
     }
     return data;
@@ -76,6 +95,143 @@ async function api(method, path, body = null) {
       );
     }
     throw err;
+  }
+}
+
+async function ensureLoggedIn() {
+  try {
+    const ret = await api('GET', '/auth/me');
+    currentUser = ret.user || null;
+    currentUserRole = currentUser?.role || 'operator';
+  } catch (_) {
+    if (typeof window !== 'undefined') window.location.href = '/login.html';
+  }
+}
+
+function hasWriteAccess() {
+  return currentUserRole === 'admin';
+}
+
+function canManageUsers() {
+  return currentUserRole === 'admin';
+}
+
+function renderAuthUser() {
+  const el = document.getElementById('authUserBadge');
+  if (!el) return;
+  const name = currentUser?.username || '未登录';
+  const role = currentUser?.role || '-';
+  el.textContent = `${name} (${role})`;
+}
+
+function applyRoleUiGuards() {
+  if (!hasWriteAccess()) {
+    const selectors = [
+      '[onclick*="showActivityModal("]',
+      '[onclick*="showLogisticsModal("]',
+      '[onclick*="showWarehouseModal("]',
+      '[onclick*="showWineStockInModal("]',
+      '[onclick*="showWineUsageModal("]',
+      '[onclick*="showBrandModal("]',
+      '[onclick*="showLookupEditModal("]',
+      '[onclick*="showMaterialPurchaseModal"]',
+      '[onclick*="showPropRepairModal"]',
+      '[onclick*="materialAppendCustomRow"]',
+      '[onclick*="propRepairAppendCustomRow"]',
+      '[onclick*="delete"]',
+      'button.activity-row-remove-btn',
+      '[onclick*="save"]',
+      '[onclick*="confirmAddLookupOption"]',
+      '[onclick*="toggleBrandActive"]',
+    ];
+    document.querySelectorAll(selectors.join(',')).forEach((el) => {
+      el.style.display = 'none';
+    });
+  }
+  if (!canManageUsers()) {
+    const navUsers = document.getElementById('navUsers');
+    if (navUsers) navUsers.style.display = 'none';
+  }
+}
+
+async function logout() {
+  try {
+    await api('POST', '/auth/logout');
+  } catch (_) {
+    // ignore
+  }
+  if (typeof window !== 'undefined') window.location.href = '/login.html';
+}
+
+function openChangePasswordModal() {
+  const cur = document.getElementById('cpCurrent');
+  const nw = document.getElementById('cpNew');
+  const cf = document.getElementById('cpConfirm');
+  if (cur) cur.value = '';
+  if (nw) nw.value = '';
+  if (cf) cf.value = '';
+  openModal('modalChangePassword');
+}
+
+async function submitChangePassword() {
+  const current_password = document.getElementById('cpCurrent')?.value || '';
+  const new_password = document.getElementById('cpNew')?.value || '';
+  const confirm = document.getElementById('cpConfirm')?.value || '';
+  if (!current_password || !new_password) {
+    showToast('请填写当前密码与新密码', 'warning');
+    return;
+  }
+  if (new_password.length < 8) {
+    showToast('新密码至少 8 位', 'warning');
+    return;
+  }
+  if (new_password !== confirm) {
+    showToast('两次输入的新密码不一致', 'warning');
+    return;
+  }
+  try {
+    await api('POST', '/auth/change-password', { current_password, new_password });
+    showToast('密码已更新', 'success');
+    closeModal();
+  } catch (err) {
+    showToast(err.message || '修改失败', 'error');
+  }
+}
+
+function openAdminResetPasswordModal(userId, username) {
+  document.getElementById('arpUserId').value = String(userId);
+  const el = document.getElementById('arpUsername');
+  if (el) el.textContent = username || '';
+  const nw = document.getElementById('arpNew');
+  const cf = document.getElementById('arpConfirm');
+  if (nw) nw.value = '';
+  if (cf) cf.value = '';
+  openModal('modalAdminResetPassword');
+}
+
+async function submitAdminResetPassword() {
+  const id = parseInt(document.getElementById('arpUserId')?.value || '0', 10);
+  const new_password = document.getElementById('arpNew')?.value || '';
+  const confirm = document.getElementById('arpConfirm')?.value || '';
+  if (!id) {
+    showToast('无效用户', 'warning');
+    return;
+  }
+  if (new_password.length < 8) {
+    showToast('新密码至少 8 位', 'warning');
+    return;
+  }
+  if (new_password !== confirm) {
+    showToast('两次输入的新密码不一致', 'warning');
+    return;
+  }
+  try {
+    await api('PUT', `/users/${id}/password`, { new_password });
+    showToast('已重置该用户密码', 'success');
+    closeModal();
+    if (currentPage === 'users') await renderUsers();
+  } catch (err) {
+    showToast(err.message || '重置失败', 'error');
   }
 }
 
@@ -114,6 +270,10 @@ function switchYear(year) {
 
 // ===== 导航 =====
 function navigate(page) {
+  if (page === 'users' && !canManageUsers()) {
+    showToast('仅管理员可访问用户管理', 'warning');
+    return;
+  }
   currentPage = page;
   localStorage.setItem('remy_currentPage', page);
 
@@ -123,12 +283,15 @@ function navigate(page) {
 
   const titles = {
     dashboard: '数据看板',
-    activities: '活动记录',
+    activities: '场次记录',
     calendar: '排期日历',
-    cost: '成本管理',
-    logistics: '物流记录',
-    warehouse: '仓储记录',
-    wine: '客户用酒',
+    cost: '活动成本',
+    logistics: '物流成本',
+    warehouse: '仓储成本',
+    wine: '酒品管理',
+    material: '物料采购',
+    'prop-repair': '道具维修',
+    users: '用户管理',
     backup: '数据备份',
   };
   document.getElementById('pageTitle').textContent = titles[page] || page;
@@ -148,11 +311,15 @@ function navigate(page) {
     logistics: renderLogistics,
     warehouse: renderWarehouse,
     wine: renderWine,
+    material: renderMaterialPurchases,
+    'prop-repair': renderPropRepairs,
+    users: renderUsers,
     backup: renderBackup,
   };
   if (renders[page]) {
     Promise.resolve(renders[page]()).finally(() => {
       renderLucideIcons();
+      applyRoleUiGuards();
     });
   }
 }
@@ -281,9 +448,13 @@ function parseWineDetails(raw) {
   return {};
 }
 
+function roundMoney2(v) {
+  return Math.round((parseFloat(v) || 0) * 100) / 100;
+}
+
 function fmtMoney(v) {
-  const n = parseFloat(v) || 0;
-  return '¥' + n.toLocaleString('zh-CN', { minimumFractionDigits: 0, maximumFractionDigits: 0 });
+  const n = roundMoney2(v);
+  return '¥' + n.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
 function escapeHtml(s) {
@@ -312,11 +483,35 @@ function fmtDateShort(d) {
   return `${local.getUTCMonth()+1}/${local.getUTCDate()}`;
 }
 
+/**
+ * 填入 <input type="date">：与列表 fmtDate（+8）一致的业务日历日。
+ * 仅当整段为 YYYY-MM-DD 时直接采用；若含 T/时区（如 …15T16:00:00.000Z 表示东八区 16 日 0 点），
+ * 不能截取前缀，须用本地年月日，否则会少一天（如 260316 场次被存成 3/15）。
+ */
+function toDateInputValue(raw) {
+  if (raw == null || raw === '') return '';
+  const s = String(raw).trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+  const dt = new Date(s);
+  if (Number.isNaN(dt.getTime())) return '';
+  const y = dt.getFullYear();
+  const mo = String(dt.getMonth() + 1).padStart(2, '0');
+  const day = String(dt.getDate()).padStart(2, '0');
+  return `${y}-${mo}-${day}`;
+}
+
 function statusBadge(s) {
-  const today = new Date();
   if (s === 'cancelled') return '<span class="badge badge-danger">已取消</span>';
-  // 根据逻辑展示
-  return '<span class="badge badge-success">已完成</span>';
+  if (s === 'deferred') {
+    return '<span class="badge badge-warning">延期</span>';
+  }
+  if (s === 'pending' || s == null || s === '') {
+    return '<span class="badge badge-gray">待执行</span>';
+  }
+  if (s === 'completed' || s === 'done') {
+    return '<span class="badge badge-success">已完成</span>';
+  }
+  return '<span class="badge badge-gray">待执行</span>';
 }
 
 function brandColor(brand) {
@@ -333,14 +528,20 @@ function typeColor(type) {
 async function updateBadges() {
   try {
     const qs = currentYearFrameId ? `?yearFrameId=${currentYearFrameId}` : '';
-    const [acts, logs, wars] = await Promise.all([
+    const [acts, logs, wars, materials, propRepairs] = await Promise.all([
       api('GET', `/activities${qs}`),
       api('GET', `/logistics${qs}`),
       api('GET', `/warehouse${qs}`),
+      api('GET', `/material-purchases${qs}`),
+      api('GET', `/prop-repairs${qs}`),
     ]);
     document.getElementById('badge-activities').textContent = acts.length || 0;
     document.getElementById('badge-logistics').textContent = logs.length || 0;
     document.getElementById('badge-warehouse').textContent = wars.length || 0;
+    const materialBadge = document.getElementById('badge-material');
+    if (materialBadge) materialBadge.textContent = materials.length || 0;
+    const propRepairBadge = document.getElementById('badge-prop-repair');
+    if (propRepairBadge) propRepairBadge.textContent = propRepairs.length || 0;
   } catch (e) {}
 }
 
@@ -360,6 +561,9 @@ let dashboardState = {
 };
 /** 区域环形图下钻：选中的区域名，与数据详情筛选独立 */
 let dashboardDrillRegion = null;
+let dashboardChartMetric = localStorage.getItem('remy_dashboardChartMetric') === 'revenue' ? 'revenue' : 'count';
+let dashboardLastPayload = null;
+let dashboardLastQuery = '';
 
 /** 与后端 ALLOWED_TYPES 一致，用于区域对比时类别柱图类目顺序 */
 const DASHBOARD_ACTIVITY_TYPES = ['晚宴', '品鉴', '培训', '纯设计'];
@@ -385,6 +589,34 @@ function dashboardYearSelectOptionsHtml() {
 /** 左侧主口径序列（深色）与右侧对比口径序列（浅色） */
 const DASHBOARD_COMPARE_COLOR_REGION = '#5b21b6';
 const DASHBOARD_COMPARE_COLOR_NATIONAL = '#94a3b8';
+
+function dashboardMetricText() {
+  return dashboardChartMetric === 'revenue' ? '金额' : '场次';
+}
+
+function dashboardMetricValue(row) {
+  if (!row) return 0;
+  return dashboardChartMetric === 'revenue'
+    ? parseFloat(row.revenue) || 0
+    : parseInt(row.count, 10) || 0;
+}
+
+function dashboardMetricTick(v) {
+  if (dashboardChartMetric === 'revenue') return '¥' + (Number(v) / 10000).toFixed(0) + 'w';
+  return String(v);
+}
+
+function dashboardMetricTooltipValue(v) {
+  if (dashboardChartMetric === 'revenue') return fmtMoney(v || 0);
+  return `${parseInt(v, 10) || 0} 场`;
+}
+
+function setDashboardChartMetric(metric) {
+  const m = metric === 'revenue' ? 'revenue' : 'count';
+  dashboardChartMetric = m;
+  localStorage.setItem('remy_dashboardChartMetric', m);
+  renderDashboard();
+}
 
 /**
  * 单选区域时用于双系列图表；优先顶层 regionNationalCompare，
@@ -601,6 +833,68 @@ function dashboardQueryString() {
   return q ? `?${q}` : '';
 }
 
+function toCsvCell(v) {
+  const s = v == null ? '' : String(v);
+  if (/[",\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+  return s;
+}
+
+function downloadTextFile(filename, content, mime = 'text/plain;charset=utf-8') {
+  const blob = new Blob([content], { type: mime });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+function exportDashboardJson() {
+  if (!dashboardLastPayload) {
+    showToast('暂无可导出的看板数据', 'warning');
+    return;
+  }
+  const now = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+  const payload = {
+    exportedAt: new Date().toISOString(),
+    query: dashboardLastQuery,
+    state: { ...dashboardState },
+    data: dashboardLastPayload,
+  };
+  downloadTextFile(`dashboard-export-${now}.json`, JSON.stringify(payload, null, 2), 'application/json;charset=utf-8');
+  showToast('看板 JSON 已导出', 'success');
+}
+
+function exportDashboardCityDrillCsv() {
+  if (!dashboardLastPayload || !Array.isArray(dashboardLastPayload.cityBreakdown)) {
+    showToast('暂无可导出的城市明细', 'warning');
+    return;
+  }
+  const selectedRegion = dashboardDrillRegion || dashboardState.region || '';
+  const rows = dashboardLastPayload.cityBreakdown
+    .filter((r) => !selectedRegion || String(r.region || '') === String(selectedRegion))
+    .map((r) => ({
+      region: r.region || '',
+      city: r.city || '',
+      count: parseInt(r.count, 10) || 0,
+      revenue: parseFloat(r.revenue) || 0,
+    }))
+    .sort((a, b) => b.count - a.count || b.revenue - a.revenue);
+  if (!rows.length) {
+    showToast('当前口径下没有城市明细可导出', 'warning');
+    return;
+  }
+  const head = ['区域', '城市', '场次', '报价'];
+  const lines = [head.map(toCsvCell).join(',')];
+  rows.forEach((r) => {
+    lines.push([r.region, r.city, r.count, roundMoney2(r.revenue).toFixed(2)].map(toCsvCell).join(','));
+  });
+  const now = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+  const regionTag = selectedRegion ? selectedRegion : 'all-regions';
+  downloadTextFile(`dashboard-city-drill-${regionTag}-${now}.csv`, lines.join('\n'), 'text/csv;charset=utf-8');
+  showToast('城市下钻 CSV 已导出', 'success');
+}
+
 async function renderDashboard() {
   const container = document.getElementById('pageContainer');
   try {
@@ -609,6 +903,8 @@ async function renderDashboard() {
 
     const query = dashboardQueryString();
     const dash = await api('GET', `/dashboard${query}${query ? '&' : '?'}_ts=${Date.now()}`);
+    dashboardLastPayload = dash;
+    dashboardLastQuery = query;
 
     const {
       summary,
@@ -663,13 +959,13 @@ async function renderDashboard() {
           <div class="stat-icon"><i data-lucide="flag" style="width:16px;height:16px"></i></div>
           <div class="stat-label">活动总场次</div>
           <div class="stat-value">${summary.activityCount || 0}</div>
-          <div class="stat-sub">当前筛选条件下活动记录数</div>
+          <div class="stat-sub">当前筛选条件下场次记录数</div>
         </div>
         <div class="stat-card success">
           <div class="stat-icon"><i data-lucide="wallet" style="width:16px;height:16px"></i></div>
-          <div class="stat-label">总报价（活动报价）</div>
-          <div class="stat-value">${fmtMoney(summary.activityRevenue || 0)}</div>
-          <div class="stat-sub">活动执行报价合计</div>
+          <div class="stat-label">总报价</div>
+          <div class="stat-value">${fmtMoney(summary.totalRevenue || 0)}</div>
+          <div class="stat-sub">活动报价 + 仓储报价 + 道具维修报价</div>
         </div>
         <div class="stat-card warning">
           <div class="stat-icon"><i data-lucide="warehouse" style="width:16px;height:16px"></i></div>
@@ -679,15 +975,25 @@ async function renderDashboard() {
         </div>
         <div class="stat-card blue">
           <div class="stat-icon"><i data-lucide="bar-chart-3" style="width:16px;height:16px"></i></div>
-          <div class="stat-label">汇总报价</div>
-          <div class="stat-value sm">${fmtMoney(summary.totalRevenue || 0)}</div>
-          <div class="stat-sub">活动报价 + 仓储报价</div>
+          <div class="stat-label">活动报价</div>
+          <div class="stat-value sm">${fmtMoney(summary.activityRevenue || 0)}</div>
+          <div class="stat-sub">活动报价汇总</div>
+        </div>
+        <div class="stat-card danger">
+          <div class="stat-icon"><i data-lucide="wrench" style="width:16px;height:16px"></i></div>
+          <div class="stat-label">道具维修报价</div>
+          <div class="stat-value sm">${fmtMoney(summary.propRepairQuoted || 0)}</div>
+          <div class="stat-sub">维修成本 ${fmtMoney(summary.propRepairCost || 0)} · 当前年框统计</div>
         </div>
       </div>
       <div class="card" style="margin:16px 0">
         <div class="card-header">
           <div><div class="card-title">数据详情</div></div>
-          <button class="btn btn-secondary btn-sm" onclick="resetDashboardFilters()">重置筛选</button>
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <button class="btn btn-secondary btn-sm" onclick="exportDashboardJson()">导出看板JSON</button>
+            <button class="btn btn-secondary btn-sm" onclick="exportDashboardCityDrillCsv()">导出城市明细CSV</button>
+            <button class="btn btn-secondary btn-sm" onclick="resetDashboardFilters()">重置筛选</button>
+          </div>
         </div>
         <div class="dashboard-detail-split" style="display:grid;grid-template-columns:1fr 1fr;gap:16px;align-items:start;margin-top:12px">
           <div>
@@ -714,25 +1020,32 @@ async function renderDashboard() {
           </div>
         </div>
       </div>
-      ${chartCompare && effectiveRegionShare ? `<div class="card" style="margin-bottom:16px"><div class="card-title"><i data-lucide="columns-2" style="width:14px;height:14px;vertical-align:-2px;margin-right:6px"></i>场次对比</div><div class="card-sub"><strong>${escapeHtml(effectiveRegionShare.region)}</strong> vs <strong>${escapeHtml(effectiveRegionShare.compareLabel || effectiveRegionShare.compareTarget || '')}</strong>：${effectiveRegionShare.regionCount} / ${effectiveRegionShare.compareCount} = ${(effectiveRegionShare.ratio * 100).toFixed(1)}%</div></div>` : ''}
+      ${chartCompare && effectiveRegionShare ? `<div class="card" style="margin-bottom:16px"><div class="card-title"><i data-lucide="columns-2" style="width:14px;height:14px;vertical-align:-2px;margin-right:6px"></i>${dashboardMetricText()}对比</div><div class="card-sub"><strong>${escapeHtml(effectiveRegionShare.region)}</strong> vs <strong>${escapeHtml(effectiveRegionShare.compareLabel || effectiveRegionShare.compareTarget || '')}</strong>：${effectiveRegionShare.regionCount} / ${effectiveRegionShare.compareCount} = ${(effectiveRegionShare.ratio * 100).toFixed(1)}%</div></div>` : ''}
 
       <!-- 图表区 -->
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin:0 0 10px 0">
+        <div class="card-sub" style="margin:0">当前图表指标：<strong>${dashboardMetricText()}</strong></div>
+        <div style="display:flex;gap:8px">
+        <button type="button" class="btn btn-secondary btn-sm" style="${dashboardChartMetric === 'count' ? 'background:var(--accent);color:white' : ''}" onclick="setDashboardChartMetric('count')">场次</button>
+        <button type="button" class="btn btn-secondary btn-sm" style="${dashboardChartMetric === 'revenue' ? 'background:var(--accent);color:white' : ''}" onclick="setDashboardChartMetric('revenue')">金额</button>
+        </div>
+      </div>
       <div class="chart-grid" style="margin-bottom:24px">
         <div class="chart-card">
           <div class="card-header">
-            <div><div class="card-title">月度场次趋势（财年）</div><div class="card-sub">${chartCompare ? '4月 → 次年3月 · 深紫=左侧主口径 · 浅灰=右侧对比' : '4月 → 次年3月'}</div></div>
+            <div><div class="card-title">月度${dashboardMetricText()}趋势（财年）</div><div class="card-sub">${chartCompare ? `4月 → 次年3月 · 深紫=左侧主口径 · 浅灰=右侧对比（${dashboardMetricText()}）` : `4月 → 次年3月 · 指标：${dashboardMetricText()}`}</div></div>
           </div>
           <canvas id="chartMonthTrend"></canvas>
         </div>
         <div class="chart-card">
           <div class="card-header">
-            <div><div class="card-title">品牌报价分布</div><div class="card-sub">${chartCompare ? '按报价金额 · 深紫=左侧主口径 · 浅灰=右侧对比' : '按报价金额'}</div></div>
+            <div><div class="card-title">品牌${dashboardMetricText()}分布</div><div class="card-sub">${chartCompare ? `深紫=左侧主口径 · 浅灰=右侧对比（${dashboardMetricText()}）` : `按${dashboardMetricText()}汇总`}</div></div>
           </div>
           <canvas id="chartBrand"></canvas>
         </div>
         <div class="chart-card">
           <div class="card-header">
-            <div><div class="card-title">区域结构分布</div><div class="card-sub">${chartCompare?.compareMode === 'national' && chartCompare?.nationalActivityByRegion?.length > 1 ? '深紫=左侧主区域，浅灰=其它区域（对比=全国时）· 点击深紫条可城市下钻' : chartCompare ? '深紫=左侧主口径场次 · 浅灰=右侧对比场次 · 点击深紫条可城市下钻' : '按场次数量 · 点击扇区下钻城市'}</div></div>
+            <div><div class="card-title">区域结构分布</div><div class="card-sub">${chartCompare?.compareMode === 'national' && chartCompare?.nationalActivityByRegion?.length > 1 ? `深紫=左侧主区域，浅灰=其它区域（对比=全国）· 指标=${dashboardMetricText()} · 点击深紫条可城市下钻` : chartCompare ? `深紫=左侧主口径 · 浅灰=右侧对比 · 指标=${dashboardMetricText()} · 点击深紫条可城市下钻` : `按${dashboardMetricText()}数量 · 点击扇区下钻城市`}</div></div>
           </div>
           <canvas id="chartRegion"></canvas>
           ${chartCompare ? `<div style="margin-top:8px"><button type="button" class="btn btn-secondary btn-sm" onclick="toggleDashboardDrillForFilteredRegion()">${dashboardDrillRegion ? '收起' : '展开'}左侧区域城市排行</button></div>` : ''}
@@ -740,7 +1053,7 @@ async function renderDashboard() {
         </div>
         <div class="chart-card">
           <div class="card-header">
-            <div><div class="card-title">活动类别分布</div><div class="card-sub">${chartCompare ? '场次对比 · 深紫=左侧主口径 · 浅灰=右侧对比' : '仅统计：晚宴/品鉴/培训/纯设计'}</div></div>
+            <div><div class="card-title">活动类别分布</div><div class="card-sub">${chartCompare ? `${dashboardMetricText()}对比 · 深紫=左侧主口径 · 浅灰=右侧对比` : `仅统计：晚宴/品鉴/培训/纯设计 · 指标=${dashboardMetricText()}`}</div></div>
           </div>
           <canvas id="chartType"></canvas>
         </div>
@@ -779,13 +1092,13 @@ function drawMonthTrendChart(data, compare) {
         datasets: [
           {
             label: compare.region || '主口径',
-            data: data.map((d) => d.count),
+            data: data.map((d) => dashboardMetricValue(d)),
             backgroundColor: DASHBOARD_COMPARE_COLOR_REGION,
             borderRadius: 6,
           },
           {
             label: compare.compareLabel || '对比',
-            data: nat.map((d) => d.count),
+            data: nat.map((d) => dashboardMetricValue(d)),
             backgroundColor: DASHBOARD_COMPARE_COLOR_NATIONAL,
             borderRadius: 6,
           },
@@ -798,7 +1111,7 @@ function drawMonthTrendChart(data, compare) {
         },
         scales: {
           x: { grid: { display: false }, ticks: { color: sec } },
-          y: { beginAtZero: true, ticks: { color: sec } },
+          y: { beginAtZero: true, ticks: { color: sec, callback: (v) => dashboardMetricTick(v) } },
         },
       },
     });
@@ -809,8 +1122,8 @@ function drawMonthTrendChart(data, compare) {
     data: {
       labels,
       datasets: [{
-        label: '场次',
-        data: data.map((d) => d.count),
+        label: dashboardMetricText(),
+        data: data.map((d) => dashboardMetricValue(d)),
         backgroundColor: '#7c6af7',
         borderRadius: 6,
       }],
@@ -819,7 +1132,7 @@ function drawMonthTrendChart(data, compare) {
       plugins: { legend: { display: false } },
       scales: {
         x: { grid: { display: false } },
-        y: { beginAtZero: true },
+        y: { beginAtZero: true, ticks: { callback: (v) => dashboardMetricTick(v) } },
       },
     },
   });
@@ -831,8 +1144,8 @@ function drawTypeChart(data, compare) {
   const sec = getComputedStyle(document.documentElement).getPropertyValue('--text-secondary').trim();
 
   if (compare && compare.nationalActivityByType) {
-    const regMap = new Map((data || []).map((r) => [r.activity_type, parseInt(r.count, 10) || 0]));
-    const natMap = new Map((compare.nationalActivityByType || []).map((r) => [r.activity_type, parseInt(r.count, 10) || 0]));
+    const regMap = new Map((data || []).map((r) => [r.activity_type, dashboardMetricValue(r)]));
+    const natMap = new Map((compare.nationalActivityByType || []).map((r) => [r.activity_type, dashboardMetricValue(r)]));
     const labels = DASHBOARD_ACTIVITY_TYPES;
     charts.type = new Chart(ctx, {
       type: 'bar',
@@ -859,31 +1172,31 @@ function drawTypeChart(data, compare) {
           legend: { display: true, labels: { color: sec, padding: 12, font: { size: 11 } } },
           tooltip: {
             callbacks: {
-              label: (c) => ` ${c.dataset.label}: ${c.raw} 场`,
+              label: (c) => ` ${c.dataset.label}: ${dashboardMetricTooltipValue(c.raw)}`,
             },
           },
         },
         scales: {
           x: { grid: { display: false }, ticks: { color: sec, font: { size: 11 } } },
-          y: { beginAtZero: true, ticks: { color: sec } },
+          y: { beginAtZero: true, ticks: { color: sec, callback: (v) => dashboardMetricTick(v) } },
         },
       },
     });
     return;
   }
 
-  const total = data.reduce((s, d) => s + (parseInt(d.count, 10) || 0), 0);
+  const total = data.reduce((s, d) => s + dashboardMetricValue(d), 0);
   const labels = data.map((d) => {
-    const c = parseInt(d.count, 10) || 0;
+    const c = dashboardMetricValue(d);
     const p = total > 0 ? ((c / total) * 100).toFixed(1) : '0.0';
-    return `${d.activity_type} (${c} / ${p}%)`;
+    return `${d.activity_type} (${dashboardMetricTooltipValue(c)} / ${p}%)`;
   });
   charts.type = new Chart(ctx, {
     type: 'doughnut',
     data: {
       labels,
       datasets: [{
-        data: data.map(d => d.count),
+        data: data.map((d) => dashboardMetricValue(d)),
         backgroundColor: ['#7c6af7','#60a5fa','#34d399','#fbbf24','#f87171'],
         borderWidth: 0,
         hoverOffset: 6,
@@ -893,7 +1206,7 @@ function drawTypeChart(data, compare) {
       plugins: {
         legend: { position: 'bottom', labels: { color: sec, padding: 12, font: { size: 12 } } },
         tooltip: {
-          callbacks: { label: ctx => ` ${ctx.label}: ${ctx.raw} 场` }
+          callbacks: { label: (ctx) => ` ${ctx.label}: ${dashboardMetricTooltipValue(ctx.raw)}` }
         }
       },
       cutout: '60%',
@@ -905,12 +1218,12 @@ function buildBrandCompareRows(regional, national) {
   const m = new Map();
   (regional || []).forEach((r) => {
     const b = r.brand || '未知';
-    m.set(b, { brand: b, reg: parseFloat(r.revenue) || 0, nat: 0 });
+    m.set(b, { brand: b, reg: dashboardMetricValue(r), nat: 0 });
   });
   (national || []).forEach((r) => {
     const b = r.brand || '未知';
     const row = m.get(b) || { brand: b, reg: 0, nat: 0 };
-    row.nat = parseFloat(r.revenue) || 0;
+    row.nat = dashboardMetricValue(r);
     m.set(b, row);
   });
   const arr = [...m.values()];
@@ -951,7 +1264,7 @@ function drawBrandChart(data, compare) {
         plugins: { legend: { display: true, labels: { color: sec, padding: 12, font: { size: 11 } } } },
         scales: {
           x: { ticks: { color: sec, font: { size: 11 } }, grid: { display: false } },
-          y: { ticks: { color: sec, font: { size: 11 }, callback: (v) => '¥' + (v / 10000).toFixed(0) + 'w' }, grid: { color: borderCol } },
+          y: { ticks: { color: sec, font: { size: 11 }, callback: (v) => dashboardMetricTick(v) }, grid: { color: borderCol } },
         },
       },
     });
@@ -964,8 +1277,8 @@ function drawBrandChart(data, compare) {
     data: {
       labels: data.map(d => d.brand),
       datasets: [{
-        label: '报价',
-        data: data.map(d => parseFloat(d.revenue) || 0),
+        label: dashboardMetricText(),
+        data: data.map((d) => dashboardMetricValue(d)),
         backgroundColor: data.map(d => colors[d.brand] || '#9ea3b8'),
         borderRadius: 6,
       }]
@@ -974,7 +1287,7 @@ function drawBrandChart(data, compare) {
       plugins: { legend: { display: false } },
       scales: {
         x: { ticks: { color: sec, font: { size: 11 } }, grid: { display: false } },
-        y: { ticks: { color: sec, font: { size: 11 }, callback: v => '¥' + (v/10000).toFixed(0) + 'w' }, grid: { color: borderCol } }
+        y: { ticks: { color: sec, font: { size: 11 }, callback: (v) => dashboardMetricTick(v) }, grid: { color: borderCol } }
       }
     }
   });
@@ -994,8 +1307,9 @@ function drawRegionChart(data, compare, regionShare) {
 
     if (useMultiBar) {
       const natRows = [...natReg].sort((a, b) => (parseInt(b.count, 10) || 0) - (parseInt(a.count, 10) || 0));
+      natRows.sort((a, b) => dashboardMetricValue(b) - dashboardMetricValue(a));
       const labels = natRows.map((r) => r.region || '未知');
-      const counts = natRows.map((r) => parseInt(r.count, 10) || 0);
+      const metricVals = natRows.map((r) => dashboardMetricValue(r));
       const bg = natRows.map((r) => {
         const name = String(r.region || '').trim();
         return highlightName && name === highlightName ? DASHBOARD_COMPARE_COLOR_REGION : DASHBOARD_COMPARE_COLOR_NATIONAL;
@@ -1006,8 +1320,8 @@ function drawRegionChart(data, compare, regionShare) {
           labels,
           datasets: [
             {
-              label: '场次',
-              data: counts,
+              label: dashboardMetricText(),
+              data: metricVals,
               backgroundColor: bg,
               borderRadius: 4,
             },
@@ -1022,17 +1336,17 @@ function drawRegionChart(data, compare, regionShare) {
                 label: (ctx) => {
                   const i = ctx.dataIndex;
                   const row = natRows[i];
-                  const n = parseInt(row?.count, 10) || 0;
+                  const n = dashboardMetricValue(row);
                   const rev = Number(row?.revenue || 0);
                   const isSel = highlightName && String(row?.region || '').trim() === highlightName;
-                  return ` ${n} 场 · 报价 ${fmtMoney(rev)}${isSel ? ' · 左侧主区域' : ''}`;
+                  return ` ${dashboardMetricTooltipValue(n)} · 报价 ${fmtMoney(rev)}${isSel ? ' · 左侧主区域' : ''}`;
                 },
                 footer: () => '对比=全国时展示各区域；深紫=左侧所选区域 · 点击深紫条：城市下钻',
               },
             },
           },
           scales: {
-            x: { beginAtZero: true, ticks: { color: sec } },
+            x: { beginAtZero: true, ticks: { color: sec, callback: (v) => dashboardMetricTick(v) } },
             y: { ticks: { color: sec, font: { size: 11 } }, grid: { display: false } },
           },
           onClick: (evt, elements) => {
@@ -1052,15 +1366,19 @@ function drawRegionChart(data, compare, regionShare) {
 
     const pl = compare.region || regionShare.region || '主口径';
     const cl = compare.compareLabel || '对比';
-    const rc = Number(compare.primaryTotalCount ?? regionShare.regionCount ?? 0);
-    const cc = Number(compare.compareTotalCount ?? regionShare.compareCount ?? 0);
+    const rc = dashboardChartMetric === 'revenue'
+      ? (data || []).reduce((s, r) => s + (parseFloat(r.revenue) || 0), 0)
+      : Number(compare.primaryTotalCount ?? regionShare.regionCount ?? 0);
+    const cc = dashboardChartMetric === 'revenue'
+      ? ((compare.nationalActivityByRegion || []).reduce((s, r) => s + (parseFloat(r.revenue) || 0), 0))
+      : Number(compare.compareTotalCount ?? regionShare.compareCount ?? 0);
     charts.region = new Chart(ctx, {
       type: 'bar',
       data: {
         labels: [pl, cl],
         datasets: [
           {
-            label: '场次',
+            label: dashboardMetricText(),
             data: [rc, cc],
             backgroundColor: [DASHBOARD_COMPARE_COLOR_REGION, DASHBOARD_COMPARE_COLOR_NATIONAL],
             borderRadius: 6,
@@ -1078,7 +1396,7 @@ function drawRegionChart(data, compare, regionShare) {
           },
         },
         scales: {
-          x: { beginAtZero: true, ticks: { color: sec } },
+          x: { beginAtZero: true, ticks: { color: sec, callback: (v) => dashboardMetricTick(v) } },
           y: { ticks: { color: sec, font: { size: 11 } }, grid: { display: false } },
         },
         onClick: (evt, elements) => {
@@ -1095,11 +1413,11 @@ function drawRegionChart(data, compare, regionShare) {
     return;
   }
 
-  const total = data.reduce((s, d) => s + (parseInt(d.count, 10) || 0), 0);
+  const total = data.reduce((s, d) => s + dashboardMetricValue(d), 0);
   const labels = data.map((d) => {
-    const c = parseInt(d.count, 10) || 0;
+    const c = dashboardMetricValue(d);
     const p = total > 0 ? ((c / total) * 100).toFixed(1) : '0.0';
-    return `${d.region || '未知'} (${c} / ${p}%)`;
+    return `${d.region || '未知'} (${dashboardMetricTooltipValue(c)} / ${p}%)`;
   });
   const bg = ['#7c6af7', '#60a5fa', '#34d399', '#fbbf24', '#f87171', '#a78bfa', '#22d3ee'];
   const drill = dashboardDrillRegion;
@@ -1114,7 +1432,7 @@ function drawRegionChart(data, compare, regionShare) {
     data: {
       labels,
       datasets: [{
-        data: data.map((d) => d.count),
+        data: data.map((d) => dashboardMetricValue(d)),
         backgroundColor,
         borderWidth: 0,
         hoverOffset: 6,
@@ -1151,7 +1469,7 @@ function withAlphaHex(hex, alpha) {
 }
 
 /* =============================================
-   页面：活动记录
+   页面：场次记录（原活动记录）
    ============================================= */
 async function renderActivities() {
   const container = document.getElementById('pageContainer');
@@ -1195,6 +1513,10 @@ async function renderActivities() {
         <select class="filter-select" id="actBrand" onchange="filterActivities()">
           <option value="">全部品牌</option>
         </select>
+        <select class="filter-select" id="actFilterBelonging" onchange="filterActivities()">
+          <option value="">全部归属</option>
+        </select>
+        <button type="button" class="btn btn-secondary btn-sm" onclick="resetActivityFilters()">重置筛选</button>
         <button class="btn btn-secondary btn-sm" onclick="toggleSortOrder()">
           日期 <span id="sortIcon">${activitiesState.sortOrder === 'DESC' ? '↓' : '↑'}</span>
         </button>
@@ -1262,6 +1584,28 @@ async function renderActivities() {
   } catch (e) {
     console.warn('活动区域筛选项加载失败', e);
   }
+  try {
+    const belongs = await api('GET', '/lookups?category=activity_belonging');
+    actBelongingLabelByValue = Object.fromEntries(
+      (belongs || []).map((r) => [String(r.value), String(r.label || r.value)])
+    );
+    const belongSel = document.getElementById('actFilterBelonging');
+    if (belongSel) {
+      const keep = activitiesState.belonging;
+      belongSel.innerHTML =
+        '<option value="">全部归属</option>' +
+        belongs
+          .map(
+            (r) =>
+              `<option value="${escapeHtml(String(r.value))}">${escapeHtml(String(r.label || r.value))}</option>`
+          )
+          .join('');
+      if (keep && [...belongSel.options].some((o) => o.value === keep)) belongSel.value = keep;
+    }
+  } catch (e) {
+    actBelongingLabelByValue = {};
+    console.warn('活动归属筛选项加载失败', e);
+  }
   renderBrandOptions();
   const bsel = document.getElementById('actBrand');
   const bk = activitiesState.brand;
@@ -1284,10 +1628,30 @@ function filterActivities() {
   activitiesState.type = document.getElementById('actType')?.value || '';
   activitiesState.period = document.getElementById('actFilterPeriod')?.value || '';
   activitiesState.region = document.getElementById('actFilterRegion')?.value || '';
+  activitiesState.belonging = document.getElementById('actFilterBelonging')?.value || '';
   activitiesState.brand = document.getElementById('actBrand')?.value || '';
   activitiesState.year = document.getElementById('actYear')?.value || '';
   activitiesState.month = document.getElementById('actMonth')?.value || '';
   activitiesState.page = 1;
+  loadActivities();
+}
+
+function resetActivityFilters() {
+  activitiesState.type = '';
+  activitiesState.period = '';
+  activitiesState.region = '';
+  activitiesState.belonging = '';
+  activitiesState.brand = '';
+  activitiesState.year = '';
+  activitiesState.month = '';
+  activitiesState.search = '';
+  activitiesState.page = 1;
+  const s = document.getElementById('actSearch');
+  if (s) s.value = '';
+  ['actYear', 'actMonth', 'actType', 'actFilterPeriod', 'actFilterRegion', 'actBrand', 'actFilterBelonging'].forEach((id) => {
+    const el = document.getElementById(id);
+    if (el) el.value = '';
+  });
   loadActivities();
 }
 
@@ -1301,12 +1665,6 @@ function toggleSortOrder() {
 async function loadActivities() {
   const container = document.getElementById('actTable');
   if (!container) return;
-
-  // 清理删除确认状态（超时后恢复按钮文案）
-  if (pendingDeleteActivityId && (Date.now() - pendingDeleteActivityAt) > DELETE_CONFIRM_MS) {
-    pendingDeleteActivityId = null;
-    pendingDeleteActivityAt = 0;
-  }
 
   container.innerHTML = '<div style="text-align:center;padding:30px;color:var(--text-muted)">加载中...</div>';
 
@@ -1354,6 +1712,9 @@ async function loadActivities() {
     if (activitiesState.region) {
       filtered = filtered.filter(a => (a.region || '') === activitiesState.region);
     }
+    if (activitiesState.belonging) {
+      filtered = filtered.filter((a) => displayActivityBelongingValue(a) === activitiesState.belonging);
+    }
 
     activitiesState.data = filtered;
 
@@ -1373,34 +1734,34 @@ async function loadActivities() {
       grouped[key].push(a);
     });
 
-    // 新列顺序：日期、时段、品牌、项目编号、区域、城市、客户、类型、执行、报价、成本、操作
-    let html = `<div class="table-wrapper"><table>
+    // 列表列顺序：日期、项目编号、时段、品牌、区域、归属、城市、客户、类型、执行、状态、操作（不展示报价/成本）
+    let html = `<div class="table-wrapper"><table class="data-table">
       <thead><tr>
-        <th>日期</th><th>时段</th><th>品牌</th><th>项目编号</th><th>区域</th><th>城市</th><th>客户</th>
-        <th>类型</th><th>执行</th><th>报价</th><th>成本</th><th>操作</th>
+        <th>日期</th><th>项目编号</th><th>时段</th><th>品牌</th><th>区域</th><th>归属</th><th>城市</th><th>客户</th>
+        <th>类型</th><th>执行</th><th>状态</th><th>操作</th>
       </tr></thead><tbody>`;
 
     Object.entries(grouped).forEach(([month, acts]) => {
       html += `<tr><td colspan="12" class="group-title">${month}（${acts.length}场）</td></tr>`;
       acts.forEach(a => {
+        const rowDeferred = a.status === 'deferred';
         html += `
-          <tr onclick="showActivityDetail(${a.id})" style="cursor:pointer">
+          <tr class="${rowDeferred ? 'activity-row-deferred' : ''}" onclick="showActivityDetail(${a.id})" style="cursor:pointer">
             <td>${fmtDateShort(a.date || a.activity_date)}</td>
+            <td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px" title="${a.project_code||''}">${a.project_code||'—'}</td>
             <td><span class="badge badge-gray">${a.period || '日常'}</span></td>
             <td><span class="badge badge-${brandColor(a.brand)}">${a.brand||'—'}</span></td>
-            <td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px" title="${a.project_code||''}">${a.project_code||'—'}</td>
             <td><span style="font-size:11px;color:var(--text-secondary)">${a.region||'—'}</span></td>
+            <td><span style="font-size:11px;color:var(--text-secondary)">${escapeHtml(formatActivityBelongingForTable(a))}</span></td>
             <td><strong>${a.city||'—'}</strong></td>
             <td style="max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px">${a.client||a.client_name||'—'}</td>
             <td><span class="badge badge-${typeColor(a.activity_type)}">${a.activity_type||'—'}</span></td>
             <td><span class="badge badge-${a.executor==='有'?'success':'gray'}">${a.executor||'无'}</span></td>
-            <td class="amount amount-revenue">${fmtMoney(a.quoted_price)}</td>
-            <td class="amount ${parseFloat(a.total_cost)>0?'amount-cost':'amount-neutral'}">${parseFloat(a.total_cost)>0?fmtMoney(a.total_cost):'—'}</td>
+            <td style="white-space:nowrap">${statusBadge(a.status)}</td>
             <td onclick="event.stopPropagation()">
-              <div style="display:flex;gap:4px">
+              <div style="display:flex;gap:4px;flex-wrap:wrap">
                 <button class="btn btn-secondary btn-sm" onclick="showActivityModal(${a.id})">编辑</button>
-                <button class="btn btn-success btn-sm" onclick="showCostFill(${a.id})">成本</button>
-                <button class="btn btn-danger btn-sm" onclick="requestDeleteActivity(${a.id})">${a.id===pendingDeleteActivityId && (Date.now()-pendingDeleteActivityAt) < DELETE_CONFIRM_MS ? '确认删除' : '删除'}</button>
+                <button type="button" class="btn btn-danger btn-sm activity-row-remove-btn" onclick="openRemoveActivityDialog(${a.id})">删除</button>
               </div>
             </td>
           </tr>`;
@@ -1422,12 +1783,42 @@ async function loadActivities() {
   }
 }
 
+function openRemoveActivityDialog(activityId) {
+  const id = Number(activityId);
+  const hid = document.getElementById('removeActivityTargetId');
+  if (hid) hid.value = Number.isFinite(id) && id > 0 ? String(id) : '';
+  const hint = document.getElementById('removeActivityConfirmHint');
+  if (hint) {
+    const row = (activitiesState.data || []).find((x) => Number(x.id) === id);
+    if (row) {
+      const parts = [
+        row.project_code && String(row.project_code).trim(),
+        row.city && String(row.city).trim(),
+        row.date || row.activity_date ? fmtDateShort(row.date || row.activity_date) : '',
+      ].filter(Boolean);
+      hint.textContent = parts.length ? parts.join(' · ') : `场次 ID：${id}`;
+    } else {
+      hint.textContent = Number.isFinite(id) && id > 0 ? `场次 ID：${id}` : '（未找到场次信息）';
+    }
+  }
+  openModal('modalActivityDeleteConfirm');
+  renderLucideIcons();
+}
+
+async function confirmRemoveActivityExecute() {
+  const raw = document.getElementById('removeActivityTargetId')?.value;
+  const id = parseInt(raw, 10);
+  if (!raw || !Number.isFinite(id) || id <= 0) {
+    closeModal();
+    return;
+  }
+  await deleteActivity(id);
+}
+
 async function deleteActivity(id) {
   try {
     await api('DELETE', `/activities/${id}`);
     showToast('活动已删除', 'success');
-    pendingDeleteActivityId = null;
-    pendingDeleteActivityAt = 0;
     closeModal();
     if (currentPage === 'activities') loadActivities();
     else if (currentPage === 'calendar' && typeof window._calYear === 'number') drawCalendar(window._calYear, window._calMonth);
@@ -1437,17 +1828,6 @@ async function deleteActivity(id) {
   } catch (err) {
     showToast('删除失败: ' + err.message, 'error');
   }
-}
-
-function requestDeleteActivity(id) {
-  const now = Date.now();
-  if (pendingDeleteActivityId === id && (now - pendingDeleteActivityAt) < DELETE_CONFIRM_MS) {
-    return deleteActivity(id);
-  }
-  pendingDeleteActivityId = id;
-  pendingDeleteActivityAt = now;
-  showToast('再次点击确认删除该活动', 'warning');
-  loadActivities(); // 让按钮文案切到“确认删除”
 }
 
 function goActPage(p) {
@@ -1498,6 +1878,7 @@ const ACTIVITY_LOOKUP_DEFS = [
   { category: 'activity_type', selectId: 'actActivityType', allowEmpty: false },
   { category: 'activity_period', selectId: 'actPeriod', allowEmpty: false },
   { category: 'activity_region', selectId: 'actRegion', allowEmpty: true, emptyLabel: '请选择' },
+  { category: 'activity_belonging', selectId: 'actBelonging', allowEmpty: true, emptyLabel: '请选择' },
   { category: 'activity_executor', selectId: 'actExecutor', allowEmpty: false },
   { category: 'activity_status', selectId: 'actStatus', allowEmpty: false },
 ];
@@ -1507,6 +1888,7 @@ const LOOKUP_EDITOR_LABELS = {
   activity_type: '编辑：活动类型',
   activity_period: '编辑：时段',
   activity_region: '编辑：区域',
+  activity_belonging: '编辑：归属',
   activity_executor: '编辑：执行人员',
   activity_status: '编辑：状态',
 };
@@ -1586,6 +1968,7 @@ function getActivityLookupFormSnapshot() {
     actActivityType: document.getElementById('actActivityType')?.value,
     actPeriod: document.getElementById('actPeriod')?.value,
     actRegion: document.getElementById('actRegion')?.value,
+    actBelonging: document.getElementById('actBelonging')?.value,
     actExecutor: document.getElementById('actExecutor')?.value,
     actStatus: document.getElementById('actStatus')?.value,
   };
@@ -1736,6 +2119,7 @@ async function showActivityModal(id = null) {
         actActivityType: a.activity_type || '',
         actPeriod: a.period || '日常',
         actRegion: a.region != null && a.region !== undefined ? a.region : '',
+        actBelonging: displayActivityBelongingValue(a),
         actExecutor: a.executor != null && String(a.executor).trim() !== '' ? a.executor : '无',
         actStatus: a.status || 'pending',
       }
@@ -1761,12 +2145,12 @@ async function showActivityModal(id = null) {
     document.getElementById('actCity').value = a.city || '';
     document.getElementById('actBrandField').value = a.brand || 'PHD';
     if (a.date || a.activity_date) {
-      const d = new Date(a.date || a.activity_date);
-      document.getElementById('actDate').value = d.toISOString().split('T')[0];
+      document.getElementById('actDate').value = toDateInputValue(a.date || a.activity_date);
     }
     document.getElementById('actClient').value = a.client || a.client_name || '';
     document.getElementById('actVenue').value = a.venue || '';
-    document.getElementById('actQuotedPrice').value = a.quoted_price || '';
+    document.getElementById('actQuotedPrice').value =
+      a.quoted_price != null && a.quoted_price !== '' ? roundMoney2(a.quoted_price).toFixed(2) : '';
     document.getElementById('actGuestCount').value = a.guest_count || '';
     document.getElementById('actProjectCode').value = a.project_code || '';
     document.getElementById('actRemarks').value = a.remarks || '';
@@ -1858,9 +2242,10 @@ async function saveActivity() {
     client: document.getElementById('actClient').value,
     client_name: document.getElementById('actClient').value,
     region: document.getElementById('actRegion').value,
+    belonging: (document.getElementById('actBelonging')?.value || '').trim() || null,
     period: document.getElementById('actPeriod').value,
     venue: document.getElementById('actVenue').value,
-    quoted_price: parseFloat(document.getElementById('actQuotedPrice').value) || 0,
+    quoted_price: roundMoney2(document.getElementById('actQuotedPrice').value),
     guest_count: parseInt(document.getElementById('actGuestCount').value) || null,
     executor: document.getElementById('actExecutor').value,
     status: document.getElementById('actStatus').value,
@@ -1884,36 +2269,176 @@ async function saveActivity() {
   }
 }
 
+function pickActivityBelonging(a) {
+  if (!a || typeof a !== 'object') return '';
+  const v =
+    a.belonging != null
+      ? a.belonging
+      : a.Belonging != null
+        ? a.Belonging
+        : a.activity_belonging != null
+          ? a.activity_belonging
+          : null;
+  if (v == null) return '';
+  return String(v).trim();
+}
+
+/**
+ * 项目编号中常带 RC / RM 渠道段，历史导入未写 belonging 时用于展示与筛选（与回填脚本规则一致）
+ */
+function inferBelongingFromProjectCode(projectCode) {
+  const s = projectCode == null ? '' : String(projectCode);
+  if (!s) return '';
+  if (s.includes('RM-CLUB') || s.includes('RM_CLUB')) return 'RM-CLUB婚宴';
+  if (s.includes('RM-X.O')) return 'RM-X.O婚宴';
+  if (s.includes('-RC-') || s.includes(' RC ')) return 'RC-On';
+  return '';
+}
+
+/** 库内归属优先，否则按项目编号推断（与 lookup value 一致） */
+function displayActivityBelongingValue(a) {
+  const stored = pickActivityBelonging(a);
+  if (stored) return stored;
+  return inferBelongingFromProjectCode(a && a.project_code);
+}
+
+function belongingLabelForValue(raw) {
+  const key = raw == null ? '' : String(raw).trim();
+  if (!key) return '';
+  return actBelongingLabelByValue[key] || key;
+}
+
+function formatActivityBelongingForTable(a) {
+  const v = displayActivityBelongingValue(a);
+  if (!v) return '—';
+  return belongingLabelForValue(v);
+}
+
+async function ensureBelongingLabelMap() {
+  if (Object.keys(actBelongingLabelByValue).length) return;
+  try {
+    const rows = await api('GET', '/lookups?category=activity_belonging');
+    actBelongingLabelByValue = Object.fromEntries(
+      (rows || []).map((r) => [String(r.value), String(r.label || r.value)])
+    );
+  } catch (_) {
+    actBelongingLabelByValue = {};
+  }
+}
+
+function activityDetailRow(label, valueText) {
+  const t = valueText == null || valueText === '' ? '—' : String(valueText);
+  return `<div class="activity-detail-row"><div class="activity-detail-k">${escapeHtml(label)}</div><div class="activity-detail-v">${escapeHtml(t)}</div></div>`;
+}
+
+function activityDetailRowHtml(label, innerHtml) {
+  return `<div class="activity-detail-row"><div class="activity-detail-k">${escapeHtml(label)}</div><div class="activity-detail-v">${innerHtml}</div></div>`;
+}
+
+function mergeActivityBelongingFromListRow(detail, id) {
+  if (pickActivityBelonging(detail)) return detail;
+  const fromList = (activitiesState.data || []).find((x) => String(x.id) === String(id));
+  if (!fromList) return detail;
+  const listBel = displayActivityBelongingValue(fromList);
+  if (!listBel) return detail;
+  return { ...detail, belonging: listBel };
+}
+
 async function showActivityDetail(id) {
   try {
-    const a = await api('GET', `/activities/${id}`);
+    const raw = await api('GET', `/activities/${encodeURIComponent(id)}?cb=${Date.now()}`);
+    const a = mergeActivityBelongingFromListRow(raw, id);
+    await ensureBelongingLabelMap();
+    const belRaw = displayActivityBelongingValue(a);
+    const belLabel = belRaw ? belongingLabelForValue(belRaw) : '';
     const content = document.getElementById('activityDetailContent');
     if (!content) {
       showToast('找不到活动详情弹窗，请强制刷新页面 (Cmd+Shift+R)', 'error');
       return;
     }
     const wines = parseWineDetails(a.wine_details);
+    const wineRows = Object.entries(wines)
+      .filter(([, v]) => v && v.qty > 0)
+      .map(
+        ([k, v]) =>
+          `<tr><td>${escapeHtml(k)}</td><td>${escapeHtml(v.spec || '—')}</td><td style="text-align:right;font-variant-numeric:tabular-nums">${escapeHtml(String(v.qty))}</td></tr>`
+      )
+      .join('');
+    const guestLine =
+      a.guest_count != null && Number(a.guest_count) > 0
+        ? activityDetailRow('宾客人数', String(a.guest_count))
+        : '';
+    const costHtml =
+      parseFloat(a.total_cost) > 0
+        ? `<span class="amount amount-cost">${fmtMoney(a.total_cost)}</span>`
+        : '<span class="amount amount-neutral">未填写</span>';
+
+    const titleEl = document.getElementById('activityDetailModalTitle');
+    if (titleEl) {
+      const pc = a.project_code ? String(a.project_code).trim() : '';
+      titleEl.textContent = pc ? `活动详情 · ${pc}` : '活动详情';
+    }
 
     content.innerHTML = `
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:16px">
-        <div><div class="form-label">项目编号</div><div class="project-code" style="max-width:100%;font-size:12px">${a.project_code||'—'}</div></div>
-        <div><div class="form-label">活动日期</div><div>${fmtDate(a.date||a.activity_date)}</div></div>
-        <div><div class="form-label">时段</div><div>${a.period||'日常'}</div></div>
-        <div><div class="form-label">城市</div><div>${a.city||'—'}</div></div>
-        <div><div class="form-label">客户</div><div>${a.client||a.client_name||'—'}</div></div>
-        <div><div class="form-label">品牌</div><div><span class="badge badge-${brandColor(a.brand)}">${a.brand||'—'}</span></div></div>
-        <div><div class="form-label">类型</div><div><span class="badge badge-${typeColor(a.activity_type)}">${a.activity_type||'—'}</span></div></div>
-        <div><div class="form-label">区域</div><div>${a.region||'—'}</div></div>
-        <div><div class="form-label">场地</div><div>${a.venue||'—'}</div></div>
-        <div><div class="form-label">报价</div><div class="amount amount-revenue">${fmtMoney(a.quoted_price)}</div></div>
-        <div><div class="form-label">成本</div><div class="amount ${parseFloat(a.total_cost)>0?'amount-cost':'amount-neutral'}">${parseFloat(a.total_cost)>0?fmtMoney(a.total_cost):'未填写'}</div></div>
-        <div><div class="form-label">执行人员</div><div>${a.executor||'无'}</div></div>
-        <div><div class="form-label">状态</div><div>${statusBadge(a.status)}</div></div>
-      </div>
-      ${a.remarks ? `<div style="margin-bottom:12px"><div class="form-label">备注</div><div style="color:var(--text-secondary);font-size:13px">${a.remarks}</div></div>` : ''}
-      ${Object.keys(wines).length > 0 ? `<div><div class="form-section-title">用酒明细</div><table><thead><tr><th>酒品</th><th>规格</th><th>数量</th></tr></thead><tbody>${Object.entries(wines).filter(([k,v])=>v&&v.qty>0).map(([k,v])=>`<tr><td>${k}</td><td>${v.spec||'—'}</td><td>${v.qty}</td></tr>`).join('')}</tbody></table></div>` : ''}
-      <div style="margin-top:16px;display:flex;gap:8px">
-        <button class="btn btn-success btn-sm" onclick="closeModal();setTimeout(()=>showCostFill(${id}),100)"><i data-lucide="wallet" style="width:13px;height:13px"></i>填写成本</button>
+      <div class="activity-detail">
+        <div class="activity-detail-hero">
+          <div class="activity-detail-hero-top">
+            <div class="activity-detail-hero-code">${escapeHtml(a.project_code || '—')}</div>
+            <div class="activity-detail-hero-date">${escapeHtml(fmtDate(a.date || a.activity_date))}</div>
+          </div>
+          <div class="activity-detail-hero-meta">
+            <span><strong style="color:var(--text-primary)">${escapeHtml(a.city || '—')}</strong></span>
+            <span class="badge badge-${brandColor(a.brand)}">${escapeHtml(a.brand || '—')}</span>
+            <span class="badge badge-${typeColor(a.activity_type)}">${escapeHtml(a.activity_type || '—')}</span>
+            ${
+              belRaw
+                ? `<span class="badge badge-gray" title="归属">${escapeHtml(belLabel)}</span>`
+                : '<span style="font-size:12px;color:var(--text-muted)">归属：—</span>'
+            }
+          </div>
+        </div>
+
+        <div class="activity-detail-grid">
+          <section class="activity-detail-card">
+            <h4>场次与场地</h4>
+            ${activityDetailRow('时段', a.period || '日常')}
+            ${activityDetailRow('区域', a.region)}
+            ${activityDetailRow('归属', belRaw ? belLabel : '')}
+            ${activityDetailRow('场地', a.venue)}
+            ${activityDetailRow('客户', a.client || a.client_name)}
+            ${guestLine}
+          </section>
+          <section class="activity-detail-card">
+            <h4>费用与执行</h4>
+            ${activityDetailRowHtml('报价', `<span class="amount amount-revenue">${fmtMoney(a.quoted_price)}</span>`)}
+            ${activityDetailRowHtml('成本', costHtml)}
+            ${activityDetailRow('执行', a.executor || '无')}
+            ${activityDetailRowHtml('状态', statusBadge(a.status))}
+          </section>
+        </div>
+
+        ${
+          a.remarks
+            ? `<div class="activity-detail-remarks activity-detail-block"><h4>备注</h4><p>${escapeHtml(a.remarks)}</p></div>`
+            : ''
+        }
+        ${
+          wineRows
+            ? `<div class="activity-detail-wine activity-detail-block">
+            <h4>用酒明细</h4>
+            <div class="table-wrapper">
+              <table class="data-table" style="font-size:13px">
+                <thead><tr><th>酒品</th><th>规格</th><th style="text-align:right">数量</th></tr></thead>
+                <tbody>${wineRows}</tbody>
+              </table>
+            </div>
+          </div>`
+            : ''
+        }
+
+        <div class="activity-detail-actions">
+          <button type="button" class="btn btn-success btn-sm" onclick="closeModal();setTimeout(()=>showCostFill(${id}),100)"><i data-lucide="wallet" style="width:13px;height:13px"></i>填写成本</button>
+        </div>
       </div>
     `;
 
@@ -1926,6 +2451,7 @@ async function showActivityDetail(id) {
     }
 
     openModal('modalActivityDetail');
+    renderLucideIcons();
   } catch (err) {
     showToast('加载失败: ' + err.message, 'error');
   }
@@ -1937,6 +2463,7 @@ async function showCostFill(actId) {
     const a = await api('GET', `/activities/${actId}`);
     const details = parseActivityCostDetails(a);
     const cost = calcCostDetailsTotal(details);
+    const markedNoCost = a && (a.no_cost === true || a.no_cost === 1 || String(a.no_cost) === '1');
 
     const content = document.getElementById('costFillContent');
     if (!content) {
@@ -1949,6 +2476,10 @@ async function showCostFill(actId) {
         <div style="font-size:12px;color:var(--text-secondary)">${a.project_code||a.city+a.activity_type}</div>
         <div style="font-size:13px;color:var(--text-primary);margin-top:2px">当前成本：<span class="amount amount-cost">${cost>0?fmtMoney(cost):'未填写'}</span></div>
       </div>
+      <label style="display:flex;align-items:center;gap:8px;margin:0 0 12px;padding:10px 12px;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-sm);cursor:pointer">
+        <input type="checkbox" id="costNoCostFlag" ${markedNoCost ? 'checked' : ''} onchange="toggleCostNoCostMode('1')">
+        <span style="font-size:13px;color:var(--text-primary)">该场次无成本（勾选后不计入待填写成本）</span>
+      </label>
       ${renderCostDetailSections('cost-field', details, 'updateCostTotal()')}
       <div style="margin-top:14px;padding:12px;background:var(--accent-soft);border-radius:var(--radius-sm);display:flex;justify-content:space-between;align-items:center">
         <span style="color:var(--text-secondary);font-size:13px">成本合计</span>
@@ -1956,28 +2487,43 @@ async function showCostFill(actId) {
       </div>
     `;
 
+    toggleCostNoCostMode('1');
     openModal('modalCostFill');
   } catch (err) {
     showToast('加载失败: ' + err.message, 'error');
   }
 }
 
+function toggleCostNoCostMode(mode) {
+  const checkboxId = mode === '2' ? 'costNoCostFlag2' : 'costNoCostFlag';
+  const fieldClass = mode === '2' ? 'cost-field2' : 'cost-field';
+  const checked = !!document.getElementById(checkboxId)?.checked;
+  document.querySelectorAll(`.${fieldClass}`).forEach((el) => {
+    el.disabled = checked;
+    if (checked) el.value = '';
+  });
+  if (mode === '2') updateCostTotal2();
+  else updateCostTotal();
+}
+
 function updateCostTotal() {
   let total = 0;
   document.querySelectorAll('.cost-field').forEach(el => {
-    total += parseFloat(el.value) || 0;
+    total += roundMoney2(el.value);
   });
+  total = roundMoney2(total);
   const el = document.getElementById('costTotal');
   if (el) el.textContent = fmtMoney(total);
 }
 
 async function saveCostFromModal() {
   const actId = document.getElementById('costActId').value;
-  const details = collectCostDetails('cost-field');
-  const total = calcCostDetailsTotal(details);
+  const noCost = !!document.getElementById('costNoCostFlag')?.checked;
+  const details = noCost ? {} : collectCostDetails('cost-field');
+  const total = noCost ? 0 : roundMoney2(calcCostDetailsTotal(details));
 
   try {
-    await api('PUT', `/activities/${actId}`, { total_cost: total, cost_details: details });
+    await api('PUT', `/activities/${actId}`, { total_cost: total, cost_details: details, no_cost: noCost ? 1 : 0 });
     showToast('成本已保存', 'success');
     closeModal();
     if (currentPage === 'activities') loadActivities();
@@ -2071,7 +2617,7 @@ async function drawCalendar(year, month) {
       html += `<div class="cal-cell ${isToday?'today':''}">
         <div class="cal-date">${d}</div>
         ${acts.slice(0,3).map(a => `
-          <div class="cal-event brand-${(a.brand||'').toLowerCase().replace('.','')}" title="${a.city}｜${a.client||a.client_name||''}｜${a.activity_type}"
+          <div class="cal-event brand-${(a.brand||'').toLowerCase().replace('.','')}${a.status === 'deferred' ? ' cal-event-deferred' : ''}" title="${a.city}｜${a.client||a.client_name||''}｜${a.activity_type}${a.status === 'deferred' ? '｜延期' : ''}"
             onclick="showActivityDetail(${a.id})">
             ${a.city||''} ${a.brand||''} ${a.activity_type||''}
           </div>
@@ -2113,18 +2659,74 @@ function goCalToday() {
 }
 
 /* =============================================
-   页面：成本管理
+   页面：活动成本（原成本管理）
    ============================================= */
-function setCostNoCostYMFilter(key) {
-  costNoCostYMFilter = key;
-  localStorage.setItem('remy_costNoCostYMFilter', key);
+function ymKeyForCostActivity(a) {
+  const dt = new Date(a.date || a.activity_date);
+  if (isNaN(dt)) return 'unknown';
+  const local = new Date(dt.getTime() + 8 * 3600 * 1000);
+  const y = local.getUTCFullYear();
+  const m = String(local.getUTCMonth() + 1).padStart(2, '0');
+  return `${y}-${m}`;
+}
+
+function uniqueCostYmKeys(rows) {
+  return Array.from(new Set((rows || []).map(ymKeyForCostActivity)))
+    .filter((k) => k !== 'unknown')
+    .sort((a, b) => b.localeCompare(a));
+}
+
+function applyCostYmFilter(rows, key) {
+  if (key === 'all') return rows || [];
+  return (rows || []).filter((a) => ymKeyForCostActivity(a) === key);
+}
+
+function renderCostYmFilterButtons(section, keys, selected) {
+  const allBtn = `<button class="btn btn-secondary btn-sm" style="${selected === 'all' ? 'background:var(--accent);color:white' : ''}" onclick="setCostYmFilter('${section}','all')">全部</button>`;
+  const monthBtns = (keys || []).map((k) => {
+    const [y, m] = k.split('-');
+    return `<button class="btn btn-secondary btn-sm" style="${selected === k ? 'background:var(--accent);color:white' : ''}" onclick="setCostYmFilter('${section}','${k}')">${y}年${parseInt(m, 10)}月</button>`;
+  }).join('');
+  return `${allBtn}${monthBtns}`;
+}
+
+function setCostYmFilter(section, key) {
+  if (section === 'pending') {
+    costPendingYMFilter = key;
+    localStorage.setItem('remy_costPendingYMFilter', key);
+    // 兼容历史 key
+    localStorage.setItem('remy_costNoCostYMFilter', key);
+  } else if (section === 'withCost') {
+    costWithCostYMFilter = key;
+    localStorage.setItem('remy_costWithCostYMFilter', key);
+  } else if (section === 'noCost') {
+    costMarkedNoCostYMFilter = key;
+    localStorage.setItem('remy_costMarkedNoCostYMFilter', key);
+  }
   renderCost();
+}
+
+function toggleCostSection(section) {
+  const idMap = {
+    pending: 'pendingCostTable',
+    withCost: 'withCostTable',
+    noCost: 'noCostTable',
+  };
+  const panelId = idMap[section];
+  if (!panelId) return;
+  const el = document.getElementById(panelId);
+  if (!el) return;
+  const willCollapse = el.style.display !== 'none';
+  el.style.display = willCollapse ? 'none' : '';
+  costSectionCollapsed[section] = willCollapse;
+  localStorage.setItem(`remy_costSectionCollapsed_${section}`, willCollapse ? '1' : '0');
 }
 
 async function renderCost() {
   const container = document.getElementById('pageContainer');
 
   try {
+    await ensureBelongingLabelMap();
     const qs = currentYearFrameId ? `?yearFrameId=${currentYearFrameId}` : '';
     const [activities, warehouse, logistics, reimbursements] = await Promise.all([
       api('GET', `/activities${qs}`),
@@ -2133,36 +2735,48 @@ async function renderCost() {
       api('GET', `/reimbursements${qs}`),
     ]);
 
+    let materialCost = 0;
+    let propRepairCost = 0;
+    if (qs) {
+      try {
+        const mpS = await api('GET', `/material-purchases/summary${qs}`);
+        materialCost = roundMoney2(mpS.grandTotal || 0);
+      } catch {
+        materialCost = 0;
+      }
+      try {
+        const prS = await api('GET', `/prop-repairs/summary${qs}`);
+        propRepairCost = roundMoney2(prS.grandTotal || 0);
+      } catch {
+        propRepairCost = 0;
+      }
+    }
+
     // 计算统计
     const actCost = activities.reduce((s, a) => s + (parseFloat(a.total_cost)||0), 0);
     const warCost = warehouse.reduce((s, w) => s + (parseFloat(w.actual_cost)||0), 0);
     const warRev = warehouse.reduce((s, w) => s + (parseFloat(w.quoted_price)||0), 0);
     const logCost = logistics.reduce((s, l) => s + (parseFloat(l.fee)||0), 0);
     const reimCost = reimbursements.reduce((s, r) => s + (parseFloat(r.amount)||0), 0);
-    const totalCost = actCost + warCost + logCost + reimCost;
+    const totalCost = roundMoney2(actCost + warCost + logCost + reimCost + materialCost + propRepairCost);
     const totalRev = activities.reduce((s, a) => s + (parseFloat(a.quoted_price)||0), 0) + warRev;
 
-    // 有成本的活动
-    const actsWithCost = activities.filter(a => parseFloat(a.total_cost) > 0);
-    const actsNoCost = activities.filter(a => !(parseFloat(a.total_cost) > 0));
-
-    const ymKeyFor = (a) => {
-      const dt = new Date(a.date || a.activity_date);
-      if (isNaN(dt)) return 'unknown';
-      // UTC 存储，需要+8小时修正到本地日期
-      const local = new Date(dt.getTime() + 8 * 3600 * 1000);
-      const y = local.getUTCFullYear();
-      const m = String(local.getUTCMonth() + 1).padStart(2, '0');
-      return `${y}-${m}`;
+    const isMarkedNoCost = (a) => {
+      const v = a && a.no_cost;
+      return v === true || v === 1 || String(v) === '1';
     };
 
-    const uniqueNoCostYMKeys = Array.from(new Set(actsNoCost.map(ymKeyFor)))
-      .filter(k => k !== 'unknown')
-      .sort((a, b) => b.localeCompare(a)); // YYYY-MM 逆序
+    const actsWithCost = activities.filter((a) => !isMarkedNoCost(a) && parseFloat(a.total_cost) > 0);
+    const actsPendingCost = activities.filter((a) => !isMarkedNoCost(a) && !(parseFloat(a.total_cost) > 0));
+    const actsMarkedNoCost = activities.filter((a) => isMarkedNoCost(a));
 
-    const filteredActsNoCost = costNoCostYMFilter === 'all'
-      ? actsNoCost
-      : actsNoCost.filter(a => ymKeyFor(a) === costNoCostYMFilter);
+    const pendingKeys = uniqueCostYmKeys(actsPendingCost);
+    const withCostKeys = uniqueCostYmKeys(actsWithCost);
+    const noCostKeys = uniqueCostYmKeys(actsMarkedNoCost);
+
+    const filteredActsPending = applyCostYmFilter(actsPendingCost, costPendingYMFilter);
+    const filteredActsWithCost = applyCostYmFilter(actsWithCost, costWithCostYMFilter);
+    const filteredActsMarkedNoCost = applyCostYmFilter(actsMarkedNoCost, costMarkedNoCostYMFilter);
 
     container.innerHTML = `
       <div class="stats-grid">
@@ -2176,7 +2790,7 @@ async function renderCost() {
           <div class="stat-icon"><i data-lucide="hand-coins" style="width:16px;height:16px"></i></div>
           <div class="stat-label">总成本</div>
           <div class="stat-value sm">${fmtMoney(totalCost)}</div>
-          <div class="stat-sub">场次 ${fmtMoney(actCost)} ｜ 仓储 ${fmtMoney(warCost)} ｜ 物流 ${fmtMoney(logCost)}</div>
+          <div class="stat-sub">场次 ${fmtMoney(actCost)} ｜ 仓储 ${fmtMoney(warCost)} ｜ 物流 ${fmtMoney(logCost)} ｜ 报销 ${fmtMoney(reimCost)} ｜ 物料 ${fmtMoney(materialCost)} ｜ 维修 ${fmtMoney(propRepairCost)} · <a href="javascript:void(0)" onclick="navigate('material');return false;" style="color:var(--accent)">物料登记</a> / <a href="javascript:void(0)" onclick="navigate('prop-repair');return false;" style="color:var(--accent)">维修登记</a></div>
         </div>
         <div class="stat-card accent">
           <div class="stat-icon"><i data-lucide="chart-column" style="width:16px;height:16px"></i></div>
@@ -2188,29 +2802,31 @@ async function renderCost() {
           <div class="stat-icon"><i data-lucide="clipboard-list" style="width:16px;height:16px"></i></div>
           <div class="stat-label">已填成本场次</div>
           <div class="stat-value">${actsWithCost.length}</div>
-          <div class="stat-sub">待填 ${actsNoCost.length} 场</div>
+          <div class="stat-sub">待填 ${actsPendingCost.length} 场 ｜ 无成本 ${actsMarkedNoCost.length} 场</div>
+        </div>
+        <div class="stat-card danger">
+          <div class="stat-icon"><i data-lucide="wrench" style="width:16px;height:16px"></i></div>
+          <div class="stat-label">道具维修成本</div>
+          <div class="stat-value sm">${fmtMoney(propRepairCost)}</div>
+          <div class="stat-sub">来源：道具维修模块（无成本记录按 0 计）</div>
         </div>
       </div>
 
-      <!-- 未填成本的活动 -->
+      <!-- 待填写成本 -->
       <div class="card" style="margin-bottom:20px">
         <div class="card-header">
           <div style="flex:1">
-            <div class="card-title"><i data-lucide="hourglass" style="width:14px;height:14px;vertical-align:-2px;margin-right:6px"></i>待填写成本（${filteredActsNoCost.length}场）</div>
+            <div class="card-title"><i data-lucide="hourglass" style="width:14px;height:14px;vertical-align:-2px;margin-right:6px"></i>待填写成本（${filteredActsPending.length}场）</div>
             <div class="card-sub">
               <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:10px">
-                <button class="btn btn-secondary btn-sm" style="${costNoCostYMFilter === 'all' ? 'background:var(--accent);color:white' : ''}" onclick="setCostNoCostYMFilter('all')">全部</button>
-                ${uniqueNoCostYMKeys.map(k => {
-                  const [y, m] = k.split('-');
-                  return `<button class="btn btn-secondary btn-sm" style="${costNoCostYMFilter === k ? 'background:var(--accent);color:white' : ''}" onclick="setCostNoCostYMFilter('${k}')">${y}年${parseInt(m, 10)}月</button>`;
-                }).join('')}
+                ${renderCostYmFilterButtons('pending', pendingKeys, costPendingYMFilter)}
               </div>
               <div style="margin-top:8px">点击"填写"按钮添加成本明细</div>
             </div>
           </div>
-          <button class="btn btn-secondary btn-sm" onclick="toggleNoCostTable()">展开/收起</button>
+          <button class="btn btn-secondary btn-sm" onclick="toggleCostSection('pending')">展开/收起</button>
         </div>
-        <div id="noCostTable">
+        <div id="pendingCostTable" style="${costSectionCollapsed.pending ? 'display:none' : ''}">
           <div class="table-wrapper">
             <table>
               <thead>
@@ -2218,6 +2834,7 @@ async function renderCost() {
                   <th>日期</th>
                   <th>项目编号</th>
                   <th>区域</th>
+                  <th>归属</th>
                   <th>品牌</th>
                   <th>类型</th>
                   <th>报价</th>
@@ -2226,11 +2843,12 @@ async function renderCost() {
                 </tr>
               </thead>
               <tbody>
-                ${filteredActsNoCost.slice(0,30).map(a => `
+                ${filteredActsPending.slice(0,30).map(a => `
                   <tr>
                     <td>${fmtDateShort(a.date||a.activity_date)}</td>
                     <td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px" title="${a.project_code||''}">${a.project_code||'—'}</td>
                     <td><span style="font-size:11px;color:var(--text-secondary)">${a.region||'—'}</span></td>
+                    <td><span style="font-size:11px;color:var(--text-secondary)">${escapeHtml(formatActivityBelongingForTable(a))}</span></td>
                     <td><span class="badge badge-${brandColor(a.brand)}">${a.brand||'—'}</span></td>
                     <td><span class="badge badge-${typeColor(a.activity_type)}">${a.activity_type||'—'}</span></td>
                     <td class="amount amount-revenue">${fmtMoney(a.quoted_price)}</td>
@@ -2238,7 +2856,57 @@ async function renderCost() {
                     <td><button class="btn btn-success btn-sm" onclick="showCostFillFromCost(${a.id})">+ 填写</button></td>
                   </tr>
                 `).join('')}
-                ${filteredActsNoCost.length > 30 ? `<tr><td colspan="8" style="text-align:center;color:var(--text-muted);padding:10px">还有 ${filteredActsNoCost.length-30} 条，请在活动记录中查看</td></tr>` : ''}
+                ${filteredActsPending.length > 30 ? `<tr><td colspan="9" style="text-align:center;color:var(--text-muted);padding:10px">还有 ${filteredActsPending.length-30} 条，请在场次记录中查看</td></tr>` : ''}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- 无成本活动 -->
+      <div class="card" style="margin-bottom:20px">
+        <div class="card-header">
+          <div style="flex:1">
+            <div class="card-title"><i data-lucide="circle-minus" style="width:14px;height:14px;vertical-align:-2px;margin-right:6px"></i>无成本场次（${filteredActsMarkedNoCost.length}场）</div>
+            <div class="card-sub">
+              <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:10px">
+                ${renderCostYmFilterButtons('noCost', noCostKeys, costMarkedNoCostYMFilter)}
+              </div>
+              <div style="margin-top:8px">此类场次不计入“待填写成本”</div>
+            </div>
+          </div>
+          <button class="btn btn-secondary btn-sm" onclick="toggleCostSection('noCost')">展开/收起</button>
+        </div>
+        <div id="noCostTable" style="${costSectionCollapsed.noCost ? 'display:none' : ''}">
+          <div class="table-wrapper">
+            <table>
+              <thead>
+                <tr>
+                  <th>日期</th>
+                  <th>项目编号</th>
+                  <th>区域</th>
+                  <th>归属</th>
+                  <th>品牌</th>
+                  <th>类型</th>
+                  <th>报价</th>
+                  <th>成本</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${filteredActsMarkedNoCost.map(a => `
+                  <tr>
+                    <td>${fmtDateShort(a.date||a.activity_date)}</td>
+                    <td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px" title="${a.project_code||''}">${a.project_code||'—'}</td>
+                    <td><span style="font-size:11px;color:var(--text-secondary)">${a.region||'—'}</span></td>
+                    <td><span style="font-size:11px;color:var(--text-secondary)">${escapeHtml(formatActivityBelongingForTable(a))}</span></td>
+                    <td><span class="badge badge-${brandColor(a.brand)}">${a.brand||'—'}</span></td>
+                    <td><span class="badge badge-${typeColor(a.activity_type)}">${a.activity_type||'—'}</span></td>
+                    <td class="amount amount-revenue">${fmtMoney(a.quoted_price)}</td>
+                    <td class="amount amount-neutral">无成本</td>
+                    <td><button class="btn btn-secondary btn-sm" onclick="showCostFillFromCost(${a.id})">修改</button></td>
+                  </tr>
+                `).join('')}
               </tbody>
             </table>
           </div>
@@ -2248,8 +2916,17 @@ async function renderCost() {
       <!-- 已填成本活动 -->
       <div class="card">
         <div class="card-header">
-          <div><div class="card-title"><i data-lucide="circle-check-big" style="width:14px;height:14px;vertical-align:-2px;margin-right:6px"></i>已填成本（${actsWithCost.length}场）</div></div>
+          <div style="flex:1">
+            <div class="card-title"><i data-lucide="circle-check-big" style="width:14px;height:14px;vertical-align:-2px;margin-right:6px"></i>已填成本（${filteredActsWithCost.length}场）</div>
+            <div class="card-sub">
+              <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:10px">
+                ${renderCostYmFilterButtons('withCost', withCostKeys, costWithCostYMFilter)}
+              </div>
+            </div>
+          </div>
+          <button class="btn btn-secondary btn-sm" onclick="toggleCostSection('withCost')">展开/收起</button>
         </div>
+        <div id="withCostTable" style="${costSectionCollapsed.withCost ? 'display:none' : ''}">
         <div class="table-wrapper">
           <table>
             <thead>
@@ -2257,6 +2934,7 @@ async function renderCost() {
                 <th>日期</th>
                 <th>项目编号</th>
                 <th>区域</th>
+                <th>归属</th>
                 <th>品牌</th>
                 <th>类型</th>
                 <th>报价</th>
@@ -2266,13 +2944,14 @@ async function renderCost() {
               </tr>
             </thead>
             <tbody>
-              ${actsWithCost.map(a => {
+              ${filteredActsWithCost.map(a => {
                 const profit = (parseFloat(a.quoted_price)||0) - (parseFloat(a.total_cost)||0);
                 return `
                   <tr>
                     <td>${fmtDateShort(a.date||a.activity_date)}</td>
                     <td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px" title="${a.project_code||''}">${a.project_code||'—'}</td>
                     <td><span style="font-size:11px;color:var(--text-secondary)">${a.region||'—'}</span></td>
+                    <td><span style="font-size:11px;color:var(--text-secondary)">${escapeHtml(formatActivityBelongingForTable(a))}</span></td>
                     <td><span class="badge badge-${brandColor(a.brand)}">${a.brand||'—'}</span></td>
                     <td><span class="badge badge-${typeColor(a.activity_type)}">${a.activity_type||'—'}</span></td>
                     <td class="amount amount-revenue">${fmtMoney(a.quoted_price)}</td>
@@ -2285,17 +2964,14 @@ async function renderCost() {
             </tbody>
           </table>
         </div>
+        </div>
       </div>
     `;
+    renderLucideIcons();
   } catch (err) {
     container.innerHTML = `<div class="empty-state"><div class="empty-icon"><i data-lucide="triangle-alert" style="width:20px;height:20px"></i></div><div class="empty-title">加载失败</div><div class="empty-sub">${err.message}</div></div>`;
     renderLucideIcons();
   }
-}
-
-function toggleNoCostTable() {
-  const el = document.getElementById('noCostTable');
-  if (el) el.style.display = el.style.display === 'none' ? '' : 'none';
 }
 
 const COST_DETAIL_GROUPS = [
@@ -2354,7 +3030,7 @@ function parseActivityCostDetails(activity) {
   COST_DETAIL_GROUPS.forEach((g) => {
     g.items.forEach((it) => {
       const v = raw[it.key] != null ? raw[it.key] : (activity ? activity[it.key] : null);
-      out[it.key] = Number.isFinite(parseFloat(v)) ? parseFloat(v) : 0;
+      out[it.key] = Number.isFinite(parseFloat(v)) ? roundMoney2(v) : 0;
     });
   });
   return out;
@@ -2371,7 +3047,7 @@ function renderCostDetailSections(fieldClass, details, onInputExpr) {
           ${g.items.map((f) => `
             <div class="form-group">
               <label class="form-label">${f.label}</label>
-              <input type="number" class="form-control ${fieldClass}" data-key="${f.key}" value="${details[f.key] || ''}" placeholder="0" step="0.01" oninput="${onInputExpr}">
+              <input type="number" class="form-control ${fieldClass}" data-key="${f.key}" value="${details[f.key] !== undefined && details[f.key] !== null && details[f.key] !== '' ? roundMoney2(details[f.key]).toFixed(2) : ''}" placeholder="0.00" step="0.01" oninput="${onInputExpr}">
             </div>
           `).join('')}
         </div>
@@ -2385,14 +3061,14 @@ function collectCostDetails(fieldClass) {
   document.querySelectorAll(`.${fieldClass}`).forEach((el) => {
     const key = el.getAttribute('data-key');
     if (!key) return;
-    details[key] = parseFloat(el.value) || 0;
+    details[key] = roundMoney2(el.value);
   });
   return details;
 }
 
 function calcCostDetailsTotal(details) {
   if (!details || typeof details !== 'object') return 0;
-  return Object.values(details).reduce((s, v) => s + (parseFloat(v) || 0), 0);
+  return roundMoney2(Object.values(details).reduce((s, v) => s + roundMoney2(v), 0));
 }
 
 async function showCostFillFromCost(actId) {
@@ -2405,18 +3081,24 @@ async function showCostFillFromCost(actId) {
       return;
     }
     const total = calcCostDetailsTotal(details);
+    const markedNoCost = a && (a.no_cost === true || a.no_cost === 1 || String(a.no_cost) === '1');
     content.innerHTML = `
       <input type="hidden" id="costActId2" value="${actId}">
       <div style="margin-bottom:12px;padding:10px;background:var(--bg-input);border-radius:var(--radius-sm)">
         <div style="font-size:12px;color:var(--text-secondary)">${a.project_code||a.city+(a.activity_type||'')}</div>
         <div style="font-size:13px;color:var(--text-primary);margin-top:2px">报价：<span class="amount amount-revenue">${fmtMoney(a.quoted_price)}</span></div>
       </div>
+      <label style="display:flex;align-items:center;gap:8px;margin:0 0 12px;padding:10px 12px;background:var(--bg-input);border:1px solid var(--border);border-radius:var(--radius-sm);cursor:pointer">
+        <input type="checkbox" id="costNoCostFlag2" ${markedNoCost ? 'checked' : ''} onchange="toggleCostNoCostMode('2')">
+        <span style="font-size:13px;color:var(--text-primary)">该场次无成本（勾选后不计入待填写成本）</span>
+      </label>
       ${renderCostDetailSections('cost-field2', details, 'updateCostTotal2()')}
       <div style="margin-top:14px;padding:12px;background:var(--accent-soft);border-radius:var(--radius-sm);display:flex;justify-content:space-between;align-items:center">
         <span style="color:var(--text-secondary);font-size:13px">成本合计</span>
         <span class="amount" style="font-size:18px;font-weight:700;color:var(--accent)" id="costTotal2">${fmtMoney(total)}</span>
       </div>
     `;
+    toggleCostNoCostMode('2');
     openModal('modalCostFill2');
   } catch (err) {
     showToast('加载失败: ' + err.message, 'error');
@@ -2425,17 +3107,21 @@ async function showCostFillFromCost(actId) {
 
 function updateCostTotal2() {
   let total = 0;
-  document.querySelectorAll('.cost-field2').forEach(el => { total += parseFloat(el.value)||0; });
+  document.querySelectorAll('.cost-field2').forEach((el) => {
+    total += roundMoney2(el.value);
+  });
+  total = roundMoney2(total);
   const el = document.getElementById('costTotal2');
   if (el) el.textContent = fmtMoney(total);
 }
 
 async function saveCostFromModal2() {
   const actId = document.getElementById('costActId2').value;
-  const details = collectCostDetails('cost-field2');
-  const total = calcCostDetailsTotal(details);
+  const noCost = !!document.getElementById('costNoCostFlag2')?.checked;
+  const details = noCost ? {} : collectCostDetails('cost-field2');
+  const total = noCost ? 0 : roundMoney2(calcCostDetailsTotal(details));
   try {
-    await api('PUT', `/activities/${actId}`, { total_cost: total, cost_details: details });
+    await api('PUT', `/activities/${actId}`, { total_cost: total, cost_details: details, no_cost: noCost ? 1 : 0 });
     showToast('成本已保存', 'success');
     closeModal();
     renderCost();
@@ -2445,7 +3131,7 @@ async function saveCostFromModal2() {
 }
 
 /* =============================================
-   页面：物流记录
+   页面：物流成本（原物流记录）
    ============================================= */
 async function renderLogistics() {
   const container = document.getElementById('pageContainer');
@@ -2687,7 +3373,8 @@ async function showLogisticsModal(id = null) {
       document.getElementById('logOrigin').value = item.origin_city || '';
       document.getElementById('logDest').value = item.destination_city || '';
       if (item.shipping_date) document.getElementById('logDate').value = new Date(item.shipping_date).toISOString().split('T')[0];
-      document.getElementById('logFee').value = item.fee != null && item.fee !== '' ? item.fee : '';
+      document.getElementById('logFee').value =
+        item.fee != null && item.fee !== '' ? roundMoney2(item.fee).toFixed(2) : '';
       const rpc =
         item.related_project_code != null && String(item.related_project_code).trim() !== ''
           ? String(item.related_project_code).trim()
@@ -2718,7 +3405,7 @@ async function saveLogistics() {
     origin_city: document.getElementById('logOrigin').value,
     destination_city: document.getElementById('logDest').value,
     shipping_date: document.getElementById('logDate').value || null,
-    fee: parseFloat(document.getElementById('logFee').value) || 0,
+    fee: roundMoney2(document.getElementById('logFee').value),
     related_project_code: rpcRaw || null,
     remarks: document.getElementById('logRemarks').value,
   };
@@ -2749,19 +3436,13 @@ async function deleteLogistics(id) {
 }
 
 /* =============================================
-   页面：仓储记录
+   页面：仓储成本（原仓储记录）
    ============================================= */
 async function renderWarehouse() {
   const container = document.getElementById('pageContainer');
 
   container.innerHTML = `
-    <div class="toolbar">
-      <div class="toolbar-left">
-        <select class="filter-select" id="warMonth" onchange="loadWarehouse()">
-          <option value="">全部月份</option>
-          ${Array.from({length:12},(_,i)=>`<option value="${i+1}月">${i+1}月</option>`).join('')}
-        </select>
-      </div>
+    <div class="toolbar" style="justify-content:flex-end">
       <div class="toolbar-right" style="display:flex;gap:8px;align-items:center">
         <button type="button" class="btn btn-danger btn-sm" id="warBatchDeleteBtn" disabled onclick="deleteSelectedWarehouse()">一键删除</button>
         <button type="button" class="btn btn-primary btn-sm" onclick="showWarehouseModal()">+ 新建仓储</button>
@@ -2775,6 +3456,7 @@ async function renderWarehouse() {
 }
 
 const WAREHOUSE_REGION_OPTIONS = ['东区', '北区', '南区'];
+const WAREHOUSE_BRAND_OPTIONS = ['PHD', 'X.O', 'CLUB', 'REMY'];
 const WAREHOUSE_TRAD_TO_SIMP = { '東區': '东区', '北區': '北区', '南區': '南区' };
 
 /** 与后端一致：去 BOM、NFKC、繁体「東區」等映射为简体选项值 */
@@ -2793,11 +3475,16 @@ function readWarRegionSelect() {
   return normalizeWarehouseRegion(raw);
 }
 
+function readWarBrandSelect() {
+  const sel = document.getElementById('warBrand');
+  if (!sel || sel.selectedIndex < 0) return '';
+  const v = String(sel.options[sel.selectedIndex].value || '').trim();
+  return WAREHOUSE_BRAND_OPTIONS.includes(v) ? v : '';
+}
+
 async function loadWarehouse() {
   try {
-    const month = document.getElementById('warMonth')?.value || '';
     let qs = currentYearFrameId ? `?yearFrameId=${currentYearFrameId}` : '?';
-    if (month) qs += `&month=${encodeURIComponent(month)}`;
 
     const data = await api('GET', `/warehouse${qs}`);
     warehouseState.data = data;
@@ -2818,6 +3505,8 @@ async function loadWarehouse() {
 
       const TAX_RATE = 0.06; // 报价含税 6%
       const taxDiv = 1 + TAX_RATE;
+      const totalQuotedAll = data.reduce((s, w) => s + (parseFloat(w.quoted_price) || 0), 0);
+      const totalCostAll = data.reduce((s, w) => s + (parseFloat(w.actual_cost) || 0), 0);
       const rowsByRegion = new Map(REGION_META.map((r) => [r.key, []]));
       data.forEach((w) => {
         const r = normalizeWarehouseRegion(w.region);
@@ -2832,6 +3521,20 @@ async function loadWarehouse() {
       };
 
       sumEl.innerHTML = `
+        <div style="display:grid;grid-template-columns:repeat(2,minmax(200px,1fr));gap:16px;margin-bottom:16px">
+          <div class="stat-card success">
+            <div class="stat-icon"><i data-lucide="receipt" style="width:16px;height:16px"></i></div>
+            <div class="stat-label">仓储总报价（含税）</div>
+            <div class="stat-value" style="margin-top:8px;font-variant-numeric:tabular-nums">${fmtMoney(totalQuotedAll)}</div>
+            <div class="stat-sub">当前年框下列表全部记录合计</div>
+          </div>
+          <div class="stat-card warning">
+            <div class="stat-icon"><i data-lucide="coins" style="width:16px;height:16px"></i></div>
+            <div class="stat-label">仓储总成本</div>
+            <div class="stat-value" style="margin-top:8px;font-variant-numeric:tabular-nums">${fmtMoney(totalCostAll)}</div>
+            <div class="stat-sub">实际成本字段合计</div>
+          </div>
+        </div>
         <div class="stats-grid three" style="margin-bottom:16px">
           ${REGION_META.map((r) => {
             const rows = rowsByRegion.get(r.key) || [];
@@ -2872,7 +3575,7 @@ async function loadWarehouse() {
                 <input type="checkbox" id="warSelectAll" style="width:16px;height:16px;cursor:pointer;accent-color:var(--accent)" onchange="toggleWarehouseSelectAll(this.checked)" aria-label="全选当前列表">
               </th>
               <th>年份</th>
-              <th>月份</th>
+              <th>品牌</th>
               <th>区域</th>
               <th>数量<br><span style="font-size:10px;font-weight:500;color:var(--text-muted);text-transform:none;letter-spacing:0">（月）</span></th>
               <th>单价</th>
@@ -2898,7 +3601,7 @@ async function loadWarehouse() {
                     <input type="checkbox" class="war-row-cb" data-war-id="${wid}" ${isSel ? 'checked' : ''} style="width:16px;height:16px;cursor:pointer;accent-color:var(--accent)" onchange="toggleWarehouseRowSelect(${wid}, this.checked)" aria-label="选择该条仓储记录">
                   </td>
                   <td><span class="badge badge-gray" style="font-weight:600">${w.year_frame_name != null && String(w.year_frame_name).trim() !== '' ? escapeHtml(String(w.year_frame_name)) : '—'}</span></td>
-                  <td><span class="badge badge-blue">${escapeHtml(w.month||'—')}</span></td>
+                  <td><span class="badge badge-gray">${escapeHtml((w.brand != null && String(w.brand).trim() !== '' ? String(w.brand).trim() : 'PHD'))}</span></td>
                   <td><span class="badge badge-accent">${(() => { const r = normalizeWarehouseRegion(w.region); return r ? escapeHtml(r) : '—'; })()}</span></td>
                   <td>${qtySafe}<span style="font-size:11px;color:var(--text-muted);margin-left:3px">月</span></td>
                   <td>${hasUnitPrice ? fmtMoney(upNum) : '—'}</td>
@@ -2906,7 +3609,7 @@ async function loadWarehouse() {
                     <div>${fmtMoney(w.quoted_price)}</div>
                     ${quoteSub}
                   </td>
-                  <td class="amount ${parseFloat(w.actual_cost)>0?'amount-cost':'amount-neutral'}">${parseFloat(w.actual_cost)>0?fmtMoney(w.actual_cost):'—'}</td>
+                  <td class="amount ${w.no_actual_cost ? 'amount-neutral' : (parseFloat(w.actual_cost)>0?'amount-cost':'amount-neutral')}">${w.no_actual_cost ? '无' : (parseFloat(w.actual_cost)>0?fmtMoney(w.actual_cost):'—')}</td>
                   <td style="font-size:12px;color:var(--text-muted)">${escapeHtml(w.remarks||'')}</td>
                   <td>
                     <div style="display:flex;gap:4px">
@@ -2924,6 +3627,7 @@ async function loadWarehouse() {
       updateWarehouseSelectUi();
     }
     void updateBadges();
+    renderLucideIcons();
   } catch (err) {
     showToast('加载失败: ' + err.message, 'error');
   }
@@ -2996,10 +3700,20 @@ function updateWarQuotedPrice() {
   const elU = document.getElementById('warUnitPrice');
   const elP = document.getElementById('warQuotedPrice');
   if (!elQ || !elU || !elP) return;
-  const qn = Math.max(0, parseFloat(elQ.value) || 0);
-  const un = Math.max(0, parseFloat(elU.value) || 0);
-  const total = Math.round(qn * un * 100) / 100;
+  const qn = Math.max(0, parseInt(elQ.value, 10) || 0);
+  const un = Math.max(0, roundMoney2(elU.value));
+  const total = roundMoney2(qn * un);
   elP.value = total.toFixed(2);
+}
+
+function toggleWarNoActualCost() {
+  const cb = document.getElementById('warNoActualCost');
+  const input = document.getElementById('warActualCost');
+  if (!cb || !input) return;
+  const checked = !!cb.checked;
+  input.disabled = checked;
+  input.placeholder = checked ? '无成本' : '0.00';
+  if (checked) input.value = '';
 }
 
 async function fillWarehouseYearFrameSelect(preferredFrameId) {
@@ -3030,8 +3744,11 @@ async function showWarehouseModal(id = null) {
   });
   const reg = document.getElementById('warRegion');
   if (reg) reg.value = '';
-  const mf = document.getElementById('warMonthField');
-  if (mf) mf.value = '1月';
+  const brandEl = document.getElementById('warBrand');
+  if (brandEl) brandEl.value = 'PHD';
+  const noCostCb = document.getElementById('warNoActualCost');
+  if (noCostCb) noCostCb.checked = false;
+  toggleWarNoActualCost();
 
   let preferredYf = currentYearFrameId;
   let item = null;
@@ -3048,13 +3765,21 @@ async function showWarehouseModal(id = null) {
 
   if (item) {
     preferredYf = item.year_frame_id;
-    if (mf) mf.value = item.month || '1月';
+    const b = item.brand != null && String(item.brand).trim() !== '' ? String(item.brand).trim() : 'PHD';
+    if (brandEl) brandEl.value = WAREHOUSE_BRAND_OPTIONS.includes(b) ? b : 'PHD';
     const rSel = normalizeWarehouseRegion(item.region);
     if (reg) reg.value = WAREHOUSE_REGION_OPTIONS.includes(rSel) ? rSel : '';
     document.getElementById('warQty').value = item.quantity != null && item.quantity !== '' ? item.quantity : '';
-    document.getElementById('warUnitPrice').value = item.unit_price != null && item.unit_price !== '' ? item.unit_price : '';
-    document.getElementById('warQuotedPrice').value = item.quoted_price != null && item.quoted_price !== '' ? item.quoted_price : '';
-    document.getElementById('warActualCost').value = item.actual_cost != null && item.actual_cost !== '' ? item.actual_cost : '';
+    document.getElementById('warUnitPrice').value =
+      item.unit_price != null && item.unit_price !== '' ? roundMoney2(item.unit_price).toFixed(2) : '';
+    document.getElementById('warQuotedPrice').value =
+      item.quoted_price != null && item.quoted_price !== '' ? roundMoney2(item.quoted_price).toFixed(2) : '';
+    document.getElementById('warActualCost').value =
+      item.actual_cost != null && item.actual_cost !== '' ? roundMoney2(item.actual_cost).toFixed(2) : '';
+    const noActual = item.no_actual_cost === true || item.no_actual_cost === 1 || String(item.no_actual_cost) === '1';
+    if (noCostCb) noCostCb.checked = noActual;
+    if (noActual) document.getElementById('warActualCost').value = '';
+    toggleWarNoActualCost();
     document.getElementById('warRemarks').value = item.remarks || '';
   }
 
@@ -3075,8 +3800,13 @@ async function saveWarehouse() {
   const id = document.getElementById('warId').value;
   const yearFrameId = parseInt(document.getElementById('warYearFrameId').value, 10);
   const region = readWarRegionSelect();
+  const brand = readWarBrandSelect();
   if (!yearFrameId) {
     showToast('请选择年份', 'error');
+    return;
+  }
+  if (!brand) {
+    showToast('请选择品牌：PHD / X.O / CLUB / REMY', 'error');
     return;
   }
   if (!region || !WAREHOUSE_REGION_OPTIONS.includes(region)) {
@@ -3085,7 +3815,7 @@ async function saveWarehouse() {
   }
   updateWarQuotedPrice();
   const qty = parseInt(document.getElementById('warQty').value, 10) || 0;
-  const unitPrice = parseFloat(document.getElementById('warUnitPrice').value) || 0;
+  const unitPrice = roundMoney2(document.getElementById('warUnitPrice').value);
   if (qty <= 0) {
     showToast('数量（月）须大于 0', 'error');
     return;
@@ -3096,14 +3826,16 @@ async function saveWarehouse() {
   }
   const body = {
     year_frame_id: yearFrameId,
-    month: document.getElementById('warMonthField').value,
+    month: null,
+    brand,
     region,
     wine_name: '',
     specifications: '',
     quantity: qty,
     unit_price: unitPrice,
-    quoted_price: parseFloat(document.getElementById('warQuotedPrice').value) || 0,
-    actual_cost: parseFloat(document.getElementById('warActualCost').value) || 0,
+    quoted_price: roundMoney2(document.getElementById('warQuotedPrice').value),
+    actual_cost: document.getElementById('warNoActualCost')?.checked ? 0 : roundMoney2(document.getElementById('warActualCost').value),
+    no_actual_cost: document.getElementById('warNoActualCost')?.checked ? 1 : 0,
     remarks: document.getElementById('warRemarks').value,
   };
   try {
@@ -3195,8 +3927,796 @@ async function exportData() {
   }
 }
 
+function fmtDateTime(v) {
+  if (!v) return '—';
+  const d = new Date(v);
+  if (Number.isNaN(d.getTime())) return String(v);
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mm = String(d.getMinutes()).padStart(2, '0');
+  return `${y}-${m}-${day} ${hh}:${mm}`;
+}
+
+async function renderUsers() {
+  const container = document.getElementById('pageContainer');
+  if (!container) return;
+  if (!canManageUsers()) {
+    container.innerHTML = `<div class="empty-state"><div class="empty-title">无权限</div><div class="empty-sub">仅管理员可访问用户管理</div></div>`;
+    return;
+  }
+  container.innerHTML = '<div style="text-align:center;padding:30px;color:var(--text-muted)">加载中...</div>';
+  try {
+    const rows = await api('GET', '/users');
+    const meId = Number(currentUser?.id || 0);
+    const html = `
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title">用户管理</div>
+          <div class="card-sub">注册用户默认 operator；管理员可提升/降级与启停用</div>
+        </div>
+        <div class="card-body">
+          <div class="table-wrapper"><table>
+            <thead><tr><th>ID</th><th>用户名</th><th>角色</th><th>状态</th><th>最近登录</th><th>操作</th></tr></thead>
+            <tbody>
+              ${(rows || []).map((u) => {
+                const isMe = Number(u.id) === meId;
+                const roleBtn = u.role === 'admin'
+                  ? `<button class="btn btn-secondary btn-sm" ${isMe ? 'disabled title="当前账号不可自降级"' : ''} onclick="setUserRole(${u.id}, 'operator')">降级为 operator</button>`
+                  : `<button class="btn btn-primary btn-sm" onclick="setUserRole(${u.id}, 'admin')">提升为 admin</button>`;
+                const statusBtn = Number(u.is_active) === 1
+                  ? `<button class="btn btn-danger btn-sm" ${isMe ? 'disabled title="当前账号不可自停用"' : ''} onclick="setUserStatus(${u.id}, 0)">停用</button>`
+                  : `<button class="btn btn-secondary btn-sm" onclick="setUserStatus(${u.id}, 1)">启用</button>`;
+                const resetPwdBtn = `<button type="button" class="btn btn-secondary btn-sm" onclick="openAdminResetPasswordModal(${u.id}, ${JSON.stringify(String(u.username || ''))})">重置密码</button>`;
+                return `<tr>
+                  <td>${u.id}</td>
+                  <td>${escapeHtml(u.username || '')}${isMe ? ' <span class="badge badge-blue">我</span>' : ''}</td>
+                  <td><span class="badge ${u.role === 'admin' ? 'badge-blue' : 'badge-gray'}">${u.role}</span></td>
+                  <td>${Number(u.is_active) === 1 ? '<span class="badge badge-success">启用</span>' : '<span class="badge badge-gray">停用</span>'}</td>
+                  <td>${fmtDateTime(u.last_login_at)}</td>
+                  <td style="white-space:nowrap;display:flex;flex-wrap:wrap;gap:6px;">${roleBtn}${statusBtn}${resetPwdBtn}</td>
+                </tr>`;
+              }).join('')}
+            </tbody>
+          </table></div>
+        </div>
+      </div>
+    `;
+    container.innerHTML = html;
+  } catch (err) {
+    container.innerHTML = `<div class="empty-state"><div class="empty-title">加载失败</div><div class="empty-sub">${escapeHtml(err.message || '')}</div></div>`;
+  }
+}
+
+async function setUserRole(id, role) {
+  try {
+    await api('PUT', `/users/${id}/role`, { role });
+    showToast('角色更新成功', 'success');
+    await renderUsers();
+  } catch (err) {
+    showToast(err.message || '角色更新失败', 'error');
+  }
+}
+
+async function setUserStatus(id, is_active) {
+  try {
+    await api('PUT', `/users/${id}/status`, { is_active });
+    showToast('状态更新成功', 'success');
+    await renderUsers();
+  } catch (err) {
+    showToast(err.message || '状态更新失败', 'error');
+  }
+}
+
 /* =============================================
-   页面：客户用酒
+   页面：物料采购（20260414 规格：固定项 + 自定义项）
+   ============================================= */
+/** 物料采购页四卡片：按品牌编码/名称归入 RC / PHD / X.O / CLUB（其余并入 RC） */
+function materialPurchaseBrandBucket(brandCode, brandName) {
+  const c = String(brandCode || '')
+    .trim()
+    .toUpperCase()
+    .replace(/\s+/g, '');
+  const n = String(brandName || '').trim().toUpperCase();
+  if (c === 'PHD' || c.indexOf('PHD') === 0) return 'PHD';
+  if (c === 'X.O' || c === 'XO' || c.indexOf('X.O') === 0 || /^XO/.test(c)) return 'X.O';
+  if (c === 'CLUB' || c.indexOf('CLUB') === 0) return 'CLUB';
+  if (c.includes('RC') || n.includes('RC')) return 'RC';
+  return 'RC';
+}
+
+function materialPurchaseAggFourBuckets(rowsAllYear) {
+  const totals = { RC: 0, PHD: 0, 'X.O': 0, CLUB: 0 };
+  const counts = { RC: 0, PHD: 0, 'X.O': 0, CLUB: 0 };
+  (rowsAllYear || []).forEach((r) => {
+    const k = materialPurchaseBrandBucket(r.brand_code, r.brand_name);
+    const amt = roundMoney2(r.total_amount);
+    totals[k] = roundMoney2(totals[k] + amt);
+    counts[k] += 1;
+  });
+  return { totals, counts };
+}
+
+const MATERIAL_FIXED_ITEM_NAMES = [
+  '奶酪',
+  '巧克力',
+  '糖渍橙皮丁',
+  '芒果',
+  '桂皮',
+  '茉莉花',
+  '西梅',
+  '杏脯',
+  '巴达木',
+  '腰果',
+  '九制陈皮',
+  '香草荚',
+];
+
+function materialPurchaseRowHtml(r) {
+  const rem = r.remarks ? String(r.remarks).slice(0, 48) + (String(r.remarks).length > 48 ? '…' : '') : '—';
+  return `<tr>
+    <td>${r.id}</td>
+    <td>${escapeHtml(fmtDate(r.purchase_date))}</td>
+    <td><span class="badge badge-${brandColor(r.brand_code || r.brand_name)}">${escapeHtml(r.brand_name || r.brand_code || '—')}</span></td>
+    <td class="amount" style="text-align:right">${fmtMoney(r.total_amount)}</td>
+    <td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;font-size:12px;color:var(--text-secondary)" title="${escapeHtml(r.remarks || '')}">${escapeHtml(rem)}</td>
+    <td onclick="event.stopPropagation()" style="white-space:nowrap">
+      <button type="button" class="btn btn-secondary btn-sm" onclick="showMaterialPurchaseModal(${r.id})">编辑</button>
+      <button type="button" class="btn btn-danger btn-sm" onclick="deleteMaterialPurchaseRecord(${r.id})">删除</button>
+    </td>
+  </tr>`;
+}
+
+function materialSetBrandFilter(v) {
+  materialPageState.filterBrandId = v || '';
+  renderMaterialPurchases();
+}
+
+async function renderMaterialPurchases() {
+  const container = document.getElementById('pageContainer');
+  container.innerHTML =
+    '<div style="text-align:center;padding:36px;color:var(--text-muted)">加载中...</div>';
+  try {
+    const yf = currentYearFrameId || '';
+    const qs = new URLSearchParams();
+    if (yf) qs.set('yearFrameId', String(yf));
+    if (materialPageState.filterBrandId) qs.set('brandId', materialPageState.filterBrandId);
+    const qStr = qs.toString();
+    const yfOnlyQs = new URLSearchParams();
+    if (yf) yfOnlyQs.set('yearFrameId', String(yf));
+    const yfOnlyStr = yfOnlyQs.toString();
+
+    const [rows, rowsAllYear, brands] = await Promise.all([
+      api('GET', `/material-purchases${qStr ? `?${qStr}` : ''}`),
+      api('GET', `/material-purchases${yfOnlyStr ? `?${yfOnlyStr}` : ''}`),
+      api('GET', '/brand?active=true'),
+    ]);
+
+    const brandOpts = (brands || [])
+      .map(
+        (b) =>
+          `<option value="${b.id}" ${String(materialPageState.filterBrandId) === String(b.id) ? 'selected' : ''}>${escapeHtml(b.brand_name || b.brand_code)}</option>`
+      )
+      .join('');
+
+    const { totals: bt, counts: bc } = materialPurchaseAggFourBuckets(rowsAllYear);
+    const grandTotal = roundMoney2(Object.values(bt).reduce((s, v) => s + roundMoney2(v), 0));
+
+    const bucketDefs = [
+      { key: 'RC', title: 'RC', sub: 'RC 系及未归入 PHD / X.O / CLUB 的登记', icon: 'orbit', card: 'stat-card success' },
+      { key: 'PHD', title: 'PHD', sub: '品牌编码 PHD*', icon: 'flask-conical', card: 'stat-card accent' },
+      { key: 'X.O', title: 'X.O', sub: '品牌 X.O / XO*', icon: 'wine', card: 'stat-card warning' },
+      { key: 'CLUB', title: 'CLUB', sub: '品牌 CLUB*', icon: 'sparkles', card: 'stat-card blue' },
+    ];
+    const bucketCardsHtml = bucketDefs
+      .map(
+        (d) => `
+      <div class="${d.card}" style="min-height:120px">
+        <div class="stat-icon"><i data-lucide="${d.icon}" style="width:16px;height:16px"></i></div>
+        <div class="stat-label">${d.title}</div>
+        <div class="stat-value sm">${fmtMoney(bt[d.key] || 0)}</div>
+        <div class="stat-sub">${bc[d.key] || 0} 笔 · ${escapeHtml(d.sub)}</div>
+      </div>`
+      )
+      .join('');
+
+    const listBody = (rows || []).length
+      ? (rows || []).map((r) => materialPurchaseRowHtml(r)).join('')
+      : '<tr><td colspan="6" style="text-align:center;color:var(--text-muted);padding:20px">暂无记录</td></tr>';
+
+    container.innerHTML = `
+      <div class="stats-grid" style="margin-bottom:16px">
+        <div class="stat-card accent">
+          <div class="stat-label">物料采购合计（当前年框）</div>
+          <div class="stat-value sm">${fmtMoney(grandTotal)}</div>
+          <div class="stat-sub">四卡片之和 · 与下方列表筛选无关</div>
+        </div>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:12px;margin-bottom:16px">
+        ${bucketCardsHtml}
+      </div>
+      <div class="card">
+        <div class="card-header" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+          <div>
+            <div class="card-title">登记记录</div>
+            <div class="card-sub">固定费用项目 + 自定义项目；金额保留两位小数</div>
+          </div>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+            <select class="filter-select" id="mpListBrandFilter" onchange="materialSetBrandFilter(this.value)">
+              <option value="">全部品牌</option>${brandOpts}
+            </select>
+            <button type="button" class="btn btn-primary btn-sm" onclick="showMaterialPurchaseModal(null)">+ 新建登记</button>
+          </div>
+        </div>
+        <div class="card-body" style="padding:0">
+          <div class="table-wrapper">
+            <table>
+              <thead><tr><th>ID</th><th>日期</th><th>品牌</th><th style="text-align:right">合计</th><th>备注</th><th>操作</th></tr></thead>
+              <tbody>${listBody}</tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    `;
+    renderLucideIcons();
+    applyRoleUiGuards();
+  } catch (e) {
+    const msg = String(e.message || '');
+    const is404 = msg.includes('404');
+    const hint404 =
+      '<p style="margin-top:14px;font-size:13px;color:var(--text-muted)"><strong>接口 404</strong>：当前响应的 Node 进程<strong>没有注册</strong> <code>/api/material-purchases</code>，几乎都是因为<strong>仍在跑旧进程</strong>。请先 <code>lsof -i :3088</code>（或你的端口）找到旧 node 并结束进程，再在项目目录执行 <code>npm run start</code>。可打开 <code>/api/health</code> 查看 JSON 里 <code>features.materialPurchasesApi</code> 是否为 <code>true</code>。</p>';
+    const hintDb =
+      '<p style="margin-top:10px;font-size:13px;color:var(--text-muted)">若错误为数据库表不存在，请执行：<code style="font-size:12px">npm run migrate:material-purchases</code> 后再重启服务。</p>';
+    container.innerHTML = `<div class="card"><div class="card-body empty-state">
+      <div class="empty-title">加载失败</div>
+      <div class="empty-sub">${escapeHtml(msg)}</div>
+      ${is404 ? hint404 : hintDb}
+    </div></div>`;
+    renderLucideIcons();
+  }
+}
+
+function collectMaterialPurchaseItemsFromForm() {
+  const out = [];
+  document.querySelectorAll('.mp-amt-fixed').forEach((inp) => {
+    const name = inp.getAttribute('data-name');
+    if (!name) return;
+    const amt = roundMoney2(inp.value);
+    if (amt > 0) out.push({ name, amount: amt });
+  });
+  document.querySelectorAll('.mp-custom-row').forEach((row) => {
+    const nm = row.querySelector('.mp-custom-name')?.value?.trim();
+    const am = roundMoney2(row.querySelector('.mp-custom-amt')?.value);
+    if (nm && am > 0) out.push({ name: nm, amount: am });
+  });
+  return out;
+}
+
+function updateMpTotal() {
+  const items = collectMaterialPurchaseItemsFromForm();
+  const t = roundMoney2(items.reduce((s, x) => s + roundMoney2(x.amount), 0));
+  const el = document.getElementById('mpTotalDisplay');
+  if (el) el.textContent = fmtMoney(t);
+}
+
+function materialAppendCustomRow() {
+  const wrap = document.getElementById('mpCustomRows');
+  if (!wrap) return;
+  const div = document.createElement('div');
+  div.className = 'form-group mp-custom-row';
+  div.style.cssText =
+    'display:grid;grid-template-columns:1fr 120px 52px;gap:8px;align-items:center;margin-bottom:8px';
+  div.innerHTML = `
+    <input type="text" class="form-control mp-custom-name" placeholder="项目名称">
+    <input type="number" class="form-control mp-custom-amt" step="0.01" min="0" placeholder="0.00" oninput="updateMpTotal()">
+    <button type="button" class="btn btn-secondary btn-sm" onclick="this.closest('.mp-custom-row').remove();updateMpTotal()">删</button>
+  `;
+  wrap.appendChild(div);
+}
+
+async function showMaterialPurchaseModal(id) {
+  const title = document.getElementById('modalMaterialPurchaseTitle');
+  const body = document.getElementById('modalMaterialPurchaseBody');
+  if (!body) return;
+  let record = null;
+  if (id) {
+    try {
+      record = await api('GET', `/material-purchases/${id}`);
+      if (title) title.textContent = '编辑物料采购';
+    } catch (e) {
+      showToast(e.message || '加载失败', 'error');
+      return;
+    }
+  } else if (title) {
+    title.textContent = '新建物料采购';
+  }
+
+  let brands = [];
+  try {
+    brands = await api('GET', '/brand?active=true');
+  } catch {
+    brands = [];
+  }
+  const brandOpts = brands
+    .map((b) => `<option value="${b.id}">${escapeHtml(b.brand_name || b.brand_code)}</option>`)
+    .join('');
+
+  const defaultBrand = record ? String(record.brand_id) : brands[0] ? String(brands[0].id) : '';
+  const dateVal = record && record.purchase_date
+    ? String(record.purchase_date).slice(0, 10)
+    : new Date().toISOString().slice(0, 10);
+
+  const itemsMap = {};
+  (record && Array.isArray(record.items) ? record.items : []).forEach((it) => {
+    if (it && it.name) itemsMap[it.name] = roundMoney2(it.amount);
+  });
+
+  const fixedRows = MATERIAL_FIXED_ITEM_NAMES.map(
+    (name) => `
+    <div class="form-group" style="display:grid;grid-template-columns:1fr 120px;gap:10px;align-items:center;margin-bottom:8px">
+      <label class="form-label" style="margin:0">${escapeHtml(name)}</label>
+      <input type="number" class="form-control mp-amt-fixed" step="0.01" min="0" placeholder="0.00" data-name="${escapeHtml(name)}"
+        value="${itemsMap[name] != null && itemsMap[name] !== 0 ? roundMoney2(itemsMap[name]).toFixed(2) : ''}" oninput="updateMpTotal()">
+    </div>`
+  ).join('');
+
+  const customFromRecord = (record && Array.isArray(record.items) ? record.items : []).filter(
+    (it) => it && it.name && !MATERIAL_FIXED_ITEM_NAMES.includes(it.name)
+  );
+
+  const customRowsHtml = customFromRecord
+    .map(
+      (it) => `
+    <div class="form-group mp-custom-row" style="display:grid;grid-template-columns:1fr 120px 52px;gap:8px;align-items:center;margin-bottom:8px">
+      <input type="text" class="form-control mp-custom-name" placeholder="项目名称" value="${escapeHtml(it.name)}">
+      <input type="number" class="form-control mp-custom-amt" step="0.01" min="0" placeholder="0.00" value="${roundMoney2(it.amount).toFixed(2)}" oninput="updateMpTotal()">
+      <button type="button" class="btn btn-secondary btn-sm" onclick="this.closest('.mp-custom-row').remove();updateMpTotal()">删</button>
+    </div>`
+    )
+    .join('');
+
+  const remarksAttr = record && record.remarks ? escapeHtml(record.remarks) : '';
+
+  body.innerHTML = `
+    <input type="hidden" id="mpRecordId" value="${record ? record.id : ''}">
+    <div class="form-grid" style="grid-template-columns:1fr 1fr">
+      <div class="form-group">
+        <label class="form-label">品牌 <span class="required">*</span></label>
+        <select class="form-control" id="mpBrandId" required>${brandOpts}</select>
+      </div>
+      <div class="form-group">
+        <label class="form-label">报销日期 <span class="required">*</span></label>
+        <input type="date" class="form-control" id="mpPurchaseDate" required value="${dateVal}">
+      </div>
+    </div>
+    <div class="form-group">
+      <div class="form-label">固定费用项目（¥）</div>
+      <div style="margin-top:8px">${fixedRows}</div>
+    </div>
+    <div class="form-group">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+        <span class="form-label" style="margin:0">自定义项目</span>
+        <button type="button" class="btn btn-secondary btn-sm" onclick="materialAppendCustomRow()">+ 添加一行</button>
+      </div>
+      <div id="mpCustomRows">${customRowsHtml}</div>
+    </div>
+    <div class="form-group">
+      <label class="form-label">备注</label>
+      <input type="text" class="form-control" id="mpRemarks" placeholder="选填" value="${remarksAttr}">
+    </div>
+    <div style="margin-top:12px;padding:12px;background:var(--accent-soft);border-radius:var(--radius-sm);display:flex;justify-content:space-between;align-items:center">
+      <span style="color:var(--text-secondary)">合计</span>
+      <span class="amount" id="mpTotalDisplay" style="font-size:18px;font-weight:700">${fmtMoney(0)}</span>
+    </div>
+  `;
+  const bs = document.getElementById('mpBrandId');
+  if (bs && defaultBrand) bs.value = defaultBrand;
+  openModal('modalMaterialPurchase');
+  updateMpTotal();
+  renderLucideIcons();
+}
+
+async function saveMaterialPurchaseForm() {
+  if (!hasWriteAccess()) {
+    showToast('仅管理员可保存', 'warning');
+    return;
+  }
+  const id = document.getElementById('mpRecordId')?.value?.trim();
+  const brand_id = parseInt(document.getElementById('mpBrandId')?.value, 10);
+  const purchase_date = document.getElementById('mpPurchaseDate')?.value;
+  const remarks = document.getElementById('mpRemarks')?.value?.trim() || '';
+  const items = collectMaterialPurchaseItemsFromForm();
+  const total = roundMoney2(items.reduce((s, x) => s + x.amount, 0));
+  if (!brand_id) {
+    showToast('请选择品牌', 'warning');
+    return;
+  }
+  if (!purchase_date) {
+    showToast('请选择报销日期', 'warning');
+    return;
+  }
+  if (!items.length || total <= 0) {
+    showToast('请至少填写一项大于 0 的金额', 'warning');
+    return;
+  }
+  const body = {
+    year_frame_id: currentYearFrameId || 1,
+    brand_id,
+    purchase_date,
+    items,
+    remarks,
+  };
+  try {
+    if (id) {
+      await api('PUT', `/material-purchases/${id}`, body);
+      showToast('已更新', 'success');
+    } else {
+      await api('POST', '/material-purchases', body);
+      showToast('已保存', 'success');
+    }
+    closeModal();
+    if (currentPage === 'material') await renderMaterialPurchases();
+  } catch (e) {
+    showToast(e.message || '保存失败', 'error');
+  }
+}
+
+async function deleteMaterialPurchaseRecord(rid) {
+  if (!hasWriteAccess()) {
+    showToast('仅管理员可删除', 'warning');
+    return;
+  }
+  if (!confirm('确定删除该条物料采购记录？')) return;
+  try {
+    await api('DELETE', `/material-purchases/${rid}`);
+    showToast('已删除', 'success');
+    await renderMaterialPurchases();
+  } catch (e) {
+    showToast(e.message || '删除失败', 'error');
+  }
+}
+
+/* =============================================
+   页面：道具维修（品牌 + 自定义项目 + 无成本）
+   ============================================= */
+function propRepairRowHtml(r) {
+  const rem = r.remarks ? String(r.remarks).slice(0, 48) + (String(r.remarks).length > 48 ? '…' : '') : '—';
+  const noCost = r.no_cost === true || r.no_cost === 1 || String(r.no_cost) === '1';
+  return `<tr>
+    <td>${r.id}</td>
+    <td>${escapeHtml(fmtDate(r.repair_date))}</td>
+    <td><span class="badge badge-accent">${escapeHtml(String(r.region || '—'))}</span></td>
+    <td><span class="badge badge-${brandColor(r.brand_code || r.brand_name)}">${escapeHtml(r.brand_name || r.brand_code || '—')}</span></td>
+    <td class="amount amount-revenue" style="text-align:right">${fmtMoney(r.quoted_price || 0)}</td>
+    <td class="amount" style="text-align:right">${noCost ? '无成本' : fmtMoney(r.total_amount)}</td>
+    <td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;font-size:12px;color:var(--text-secondary)" title="${escapeHtml(r.remarks || '')}">${escapeHtml(rem)}</td>
+    <td onclick="event.stopPropagation()" style="white-space:nowrap">
+      <button type="button" class="btn btn-secondary btn-sm" onclick="showPropRepairModal(${r.id})">编辑</button>
+      <button type="button" class="btn btn-danger btn-sm" onclick="deletePropRepairRecord(${r.id})">删除</button>
+    </td>
+  </tr>`;
+}
+
+function propRepairSetBrandFilter(v) {
+  propRepairPageState.filterBrandId = v || '';
+  renderPropRepairs();
+}
+
+function collectPropRepairItemsFromForm() {
+  const out = [];
+  document.querySelectorAll('.pr-custom-row').forEach((row) => {
+    const nm = row.querySelector('.pr-custom-name')?.value?.trim();
+    const am = roundMoney2(row.querySelector('.pr-custom-amt')?.value);
+    if (nm && am > 0) out.push({ name: nm, amount: am });
+  });
+  return out;
+}
+
+function updatePrTotal() {
+  const noCost = !!document.getElementById('prNoCost')?.checked;
+  const rows = document.querySelectorAll('.pr-custom-row .pr-custom-amt');
+  rows.forEach((el) => {
+    el.disabled = noCost;
+    if (noCost) el.value = '';
+  });
+  const t = noCost
+    ? 0
+    : roundMoney2(collectPropRepairItemsFromForm().reduce((s, x) => s + roundMoney2(x.amount), 0));
+  const el = document.getElementById('prTotalDisplay');
+  if (el) el.textContent = noCost ? '无成本' : fmtMoney(t);
+}
+
+function propRepairAppendCustomRow(name = '', amount = '') {
+  const wrap = document.getElementById('prCustomRows');
+  if (!wrap) return;
+  const div = document.createElement('div');
+  div.className = 'form-group pr-custom-row';
+  div.style.cssText = 'display:grid;grid-template-columns:1fr 120px 52px;gap:8px;align-items:center;margin-bottom:8px';
+  div.innerHTML = `
+    <input type="text" class="form-control pr-custom-name" placeholder="项目名称" value="${escapeHtml(name)}">
+    <input type="number" class="form-control pr-custom-amt" step="0.01" min="0" placeholder="0.00" value="${amount}" oninput="updatePrTotal()">
+    <button type="button" class="btn btn-secondary btn-sm" onclick="this.closest('.pr-custom-row').remove();updatePrTotal()">删</button>
+  `;
+  wrap.appendChild(div);
+}
+
+async function renderPropRepairs() {
+  const container = document.getElementById('pageContainer');
+  container.innerHTML = '<div style="text-align:center;padding:36px;color:var(--text-muted)">加载中...</div>';
+  try {
+    const yf = currentYearFrameId || '';
+    const qs = new URLSearchParams();
+    if (yf) qs.set('yearFrameId', String(yf));
+    if (propRepairPageState.filterBrandId) qs.set('brandId', propRepairPageState.filterBrandId);
+    const qStr = qs.toString();
+    const yfOnlyQs = new URLSearchParams();
+    if (yf) yfOnlyQs.set('yearFrameId', String(yf));
+    const yfOnlyStr = yfOnlyQs.toString();
+
+    const [rows, rowsAllYear, brands] = await Promise.all([
+      api('GET', `/prop-repairs${qStr ? `?${qStr}` : ''}`),
+      api('GET', `/prop-repairs${yfOnlyStr ? `?${yfOnlyStr}` : ''}`),
+      api('GET', '/brand?active=true'),
+    ]);
+
+    const brandOpts = (brands || [])
+      .map(
+        (b) =>
+          `<option value="${b.id}" ${String(propRepairPageState.filterBrandId) === String(b.id) ? 'selected' : ''}>${escapeHtml(b.brand_name || b.brand_code)}</option>`
+      )
+      .join('');
+
+    const quotedTotals = {};
+    const costTotals = {};
+    const counts = {};
+    (rowsAllYear || []).forEach((r) => {
+      const key = String(r.brand_name || r.brand_code || '未知品牌');
+      const noCost = r.no_cost === true || r.no_cost === 1 || String(r.no_cost) === '1';
+      const quoted = roundMoney2(r.quoted_price);
+      const cost = noCost ? 0 : roundMoney2(r.total_amount);
+      quotedTotals[key] = roundMoney2((quotedTotals[key] || 0) + quoted);
+      costTotals[key] = roundMoney2((costTotals[key] || 0) + cost);
+      counts[key] = (counts[key] || 0) + 1;
+    });
+    const grandQuoted = roundMoney2(Object.values(quotedTotals).reduce((s, v) => s + roundMoney2(v), 0));
+    const grandCost = roundMoney2(Object.values(costTotals).reduce((s, v) => s + roundMoney2(v), 0));
+
+    const brandCardsHtml = Object.keys(quotedTotals)
+      .sort((a, b) => quotedTotals[b] - quotedTotals[a])
+      .map(
+        (name) => `
+      <div class="stat-card blue" style="min-height:120px">
+        <div class="stat-icon"><i data-lucide="wrench" style="width:16px;height:16px"></i></div>
+        <div class="stat-label">${escapeHtml(name)}</div>
+        <div class="stat-value sm">${fmtMoney(quotedTotals[name] || 0)}</div>
+        <div class="stat-sub">${counts[name] || 0} 笔 · 维修费 ${fmtMoney(costTotals[name] || 0)}</div>
+      </div>`
+      )
+      .join('');
+
+    const listBody = (rows || []).length
+      ? (rows || []).map((r) => propRepairRowHtml(r)).join('')
+      : '<tr><td colspan="8" style="text-align:center;color:var(--text-muted);padding:20px">暂无记录</td></tr>';
+
+    container.innerHTML = `
+      <div class="stats-grid" style="margin-bottom:16px">
+        <div class="stat-card accent">
+          <div class="stat-label">道具维修报价合计（当前年框）</div>
+          <div class="stat-value sm">${fmtMoney(grandQuoted)}</div>
+          <div class="stat-sub">维修费合计 ${fmtMoney(grandCost)} · 与下方筛选无关</div>
+        </div>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:12px;margin-bottom:16px">
+        ${brandCardsHtml || '<div class="card"><div class="card-body" style="color:var(--text-muted)">暂无品牌分布数据</div></div>'}
+      </div>
+      <div class="card">
+        <div class="card-header" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+          <div>
+            <div class="card-title">维修登记记录</div>
+            <div class="card-sub">全部为自定义项目；支持“无成本”登记</div>
+          </div>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+            <select class="filter-select" id="prListBrandFilter" onchange="propRepairSetBrandFilter(this.value)">
+              <option value="">全部品牌</option>${brandOpts}
+            </select>
+            <button type="button" class="btn btn-primary btn-sm" onclick="showPropRepairModal(null)">+ 新建登记</button>
+          </div>
+        </div>
+        <div class="card-body" style="padding:0">
+          <div class="table-wrapper">
+            <table>
+              <thead><tr><th>ID</th><th>日期</th><th>区域</th><th>品牌</th><th style="text-align:right">报价</th><th style="text-align:right">维修费</th><th>备注</th><th>操作</th></tr></thead>
+              <tbody>${listBody}</tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    `;
+    renderLucideIcons();
+    applyRoleUiGuards();
+  } catch (e) {
+    const msg = String(e.message || '');
+    container.innerHTML = `<div class="card"><div class="card-body empty-state">
+      <div class="empty-title">加载失败</div>
+      <div class="empty-sub">${escapeHtml(msg)}</div>
+      <p style="margin-top:10px;font-size:13px;color:var(--text-muted)">若为数据库表不存在，请执行：<code style="font-size:12px">npm run migrate:prop-repairs</code> 后重启服务。</p>
+    </div></div>`;
+    renderLucideIcons();
+  }
+}
+
+async function showPropRepairModal(id) {
+  const title = document.getElementById('modalPropRepairTitle');
+  const body = document.getElementById('modalPropRepairBody');
+  if (!body) return;
+  let record = null;
+  if (id) {
+    try {
+      record = await api('GET', `/prop-repairs/${id}`);
+      if (title) title.textContent = '编辑道具维修';
+    } catch (e) {
+      showToast(e.message || '加载失败', 'error');
+      return;
+    }
+  } else if (title) {
+    title.textContent = '新建道具维修';
+  }
+
+  let brands = [];
+  try {
+    brands = await api('GET', '/brand?active=true');
+  } catch {
+    brands = [];
+  }
+  const brandOpts = brands
+    .map((b) => `<option value="${b.id}">${escapeHtml(b.brand_name || b.brand_code)}</option>`)
+    .join('');
+
+  const defaultBrand = record ? String(record.brand_id) : brands[0] ? String(brands[0].id) : '';
+  const dateVal = record && record.repair_date
+    ? String(record.repair_date).slice(0, 10)
+    : new Date().toISOString().slice(0, 10);
+
+  const customFromRecord = (record && Array.isArray(record.items) ? record.items : []).filter(
+    (it) => it && it.name
+  );
+  const remarksAttr = record && record.remarks ? escapeHtml(record.remarks) : '';
+  const noCost = record && (record.no_cost === true || record.no_cost === 1 || String(record.no_cost) === '1');
+  const quotedPrice = record && record.quoted_price != null ? roundMoney2(record.quoted_price).toFixed(2) : '';
+
+  body.innerHTML = `
+    <input type="hidden" id="prRecordId" value="${record ? record.id : ''}">
+    <div class="form-grid" style="grid-template-columns:1fr 1fr">
+      <div class="form-group">
+        <label class="form-label">品牌 <span class="required">*</span></label>
+        <select class="form-control" id="prBrandId" required>${brandOpts}</select>
+      </div>
+      <div class="form-group">
+        <label class="form-label">维修日期 <span class="required">*</span></label>
+        <input type="date" class="form-control" id="prRepairDate" required value="${dateVal}">
+      </div>
+    </div>
+    <div class="form-group">
+      <label class="form-label">区域 <span class="required">*</span></label>
+      <select class="form-control" id="prRegion" required>
+        <option value="东区">东区</option>
+        <option value="北区">北区</option>
+        <option value="南区">南区</option>
+        <option value="东南区">东南区</option>
+        <option value="西南区">西南区</option>
+      </select>
+    </div>
+    <div class="form-group">
+      <label class="form-label">报价 (¥)</label>
+      <input type="number" class="form-control" id="prQuotedPrice" placeholder="0.00" step="0.01" min="0" value="${quotedPrice}">
+    </div>
+    <label style="display:flex;align-items:center;gap:8px;margin:0 0 10px;color:var(--text-secondary);cursor:pointer">
+      <input type="checkbox" id="prNoCost" ${noCost ? 'checked' : ''} onchange="updatePrTotal()">
+      <span>无成本（勾选后本条金额记 0）</span>
+    </label>
+    <div class="form-group">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+        <span class="form-label" style="margin:0">维修项目（自定义）</span>
+        <button type="button" class="btn btn-secondary btn-sm" onclick="propRepairAppendCustomRow()">+ 添加一行</button>
+      </div>
+      <div id="prCustomRows"></div>
+    </div>
+    <div class="form-group">
+      <label class="form-label">备注</label>
+      <input type="text" class="form-control" id="prRemarks" placeholder="选填" value="${remarksAttr}">
+    </div>
+    <div style="margin-top:12px;padding:12px;background:var(--accent-soft);border-radius:var(--radius-sm);display:flex;justify-content:space-between;align-items:center">
+      <span style="color:var(--text-secondary)">合计</span>
+      <span class="amount" id="prTotalDisplay" style="font-size:18px;font-weight:700">${fmtMoney(0)}</span>
+    </div>
+  `;
+
+  const bs = document.getElementById('prBrandId');
+  if (bs && defaultBrand) bs.value = defaultBrand;
+  const rs = document.getElementById('prRegion');
+  if (rs) rs.value = record && record.region ? String(record.region) : '东区';
+  (customFromRecord || []).forEach((it) => {
+    propRepairAppendCustomRow(it.name, roundMoney2(it.amount).toFixed(2));
+  });
+  if (!customFromRecord.length) propRepairAppendCustomRow();
+  openModal('modalPropRepair');
+  updatePrTotal();
+  renderLucideIcons();
+}
+
+async function savePropRepairForm() {
+  if (!hasWriteAccess()) {
+    showToast('仅管理员可保存', 'warning');
+    return;
+  }
+  const id = document.getElementById('prRecordId')?.value?.trim();
+  const brand_id = parseInt(document.getElementById('prBrandId')?.value, 10);
+  const repair_date = document.getElementById('prRepairDate')?.value;
+  const region = document.getElementById('prRegion')?.value;
+  const quoted_price = roundMoney2(document.getElementById('prQuotedPrice')?.value);
+  const remarks = document.getElementById('prRemarks')?.value?.trim() || '';
+  const no_cost = !!document.getElementById('prNoCost')?.checked;
+  const items = no_cost ? [] : collectPropRepairItemsFromForm();
+  const total = no_cost ? 0 : roundMoney2(items.reduce((s, x) => s + x.amount, 0));
+  if (!brand_id) {
+    showToast('请选择品牌', 'warning');
+    return;
+  }
+  if (!repair_date) {
+    showToast('请选择维修日期', 'warning');
+    return;
+  }
+  if (!region) {
+    showToast('请选择区域', 'warning');
+    return;
+  }
+  if (!no_cost && (!items.length || total <= 0)) {
+    showToast('请至少填写一项大于 0 的金额，或勾选无成本', 'warning');
+    return;
+  }
+  const body = {
+    year_frame_id: currentYearFrameId || 1,
+    brand_id,
+    repair_date,
+    region,
+    quoted_price,
+    items,
+    no_cost: no_cost ? 1 : 0,
+    remarks,
+  };
+  try {
+    if (id) {
+      await api('PUT', `/prop-repairs/${id}`, body);
+      showToast('已更新', 'success');
+    } else {
+      await api('POST', '/prop-repairs', body);
+      showToast('已保存', 'success');
+    }
+    closeModal();
+    if (currentPage === 'prop-repair') await renderPropRepairs();
+  } catch (e) {
+    showToast(e.message || '保存失败', 'error');
+  }
+}
+
+async function deletePropRepairRecord(rid) {
+  if (!hasWriteAccess()) {
+    showToast('仅管理员可删除', 'warning');
+    return;
+  }
+  if (!confirm('确定删除该条道具维修记录？')) return;
+  try {
+    await api('DELETE', `/prop-repairs/${rid}`);
+    showToast('已删除', 'success');
+    await renderPropRepairs();
+  } catch (e) {
+    showToast(e.message || '删除失败', 'error');
+  }
+}
+
+/* =============================================
+   页面：酒品管理（原客户用酒）
    ============================================= */
 async function renderWine() {
   const container = document.getElementById('pageContainer');

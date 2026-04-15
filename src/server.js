@@ -2,7 +2,9 @@ const express = require('express');
 const path = require('path');
 const cors = require('cors');
 const bodyParser = require('body-parser');
-const { testConnection } = require('./config/database');
+const session = require('express-session');
+const db = require('./config/database');
+const { testConnection } = db;
 
 require('dotenv').config();
 
@@ -18,7 +20,12 @@ const calendarRoutes = require('./routes/calendar');
 const costRoutes = require('./routes/cost');
 const wineRoutes = require('./routes/wine');
 const brandRoutes = require('./routes/brand');
+const materialPurchaseRoutes = require('./routes/materialPurchase');
+const propRepairRoutes = require('./routes/propRepair');
+const authRoutes = require('./routes/auth');
+const userRoutes = require('./routes/user');
 const { mountLookupRoutes } = require('./routes/lookup');
+const { requireAuth, requireWriteAccess } = require('./middleware/auth');
 
 const app = express();
 const PORT = process.env.PORT || 3088;
@@ -27,10 +34,32 @@ const PORT = process.env.PORT || 3088;
 app.use(cors());
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
+app.use(
+  session({
+    name: 'sid',
+    secret: process.env.SESSION_SECRET || 'dev-session-secret-change-me',
+    resave: false,
+    saveUninitialized: false,
+    cookie: {
+      httpOnly: true,
+      sameSite: 'lax',
+      secure: process.env.NODE_ENV === 'production',
+      maxAge: 1000 * 60 * 60 * 12,
+    },
+  })
+);
 
 const publicDir = path.join(__dirname, '../public');
 
 // 先注册 /api，再挂静态资源：避免旧版 express.static 行为干扰，且新增路由后必须重启 node 才会生效
+console.log('注册 auth 路由');
+app.use('/api/auth', authRoutes);
+app.use('/api', (req, res, next) => {
+  if (req.path === '/health') return next();
+  return requireAuth(req, res, next);
+});
+app.use('/api', requireWriteAccess);
+
 console.log('注册 year-frames 路由');
 app.use('/api/year-frames', yearFrameRoutes);
 console.log('注册 activities 路由');
@@ -53,6 +82,12 @@ console.log('注册 wine 路由');
 app.use('/api/wine', wineRoutes);
 console.log('注册 brand 路由');
 app.use('/api/brand', brandRoutes);
+console.log('注册 material-purchases 路由');
+app.use('/api/material-purchases', materialPurchaseRoutes);
+console.log('注册 prop-repairs 路由');
+app.use('/api/prop-repairs', propRepairRoutes);
+console.log('注册 users 路由');
+app.use('/api/users', userRoutes);
 console.log('注册 lookups 路由（app 级 /api/lookups）');
 mountLookupRoutes(app);
 
@@ -62,12 +97,29 @@ app.get('/api/test-calendar', (req, res) => {
 });
 
 // 健康检查（dbConnected 在启动时写入 app.locals）
-app.get('/api/health', (req, res) => {
+app.get('/api/health', async (req, res) => {
   const dbOk = req.app.locals.dbConnected === true;
+  let activitiesStatusColumnType = null;
+  if (dbOk) {
+    try {
+      const [rows] = await db.query(
+        `SELECT COLUMN_TYPE AS t FROM INFORMATION_SCHEMA.COLUMNS
+         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'activities' AND COLUMN_NAME = 'status'`
+      );
+      activitiesStatusColumnType = rows[0]?.t ?? null;
+    } catch (e) {
+      activitiesStatusColumnType = `error: ${e.message}`;
+    }
+  }
   res.json({
     status: dbOk ? 'ok' : 'degraded',
     message: dbOk ? '人头马年框管理系统 API 运行中' : '服务已启动但数据库未连接，请检查 MySQL 与 .env',
     database: dbOk ? 'connected' : 'disconnected',
+    activitiesStatusColumnType,
+    features: {
+      /** 用于排查「物料采购 404」：若为 false/缺失，说明当前进程未加载含物料路由的代码或未重启 */
+      materialPurchasesApi: true,
+    },
   });
 });
 
@@ -89,7 +141,16 @@ app.use(
 // 前端页面
 app.get('/', (req, res) => {
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+  if (!req.session?.user?.id) return res.redirect('/login.html');
   res.sendFile(path.join(publicDir, 'index.html'));
+});
+app.get('/login.html', (req, res, next) => {
+  if (req.session?.user?.id) return res.redirect('/');
+  return next();
+});
+app.get('/register.html', (req, res, next) => {
+  if (req.session?.user?.id) return res.redirect('/');
+  return next();
 });
 
 // 错误处理
@@ -115,6 +176,7 @@ async function startServer() {
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`🚀 服务器运行中: http://localhost:${PORT}`);
     if (dbConnected) console.log('✅ 数据库已连接');
+    console.log('📦 物料采购 API: GET/POST /api/material-purchases（若浏览器仍 404，请确认已杀掉旧 node 并重新 npm start）');
   });
 }
 

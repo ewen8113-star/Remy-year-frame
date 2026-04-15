@@ -157,6 +157,14 @@ router.get('/', async (req, res) => {
        WHERE ${whFilter.whereClause}`,
       whFilter.params
     );
+    const [summaryPropRepairRows] = await db.query(
+      `SELECT
+         COALESCE(SUM(pr.quoted_price), 0) AS prop_repair_quoted,
+         COALESCE(SUM(pr.total_amount), 0) AS prop_repair_cost
+       FROM prop_repairs pr
+       WHERE 1=1 ${req.query.yearFrameId ? ' AND pr.year_frame_id = ?' : ''}`,
+      req.query.yearFrameId ? [parseInt(req.query.yearFrameId, 10)] : []
+    );
 
     const [activityByType] = await db.query(
       `SELECT a.activity_type, COUNT(*) AS count, COALESCE(SUM(a.quoted_price), 0) AS revenue
@@ -322,6 +330,8 @@ router.get('/', async (req, res) => {
 
     const activityRevenue = Number(summaryActivityRows[0]?.activity_revenue || 0);
     const warehouseRevenue = Number(summaryWarehouseRows[0]?.warehouse_revenue || 0);
+    const propRepairQuoted = Number(summaryPropRepairRows[0]?.prop_repair_quoted || 0);
+    const propRepairCost = Number(summaryPropRepairRows[0]?.prop_repair_cost || 0);
     const activityCount = Number(summaryActivityRows[0]?.activity_count || 0);
 
     res.json({
@@ -329,7 +339,9 @@ router.get('/', async (req, res) => {
         activityCount,
         activityRevenue,
         warehouseRevenue,
-        totalRevenue: activityRevenue + warehouseRevenue,
+        totalRevenue: activityRevenue + warehouseRevenue + propRepairQuoted,
+        propRepairQuoted,
+        propRepairCost,
         regionShare,
       },
       activityByType,

@@ -46,13 +46,21 @@ const SEED_ROWS = [
   ['activity_region', '东南区', '东南区', 4],
   ['activity_region', '内部', '内部', 5],
   ['activity_region', '东区-婚宴', '东区-婚宴', 6],
+  // activity_belonging（场次归属）
+  ['activity_belonging', 'RC-Off', 'RC-Off', 0],
+  ['activity_belonging', 'RC-On', 'RC-On', 1],
+  ['activity_belonging', 'RC-Training', 'RC-Training', 2],
+  ['activity_belonging', 'RM-CLUB婚宴', 'RM-CLUB婚宴', 3],
+  ['activity_belonging', 'RM-X.O婚宴', 'RM-X.O婚宴', 4],
+  ['activity_belonging', '区域', '区域', 5],
   // activity_executor
   ['activity_executor', '无', '无', 0],
   ['activity_executor', '有', '有', 1],
-  // activity_status（数据库存枚举值）
+  // activity_status（value 须与 activities.status ENUM 一致，含 deferred 延期）
   ['activity_status', 'pending', '待执行', 0],
-  ['activity_status', 'done', '已完成', 1],
-  ['activity_status', 'cancelled', '已取消', 2],
+  ['activity_status', 'deferred', '延期', 1],
+  ['activity_status', 'completed', '已完成', 2],
+  ['activity_status', 'cancelled', '已取消', 3],
 ];
 
 async function main() {

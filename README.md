@@ -110,6 +110,22 @@ remy-year-frame/
 ### 健康检查
 - `GET /api/health` - 服务与数据库连接状态
 
+### 认证
+- `POST /api/auth/register` - 注册（body: `username`, `password`；默认角色 `operator`）
+- `POST /api/auth/login` - 登录（body: `username`, `password`）
+- `POST /api/auth/logout` - 退出登录
+- `GET /api/auth/me` - 当前登录用户
+- 说明：除 `/api/auth/*` 与 `/api/health` 外，其余 API 均需登录。
+- 权限：`admin` 可读写；`operator` 默认只读（写操作返回 403）。
+
+### 用户管理（仅 admin）
+- `GET /api/users` - 获取用户列表
+- `PUT /api/users/:id/role` - 修改角色（`admin` / `operator`）
+- `PUT /api/users/:id/status` - 启用/停用用户
+- 安全约束：
+  - 不允许将系统最后一个启用中的 `admin` 降级或停用
+  - 不允许当前登录管理员自降级或自停用（避免自锁）
+
 ## 启动步骤
 
 ### 1. 配置数据库密码
@@ -127,7 +143,13 @@ cd remy-year-frame
 npm install
 ```
 
-### 3. 启动服务
+### 3. 初始化登录与管理员
+
+```bash
+npm run migrate:users-auth
+```
+
+### 4. 启动服务
 
 ```bash
 npm start
@@ -136,6 +158,8 @@ npm run dev
 ```
 
 服务运行在 http://localhost:3088（端口可由环境变量 `PORT` 修改）。
+
+首次访问会跳转到 `http://localhost:3088/login.html`。未登录用户可访问 `http://localhost:3088/register.html` 自助注册普通账号，由管理员在“系统 > 用户管理”中提权。
 
 ## 前端
 

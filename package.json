@@ -9,18 +9,36 @@
     "init-db": "node src/scripts/initDatabase.js",
     "release:backup": "node src/scripts/releaseBackup.js",
     "migrate:warehouse-region": "node src/scripts/addWarehouseRegionColumn.js",
+    "migrate:warehouse-brand": "node src/scripts/addWarehouseBrandColumn.js",
+    "migrate:warehouse-no-actual-cost": "node src/scripts/addWarehouseNoActualCostColumn.js",
     "migrate:logistics-project-code": "node src/scripts/addLogisticsRelatedProjectColumn.js",
     "migrate:activity-cost-details": "node src/scripts/addActivityCostDetailsColumn.js",
+    "migrate:activity-no-cost": "node src/scripts/addActivityNoCostColumn.js",
     "migrate:activity-period": "node src/scripts/addActivityPeriodColumn.js",
+    "migrate:activity-region-belonging": "node src/scripts/addActivityRegionBelongingColumns.js",
+    "migrate:backfill-activity-belonging": "node src/scripts/backfillActivityBelongingFromProjectCode.js",
+    "migrate:fix-activity-status-lookup": "node src/scripts/fixActivityStatusLookupDoneToCompleted.js",
+    "migrate:activity-status-deferred": "node src/scripts/addActivityStatusDeferredEnum.js",
+    "migrate:activity-status-to-varchar": "node src/scripts/migrateActivityStatusToVarchar.js",
     "migrate:lookup-options": "node src/scripts/addLookupOptionsTable.js",
-    "verify:warehouse-db": "node src/scripts/verifyWarehouseDb.js"
+    "migrate:material-purchases": "node src/scripts/addMaterialPurchasesTable.js",
+    "migrate:prop-repairs": "node src/scripts/addPropRepairsTable.js",
+    "migrate:prop-repairs-region": "node src/scripts/addPropRepairsRegionColumn.js",
+    "migrate:prop-repairs-quoted-price": "node src/scripts/addPropRepairsQuotedPriceColumn.js",
+    "migrate:users-auth": "node src/scripts/addUsersAuthTable.js",
+    "verify:warehouse-db": "node src/scripts/verifyWarehouseDb.js",
+    "script:set-all-activities-completed": "node src/scripts/setAllActivitiesStatusCompleted.js",
+    "script:sync-activity-region-belonging-excel": "node src/scripts/syncActivityRegionBelongingFromExcel.js"
   },
   "dependencies": {
-    "express": "^4.18.2",
-    "mysql2": "^3.6.5",
+    "bcryptjs": "^3.0.2",
+    "body-parser": "^1.20.2",
     "cors": "^2.8.5",
     "dotenv": "^16.3.1",
-    "body-parser": "^1.20.2"
+    "express": "^4.18.2",
+    "express-session": "^1.18.2",
+    "mysql2": "^3.6.5",
+    "xlsx": "^0.18.5"
   },
   "devDependencies": {
     "nodemon": "^3.0.2"

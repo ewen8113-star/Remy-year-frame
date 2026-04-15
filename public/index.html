@@ -6,7 +6,7 @@
   <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate">
   <meta http-equiv="Pragma" content="no-cache">
   <title>人头马年框项目管理</title>
-  <link rel="stylesheet" href="style.css?v=20260413dashboard-drill">
+  <link rel="stylesheet" href="style.css?v=20260415activity-form-deferred">
   <!-- Chart.js -->
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
   <script src="https://unpkg.com/lucide@latest"></script>
@@ -30,45 +30,61 @@
       <button class="year-btn" data-year="26" onclick="switchYear('26')">26年度</button>
     </div>
 
-    <!-- 导航菜单 -->
+    <!-- 导航菜单（结构见 20260414更新内容.md：活动记录 / 成本管理 / 仓库管理 / 系统） -->
     <nav class="sidebar-nav">
-      <div class="nav-section-label">主要功能</div>
+      <div class="nav-section-label">活动记录</div>
       <a class="nav-item active" data-page="dashboard" onclick="navigate('dashboard')">
         <span class="nav-icon"><i data-lucide="layout-dashboard" style="width:16px;height:16px"></i></span>
         <span class="nav-text">数据看板</span>
       </a>
       <a class="nav-item" data-page="activities" onclick="navigate('activities')">
         <span class="nav-icon"><i data-lucide="clipboard-list" style="width:16px;height:16px"></i></span>
-        <span class="nav-text">活动记录</span>
+        <span class="nav-text">场次记录</span>
         <span class="nav-badge" id="badge-activities">—</span>
       </a>
       <a class="nav-item" data-page="calendar" onclick="navigate('calendar')">
         <span class="nav-icon"><i data-lucide="calendar-days" style="width:16px;height:16px"></i></span>
         <span class="nav-text">排期日历</span>
       </a>
+
+      <div class="nav-section-label">成本管理</div>
       <a class="nav-item" data-page="cost" onclick="navigate('cost')">
         <span class="nav-icon"><i data-lucide="coins" style="width:16px;height:16px"></i></span>
-        <span class="nav-text">成本管理</span>
-      </a>
-
-      <div class="nav-section-label">记录模块</div>
-      <a class="nav-item" data-page="logistics" onclick="navigate('logistics')">
-        <span class="nav-icon"><i data-lucide="truck" style="width:16px;height:16px"></i></span>
-        <span class="nav-text">物流记录</span>
-        <span class="nav-badge" id="badge-logistics">—</span>
+        <span class="nav-text">活动成本</span>
       </a>
       <a class="nav-item" data-page="warehouse" onclick="navigate('warehouse')">
         <span class="nav-icon"><i data-lucide="warehouse" style="width:16px;height:16px"></i></span>
-        <span class="nav-text">仓储记录</span>
+        <span class="nav-text">仓储成本</span>
         <span class="nav-badge" id="badge-warehouse">—</span>
       </a>
+      <a class="nav-item" data-page="logistics" onclick="navigate('logistics')">
+        <span class="nav-icon"><i data-lucide="truck" style="width:16px;height:16px"></i></span>
+        <span class="nav-text">物流成本</span>
+        <span class="nav-badge" id="badge-logistics">—</span>
+      </a>
+      <a class="nav-item" data-page="material" onclick="navigate('material')">
+        <span class="nav-icon"><i data-lucide="shopping-cart" style="width:16px;height:16px"></i></span>
+        <span class="nav-text">物料采购</span>
+        <span class="nav-badge" id="badge-material">—</span>
+      </a>
+      <a class="nav-item" data-page="prop-repair" onclick="navigate('prop-repair')">
+        <span class="nav-icon"><i data-lucide="wrench" style="width:16px;height:16px"></i></span>
+        <span class="nav-text">道具维修</span>
+        <span class="nav-badge" id="badge-prop-repair">—</span>
+      </a>
+
+      <div class="nav-section-label">仓库管理</div>
       <a class="nav-item" data-page="wine" onclick="navigate('wine')">
         <span class="nav-icon"><i data-lucide="wine" style="width:16px;height:16px"></i></span>
-        <span class="nav-text">客户用酒</span>
+        <span class="nav-text">酒品管理</span>
         <span class="nav-badge" id="badge-wine">—</span>
       </a>
 
       <div class="nav-section-label">系统</div>
+      <a class="nav-item" data-page="users" id="navUsers" onclick="navigate('users')">
+        <span class="nav-icon"><i data-lucide="users" style="width:16px;height:16px"></i></span>
+        <span class="nav-text">用户管理</span>
+      </a>
       <a class="nav-item" data-page="backup" onclick="navigate('backup')">
         <span class="nav-icon"><i data-lucide="database-backup" style="width:16px;height:16px"></i></span>
         <span class="nav-text">数据备份</span>
@@ -78,7 +94,7 @@
     <!-- 底部：版本号 + 明暗主题图标 -->
     <div class="sidebar-footer">
       <div class="sidebar-footer-bar">
-        <span class="app-version" id="appVersion" title="应用版本">ver.2026.04.13</span>
+        <span class="app-version" id="appVersion" title="应用版本">ver.2026.04.15</span>
         <button type="button" class="theme-toggle-icon" id="themeToggleBtn" onclick="toggleTheme()" title="切换到亮色模式" aria-label="切换明暗主题"><svg xmlns="http://www.w3.org/2000/svg" width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg></button>
       </div>
     </div>
@@ -94,6 +110,9 @@
       </div>
       <div class="top-bar-right">
         <span class="year-badge" id="yearBadge">25年度</span>
+        <span class="year-badge" id="authUserBadge" title="当前登录用户">—</span>
+        <button type="button" class="btn btn-secondary btn-sm" id="changePasswordBtn" onclick="openChangePasswordModal()">修改密码</button>
+        <button class="btn btn-secondary btn-sm" id="logoutBtn" onclick="logout()">退出登录</button>
         <div class="connection-status" id="connectionStatus">
           <span class="status-dot"></span>
           <span>已连接</span>
@@ -116,7 +135,8 @@
       <span class="modal-title" id="modalActivityTitle">新建活动</span>
       <button type="button" class="modal-close" onclick="closeModal()">✕</button>
     </div>
-    <div class="modal-body">
+    <div class="modal-body modal-activity-form">
+      <p class="modal-activity-lead">请填写场次信息；标注 <span class="required">*</span> 为必填。保存后可在场次记录中查看与筛选。</p>
       <form id="activityForm" onsubmit="saveActivity(event)">
         <input type="hidden" id="actId">
         <div class="form-grid">
@@ -145,7 +165,8 @@
           </div>
           <div class="form-group">
             <label class="form-label">活动日期</label>
-            <input type="date" class="form-control" id="actDate" onchange="genProjectCode()">
+            <input type="date" class="form-control activity-form-date" id="actDate" onchange="genProjectCode()" title="场次实际举办日期">
+            <span class="form-hint">按场次实际举办日选择；用于排期与统计。</span>
           </div>
           <div class="form-group">
             <label class="form-label">时段
@@ -155,7 +176,8 @@
           </div>
           <div class="form-group">
             <label class="form-label">客户名称</label>
-            <input type="text" class="form-control" id="actClient" placeholder="客户/场所名称">
+            <input type="text" class="form-control" id="actClient" placeholder="如：XX 酒吧、经销商、酒店宴会厅等" title="酒吧、经销商、酒店/场地合作方">
+            <span class="form-hint">填写酒吧、经销商、酒店或宴会场地等合作方名称，便于执行与渠道识别。</span>
           </div>
           <div class="form-group">
             <label class="form-label">区域
@@ -164,11 +186,17 @@
             <select class="form-control" id="actRegion"></select>
           </div>
           <div class="form-group">
+            <label class="form-label">归属
+              <button type="button" class="btn btn-xs btn-ghost" onclick="showLookupEditModal('activity_belonging')" title="编辑归属选项" style="margin-left:6px;font-size:11px">编辑</button>
+            </label>
+            <select class="form-control" id="actBelonging"></select>
+          </div>
+          <div class="form-group">
             <label class="form-label">场地</label>
             <input type="text" class="form-control" id="actVenue" placeholder="场地名称">
           </div>
           <div class="form-group">
-            <label class="form-label">报价 (¥)</label>
+            <label class="form-label">报价（¥）</label>
             <input type="number" class="form-control" id="actQuotedPrice" placeholder="0.00" step="0.01">
           </div>
           <div class="form-group">
@@ -222,15 +250,31 @@
     </div>
   </div>
 
-  <div class="modal" id="modalActivityDetail">
+  <div class="modal wide" id="modalActivityDetail">
     <div class="modal-header">
-      <span class="modal-title">活动详情</span>
+      <span class="modal-title" id="activityDetailModalTitle">活动详情</span>
       <button type="button" class="modal-close" onclick="closeModal()">✕</button>
     </div>
     <div class="modal-body" id="activityDetailContent"></div>
     <div class="modal-footer">
       <button type="button" class="btn btn-secondary" onclick="closeModal()">关闭</button>
       <button type="button" class="btn btn-primary" id="detailEditBtn">编辑</button>
+    </div>
+  </div>
+
+  <div class="modal narrow" id="modalActivityDeleteConfirm">
+    <div class="modal-header">
+      <span class="modal-title">删除场次</span>
+      <button type="button" class="modal-close" onclick="closeModal()">✕</button>
+    </div>
+    <div class="modal-body">
+      <input type="hidden" id="removeActivityTargetId" value="">
+      <p style="margin:0 0 10px;font-size:15px;color:var(--text-primary);line-height:1.5">确定要删除这条场次记录吗？<strong style="color:var(--danger)">删除后不可恢复。</strong></p>
+      <p id="removeActivityConfirmHint" style="margin:0;font-size:13px;color:var(--text-muted);line-height:1.5;word-break:break-all"></p>
+    </div>
+    <div class="modal-footer">
+      <button type="button" class="btn btn-secondary" onclick="closeModal()">取消</button>
+      <button type="button" class="btn btn-danger" onclick="confirmRemoveActivityExecute()">确认删除</button>
     </div>
   </div>
 
@@ -356,20 +400,12 @@
           <select class="form-control" id="warYearFrameId" required></select>
         </div>
         <div class="form-group">
-          <label class="form-label">月份 <span class="required">*</span></label>
-          <select class="form-control" id="warMonthField">
-            <option value="1月">1月</option>
-            <option value="2月">2月</option>
-            <option value="3月">3月</option>
-            <option value="4月">4月</option>
-            <option value="5月">5月</option>
-            <option value="6月">6月</option>
-            <option value="7月">7月</option>
-            <option value="8月">8月</option>
-            <option value="9月">9月</option>
-            <option value="10月">10月</option>
-            <option value="11月">11月</option>
-            <option value="12月">12月</option>
+          <label class="form-label">品牌 <span class="required">*</span></label>
+          <select class="form-control" id="warBrand" required>
+            <option value="PHD">PHD</option>
+            <option value="X.O">X.O</option>
+            <option value="CLUB">CLUB</option>
+            <option value="REMY">REMY</option>
           </select>
         </div>
         <div class="form-group">
@@ -396,6 +432,10 @@
         <div class="form-group">
           <label class="form-label">实际成本 (¥)</label>
           <input type="number" class="form-control" id="warActualCost" placeholder="0.00" step="0.01" min="0">
+          <label style="display:flex;align-items:center;gap:8px;margin-top:8px;font-size:12px;color:var(--text-secondary);cursor:pointer">
+            <input type="checkbox" id="warNoActualCost" onchange="toggleWarNoActualCost()">
+            <span>无成本</span>
+          </label>
         </div>
         <div class="form-group form-full">
           <label class="form-label">备注</label>
@@ -409,9 +449,81 @@
     </div>
   </div>
 
+  <div class="modal" id="modalChangePassword" style="max-width:440px" onclick="event.stopPropagation()">
+    <div class="modal-header">
+      <span class="modal-title">修改密码</span>
+      <button type="button" class="modal-close" onclick="closeModal()">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-group">
+        <label class="form-label">当前密码</label>
+        <input type="password" class="form-control" id="cpCurrent" autocomplete="current-password">
+      </div>
+      <div class="form-group">
+        <label class="form-label">新密码（至少 8 位）</label>
+        <input type="password" class="form-control" id="cpNew" autocomplete="new-password">
+      </div>
+      <div class="form-group">
+        <label class="form-label">确认新密码</label>
+        <input type="password" class="form-control" id="cpConfirm" autocomplete="new-password">
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button type="button" class="btn btn-secondary" onclick="closeModal()">取消</button>
+      <button type="button" class="btn btn-primary" onclick="submitChangePassword()">保存</button>
+    </div>
+  </div>
+
+  <div class="modal wide" id="modalMaterialPurchase" style="max-width:580px" onclick="event.stopPropagation()">
+    <div class="modal-header">
+      <span class="modal-title" id="modalMaterialPurchaseTitle">物料采购</span>
+      <button type="button" class="modal-close" onclick="closeModal()">✕</button>
+    </div>
+    <div class="modal-body" id="modalMaterialPurchaseBody" style="max-height:72vh;overflow-y:auto"></div>
+    <div class="modal-footer">
+      <button type="button" class="btn btn-secondary" onclick="closeModal()">取消</button>
+      <button type="button" class="btn btn-primary" onclick="saveMaterialPurchaseForm()">保存</button>
+    </div>
+  </div>
+
+  <div class="modal wide" id="modalPropRepair" style="max-width:580px" onclick="event.stopPropagation()">
+    <div class="modal-header">
+      <span class="modal-title" id="modalPropRepairTitle">道具维修</span>
+      <button type="button" class="modal-close" onclick="closeModal()">✕</button>
+    </div>
+    <div class="modal-body" id="modalPropRepairBody" style="max-height:72vh;overflow-y:auto"></div>
+    <div class="modal-footer">
+      <button type="button" class="btn btn-secondary" onclick="closeModal()">取消</button>
+      <button type="button" class="btn btn-primary" onclick="savePropRepairForm()">保存</button>
+    </div>
+  </div>
+
+  <div class="modal" id="modalAdminResetPassword" style="max-width:440px" onclick="event.stopPropagation()">
+    <div class="modal-header">
+      <span class="modal-title">重置用户密码</span>
+      <button type="button" class="modal-close" onclick="closeModal()">✕</button>
+    </div>
+    <div class="modal-body">
+      <input type="hidden" id="arpUserId" value="">
+      <p style="margin:0 0 12px;color:var(--text-muted)">用户：<strong id="arpUsername">—</strong></p>
+      <div class="form-group">
+        <label class="form-label">新密码（至少 8 位）</label>
+        <input type="password" class="form-control" id="arpNew" autocomplete="new-password">
+      </div>
+      <div class="form-group">
+        <label class="form-label">确认新密码</label>
+        <input type="password" class="form-control" id="arpConfirm" autocomplete="new-password">
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button type="button" class="btn btn-secondary" onclick="closeModal()">取消</button>
+      <button type="button" class="btn btn-primary" onclick="submitAdminResetPassword()">重置</button>
+    </div>
+  </div>
+
   <!-- 全局 Toast -->
   <div class="toast-container" id="toastContainer"></div>
 
-  <script src="app.js?v=20260413same-region-compare-fix"></script>
+  <script src="app.js?v=20260415prop-repair"></script>
 </body>
 </html>
