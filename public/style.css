@@ -1308,6 +1308,12 @@ tbody td {
   color: var(--accent);
 }
 
+.dashboard-date-cell.in-preview-range {
+  background: var(--accent-soft);
+  color: var(--accent);
+  opacity: 0.88;
+}
+
 .dashboard-date-cell.is-start,
 .dashboard-date-cell.is-end {
   background: var(--accent);

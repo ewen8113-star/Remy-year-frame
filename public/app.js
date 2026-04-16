@@ -68,8 +68,11 @@ document.addEventListener('DOMContentLoaded', async () => {
 
 document.addEventListener('click', (event) => {
   if (!dashboardDatePickerState.open) return;
-  const wrap = document.querySelector('.dashboard-date-range-wrap');
-  if (wrap && !wrap.contains(event.target)) {
+  if (event.target && typeof event.target.closest === 'function' && event.target.closest('.dashboard-date-range-wrap')) {
+    return;
+  }
+  const host = document.getElementById('dashboardDateRangeHost');
+  if (host) {
     dashboardDatePickerState.open = false;
     renderDashboardDatePicker();
   }
@@ -609,14 +612,26 @@ async function updateBadges() {
 /* =============================================
    页面：数据看板
    ============================================= */
+function getCurrentMonthDateRange() {
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = now.getMonth();
+  const start = `${y}-${String(m + 1).padStart(2, '0')}-01`;
+  const endDate = new Date(y, m + 1, 0).getDate();
+  const end = `${y}-${String(m + 1).padStart(2, '0')}-${String(endDate).padStart(2, '0')}`;
+  return { start, end };
+}
+
+const defaultDashboardDateRange = getCurrentMonthDateRange();
+
 let dashboardState = {
   brand: '',
   region: '',
   activityType: '',
   executionFlag: '',
   period: '',
-  dateStart: '',
-  dateEnd: '',
+  dateStart: defaultDashboardDateRange.start,
+  dateEnd: defaultDashboardDateRange.end,
   /** 右侧对比：空=不对比；「全国」或其它区域 value */
   compareRegion: '',
 };
@@ -625,6 +640,7 @@ let dashboardDatePickerState = {
   leftMonth: '',
   draftStart: '',
   draftEnd: '',
+  hoverDate: '',
 };
 /** 区域环形图下钻：选中的区域名，与数据详情筛选独立 */
 let dashboardDrillRegion = null;
@@ -653,6 +669,8 @@ function dashboardMetricValue(row) {
 function formatDashboardDateRangeLabel() {
   const s = dashboardState.dateStart || '';
   const e = dashboardState.dateEnd || '';
+  const currentMonth = getCurrentMonthDateRange();
+  if (s === currentMonth.start && e === currentMonth.end) return '本月';
   if (s && e) return `${s} 至 ${e}`;
   if (s) return `${s} 起`;
   if (e) return `至 ${e}`;
@@ -690,7 +708,7 @@ function buildDashboardCalendarMonth(monthKey, side) {
     const cls = ['dashboard-date-cell', isStart ? 'is-start' : '', isEnd ? 'is-end' : '', inRange ? 'in-range' : '', isToday ? 'is-today' : '']
       .filter(Boolean)
       .join(' ');
-    cells.push(`<button type="button" class="${cls}" onclick="pickDashboardDate('${dateStr}')">${day}</button>`);
+    cells.push(`<button type="button" class="${cls}" data-date="${dateStr}" onmouseenter="setDashboardDateHover('${dateStr}')" onclick="pickDashboardDate('${dateStr}')">${day}</button>`);
   }
   return `
     <div class="dashboard-date-month">
@@ -702,7 +720,7 @@ function buildDashboardCalendarMonth(monthKey, side) {
       <div class="dashboard-date-weekdays">
         <span>日</span><span>一</span><span>二</span><span>三</span><span>四</span><span>五</span><span>六</span>
       </div>
-      <div class="dashboard-date-grid">${cells.join('')}</div>
+      <div class="dashboard-date-grid" onmouseleave="clearDashboardDateHover()">${cells.join('')}</div>
     </div>
   `;
 }
@@ -714,7 +732,7 @@ function renderDashboardDatePicker() {
   const right = addMonthsToMonthKey(left, 1);
   host.innerHTML = `
     <div class="dashboard-date-range-wrap">
-      <button type="button" class="filter-select dashboard-date-trigger" onclick="toggleDashboardDatePicker()">
+      <button type="button" class="filter-select dashboard-date-trigger" onclick="toggleDashboardDatePicker(event)">
         <span>${escapeHtml(formatDashboardDateRangeLabel())}</span>
         <span style="color:var(--text-muted)">日期区间</span>
       </button>
@@ -740,13 +758,18 @@ function renderDashboardDatePicker() {
   `;
 }
 
-function toggleDashboardDatePicker(forceOpen) {
+function toggleDashboardDatePicker(eventOrForceOpen, maybeForceOpen) {
+  if (eventOrForceOpen && typeof eventOrForceOpen.stopPropagation === 'function') {
+    eventOrForceOpen.stopPropagation();
+  }
+  const forceOpen = typeof eventOrForceOpen === 'boolean' ? eventOrForceOpen : maybeForceOpen;
   const nextOpen = typeof forceOpen === 'boolean' ? forceOpen : !dashboardDatePickerState.open;
   if (nextOpen) {
     const base = dashboardState.dateStart || todayDateInputValue();
     dashboardDatePickerState.leftMonth = String(base).slice(0, 7);
     dashboardDatePickerState.draftStart = dashboardState.dateStart || '';
     dashboardDatePickerState.draftEnd = dashboardState.dateEnd || '';
+    dashboardDatePickerState.hoverDate = '';
   }
   dashboardDatePickerState.open = nextOpen;
   renderDashboardDatePicker();
@@ -757,27 +780,65 @@ function shiftDashboardDatePicker(delta) {
   renderDashboardDatePicker();
 }
 
+function updateDashboardDateHoverPreview() {
+  const buttons = Array.from(document.querySelectorAll('.dashboard-date-cell[data-date]'));
+  if (!buttons.length) return;
+  const start = dashboardDatePickerState.draftStart || '';
+  const end = dashboardDatePickerState.draftEnd || '';
+  const hover = dashboardDatePickerState.hoverDate || '';
+  const previewStart = start && !end && hover ? (hover < start ? hover : start) : '';
+  const previewEnd = start && !end && hover ? (hover < start ? start : hover) : '';
+  buttons.forEach((btn) => {
+    const dateStr = btn.getAttribute('data-date') || '';
+    const inPreview = previewStart && previewEnd && dateStr >= previewStart && dateStr <= previewEnd && dateStr !== start;
+    btn.classList.toggle('in-preview-range', !!inPreview);
+  });
+}
+
+function setDashboardDateHover(dateStr) {
+  if (!dashboardDatePickerState.draftStart || dashboardDatePickerState.draftEnd) return;
+  dashboardDatePickerState.hoverDate = dateStr || '';
+  updateDashboardDateHoverPreview();
+}
+
+function clearDashboardDateHover() {
+  if (!dashboardDatePickerState.hoverDate) return;
+  dashboardDatePickerState.hoverDate = '';
+  updateDashboardDateHoverPreview();
+}
+
 function pickDashboardDate(dateStr) {
   const start = dashboardDatePickerState.draftStart || '';
   const end = dashboardDatePickerState.draftEnd || '';
+  let shouldAutoApply = false;
   if (!start || (start && end)) {
     dashboardDatePickerState.draftStart = dateStr;
     dashboardDatePickerState.draftEnd = '';
+    dashboardDatePickerState.hoverDate = '';
   } else if (dateStr < start) {
     dashboardDatePickerState.draftEnd = start;
     dashboardDatePickerState.draftStart = dateStr;
+    dashboardDatePickerState.hoverDate = '';
+    shouldAutoApply = true;
   } else {
     dashboardDatePickerState.draftEnd = dateStr;
+    dashboardDatePickerState.hoverDate = '';
+    shouldAutoApply = true;
   }
   renderDashboardDatePicker();
+  if (shouldAutoApply) {
+    applyDashboardDatePicker();
+  }
 }
 
 function clearDashboardDatePicker() {
   dashboardDatePickerState.draftStart = '';
   dashboardDatePickerState.draftEnd = '';
+  dashboardDatePickerState.hoverDate = '';
   dashboardState.dateStart = '';
   dashboardState.dateEnd = '';
   dashboardDatePickerState.open = false;
+  dashboardDatePickerState.hoverDate = '';
   renderDashboardDatePicker();
   renderDashboard();
 }
@@ -949,8 +1010,8 @@ function resetDashboardFilters() {
     activityType: '',
     executionFlag: '',
     period: '',
-    dateStart: '',
-    dateEnd: '',
+    dateStart: defaultDashboardDateRange.start,
+    dateEnd: defaultDashboardDateRange.end,
     compareRegion: '',
   };
   dashboardDatePickerState = {
@@ -958,6 +1019,7 @@ function resetDashboardFilters() {
     leftMonth: '',
     draftStart: '',
     draftEnd: '',
+    hoverDate: '',
   };
   dashboardDrillRegion = null;
   renderDashboard();

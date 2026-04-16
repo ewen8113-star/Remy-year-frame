@@ -35,12 +35,15 @@ function normalizeDateOnly(raw) {
 function parseMonthRangeFromDates(startRaw, endRaw) {
   const start = normalizeDateOnly(startRaw);
   const end = normalizeDateOnly(endRaw);
-  if (!start || !end || start > end) return [];
-  const startDt = new Date(`${start}T00:00:00`);
-  const endDt = new Date(`${end}T00:00:00`);
+  if (!start && !end) return [];
+  const startDt = start ? new Date(`${start}T00:00:00`) : null;
+  const endDt = end ? new Date(`${end}T00:00:00`) : null;
+  if (startDt && endDt && start > end) return [];
+  const rangeStart = startDt || new Date((endDt || new Date()).getFullYear(), 0, 1);
+  const rangeEnd = endDt || new Date((startDt || new Date()).getFullYear(), 11, 31);
   const months = new Set();
-  const cur = new Date(startDt.getFullYear(), startDt.getMonth(), 1);
-  const endMonth = new Date(endDt.getFullYear(), endDt.getMonth(), 1);
+  const cur = new Date(rangeStart.getFullYear(), rangeStart.getMonth(), 1);
+  const endMonth = new Date(rangeEnd.getFullYear(), rangeEnd.getMonth(), 1);
   while (cur <= endMonth) {
     months.add(cur.getMonth() + 1);
     cur.setMonth(cur.getMonth() + 1);
@@ -122,7 +125,10 @@ function buildWarehouseFilters(query) {
   }
   const months = parseMonthRangeFromDates(query.dateStart, query.dateEnd);
   if (months.length) {
-    where.push(`w.month IN (${months.map(() => '?').join(',')})`);
+    where.push(`(
+      w.month IS NULL OR TRIM(w.month) = ''
+      OR CAST(w.month AS UNSIGNED) IN (${months.map(() => '?').join(',')})
+    )`);
     params.push(...months);
   }
   const regions = parseCsv(query.regions).map((r) => r.split('-')[0]);
