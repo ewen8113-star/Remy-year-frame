@@ -2,6 +2,29 @@ const express = require('express');
 const router = express.Router();
 const db = require('../config/database');
 
+let wineReturnTableReady = null;
+function ensureWineReturnTable() {
+  if (!wineReturnTableReady) {
+    wineReturnTableReady = db.query(`
+      CREATE TABLE IF NOT EXISTS wine_return_logs (
+        id INT PRIMARY KEY AUTO_INCREMENT,
+        year_frame_id INT NOT NULL,
+        usage_id INT NULL,
+        activity_id INT NULL,
+        wine_code VARCHAR(64) NOT NULL,
+        wine_name VARCHAR(100) NOT NULL,
+        spec VARCHAR(64) NULL,
+        quantity INT NOT NULL,
+        return_date DATE NOT NULL,
+        operator VARCHAR(64) NULL,
+        remarks TEXT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    `);
+  }
+  return wineReturnTableReady;
+}
+
 // 获取当前酒品库存列表
 router.get('/', async (req, res) => {
   try {
@@ -65,6 +88,30 @@ router.get('/usage', async (req, res) => {
   }
 });
 
+// 获取酒品归还记录
+router.get('/returns', async (req, res) => {
+  try {
+    await ensureWineReturnTable();
+    const { year_frame_id } = req.query;
+    let sql = `
+      SELECT id, year_frame_id, usage_id, activity_id, wine_code, wine_name, spec, quantity,
+             return_date, operator, remarks, created_at
+      FROM wine_return_logs
+    `;
+    const params = [];
+    if (year_frame_id) {
+      sql += ' WHERE year_frame_id = ?';
+      params.push(year_frame_id);
+    }
+    sql += ' ORDER BY return_date DESC, id DESC';
+    const [rows] = await db.query(sql, params);
+    res.json(rows);
+  } catch (err) {
+    console.error('获取归还记录失败:', err);
+    res.status(500).json({ error: '获取归还记录失败' });
+  }
+});
+
 // 酒品入库
 router.post('/stock-in', async (req, res) => {
   const conn = await db.getConnection();
@@ -117,6 +164,43 @@ router.post('/stock-in', async (req, res) => {
     conn.release();
   }
 });
+
+// 删除酒品入库记录（回滚库存）
+async function handleDeleteWineStockIn(req, res) {
+  const conn = await db.getConnection();
+  try {
+    await conn.beginTransaction();
+    const id = parseInt(req.params.id, 10);
+    if (!id) {
+      await conn.rollback();
+      return res.status(400).json({ error: '无效记录ID' });
+    }
+
+    const [rows] = await conn.query('SELECT * FROM wine_stock_in WHERE id = ? FOR UPDATE', [id]);
+    if (!rows.length) {
+      await conn.rollback();
+      return res.status(404).json({ error: '入库记录不存在' });
+    }
+    const row = rows[0];
+    const qty = parseInt(row.quantity, 10) || 0;
+
+    // 回滚库存（允许出现负库存，保持与当前业务口径一致）
+    await conn.query('UPDATE wine_inventory SET quantity = quantity - ? WHERE wine_code = ?', [qty, row.wine_code]);
+    await conn.query('DELETE FROM wine_stock_in WHERE id = ?', [id]);
+
+    await conn.commit();
+    res.json({ message: '入库记录已删除并回滚库存' });
+  } catch (err) {
+    await conn.rollback();
+    console.error('删除入库记录失败:', err);
+    res.status(500).json({ error: '删除入库记录失败: ' + err.message });
+  } finally {
+    conn.release();
+  }
+}
+router.delete('/stock-in/:id', handleDeleteWineStockIn);
+// 兼容某些环境对 DELETE 方法的限制
+router.post('/stock-in/:id/delete', handleDeleteWineStockIn);
 
 // 批量酒品入库
 router.post('/stock-in/batch', async (req, res) => {
@@ -184,20 +268,18 @@ router.post('/usage', async (req, res) => {
       return res.status(400).json({ error: '缺少必填字段' });
     }
     
-    // 扣减库存
-    const [invRows] = await conn.query(
-      'SELECT quantity FROM wine_inventory WHERE wine_code = ?',
-      [wine_code]
-    );
-    
-    if (invRows.length === 0 || invRows[0].quantity < quantity) {
-      await conn.rollback();
-      return res.status(400).json({ error: '库存不足，无法使用' });
-    }
-    
-    await conn.query(`
+    // 扣减库存：允许出现负库存（用于先申请后归还的业务场景）
+    const [updateResult] = await conn.query(`
       UPDATE wine_inventory SET quantity = quantity - ? WHERE wine_code = ?
     `, [quantity, wine_code]);
+    if (updateResult.affectedRows === 0) {
+      // 若库存记录不存在，创建后直接记为负库存
+      await conn.query(
+        `INSERT INTO wine_inventory (wine_code, wine_name, spec, quantity, unit_price)
+         VALUES (?, ?, ?, ?, 0)`,
+        [wine_code, wine_name || wine_code, spec || '', -Number(quantity || 0)]
+      );
+    }
     
     // 插入使用记录
     const [result] = await conn.query(`
@@ -294,26 +376,25 @@ router.put('/usage/:id', async (req, res) => {
     if (old.wine_code === wine_code) {
       // 同酒品：按增量扣减/回补库存
       const delta = newQty - (parseInt(old.quantity, 10) || 0);
-      if (delta > 0) {
-        const [invRows] = await conn.query('SELECT quantity FROM wine_inventory WHERE wine_code = ? FOR UPDATE', [wine_code]);
-        const curQty = invRows.length ? (parseInt(invRows[0].quantity, 10) || 0) : 0;
-        if (curQty < delta) {
-          await conn.rollback();
-          return res.status(400).json({ error: '库存不足，无法增加使用数量' });
-        }
+      const [upd] = await conn.query('UPDATE wine_inventory SET quantity = quantity - ? WHERE wine_code = ?', [delta, wine_code]);
+      if (upd.affectedRows === 0) {
+        await conn.query(
+          `INSERT INTO wine_inventory (wine_code, wine_name, spec, quantity, unit_price)
+           VALUES (?, ?, ?, ?, 0)`,
+          [wine_code, wine_name || wine_code, spec || '', -delta]
+        );
       }
-      await conn.query('UPDATE wine_inventory SET quantity = quantity - ? WHERE wine_code = ?', [delta, wine_code]);
     } else {
       // 变更酒品：先回补旧酒品，再扣减新酒品
       await conn.query('UPDATE wine_inventory SET quantity = quantity + ? WHERE wine_code = ?', [old.quantity, old.wine_code]);
-
-      const [newInvRows] = await conn.query('SELECT quantity FROM wine_inventory WHERE wine_code = ? FOR UPDATE', [wine_code]);
-      const newInvQty = newInvRows.length ? (parseInt(newInvRows[0].quantity, 10) || 0) : 0;
-      if (newInvQty < newQty) {
-        await conn.rollback();
-        return res.status(400).json({ error: '库存不足，无法更换为该酒品' });
+      const [upd] = await conn.query('UPDATE wine_inventory SET quantity = quantity - ? WHERE wine_code = ?', [newQty, wine_code]);
+      if (upd.affectedRows === 0) {
+        await conn.query(
+          `INSERT INTO wine_inventory (wine_code, wine_name, spec, quantity, unit_price)
+           VALUES (?, ?, ?, ?, 0)`,
+          [wine_code, wine_name || wine_code, spec || '', -newQty]
+        );
       }
-      await conn.query('UPDATE wine_inventory SET quantity = quantity - ? WHERE wine_code = ?', [newQty, wine_code]);
     }
 
     await conn.query(`
@@ -345,6 +426,164 @@ router.put('/usage/:id', async (req, res) => {
     conn.release();
   }
 });
+
+// 部分归还使用量：回补库存并减少使用记录数量
+router.post('/usage/:id/return', async (req, res) => {
+  const conn = await db.getConnection();
+  try {
+    await ensureWineReturnTable();
+    await conn.beginTransaction();
+    const { id } = req.params;
+    const returnQty = parseInt(req.body?.quantity, 10) || 0;
+    const returnRemark = String(req.body?.remarks || '').trim();
+    if (returnQty <= 0) {
+      await conn.rollback();
+      return res.status(400).json({ error: '归还数量必须大于 0' });
+    }
+
+    const [rows] = await conn.query('SELECT * FROM wine_usage WHERE id = ? FOR UPDATE', [id]);
+    if (!rows.length) {
+      await conn.rollback();
+      return res.status(404).json({ error: '使用记录不存在' });
+    }
+    const old = rows[0];
+    const oldQty = parseInt(old.quantity, 10) || 0;
+    if (returnQty > oldQty) {
+      await conn.rollback();
+      return res.status(400).json({ error: '归还数量不能超过本条使用数量' });
+    }
+
+    const [upd] = await conn.query(
+      'UPDATE wine_inventory SET quantity = quantity + ? WHERE wine_code = ?',
+      [returnQty, old.wine_code]
+    );
+    if (upd.affectedRows === 0) {
+      await conn.query(
+        `INSERT INTO wine_inventory (wine_code, wine_name, spec, quantity, unit_price)
+         VALUES (?, ?, ?, ?, 0)`,
+        [old.wine_code, old.wine_name || old.wine_code, old.spec || '', returnQty]
+      );
+    }
+
+    const remained = oldQty - returnQty;
+    if (remained <= 0) {
+      await conn.query('DELETE FROM wine_usage WHERE id = ?', [id]);
+    } else {
+      const mergedRemark = [old.remarks, returnRemark ? `归还${returnQty}瓶：${returnRemark}` : `归还${returnQty}瓶`]
+        .filter(Boolean)
+        .join('；');
+      await conn.query(
+        'UPDATE wine_usage SET quantity = ?, remarks = ? WHERE id = ?',
+        [remained, mergedRemark, id]
+      );
+    }
+
+    await conn.query(
+      `INSERT INTO wine_return_logs
+        (year_frame_id, usage_id, activity_id, wine_code, wine_name, spec, quantity, return_date, operator, remarks)
+       VALUES (?, ?, ?, ?, ?, ?, ?, CURDATE(), ?, ?)`,
+      [
+        old.year_frame_id || 1,
+        old.id,
+        old.activity_id || null,
+        old.wine_code,
+        old.wine_name || old.wine_code,
+        old.spec || '',
+        returnQty,
+        String(req.body?.operator || '').trim() || null,
+        returnRemark || null,
+      ]
+    );
+
+    await conn.commit();
+    return res.json({ message: `已归还 ${returnQty} 瓶并回补库存` });
+  } catch (err) {
+    await conn.rollback();
+    console.error('归还酒品失败:', err);
+    return res.status(500).json({ error: '归还酒品失败: ' + err.message });
+  } finally {
+    conn.release();
+  }
+});
+
+// 删除归还记录（回滚归还动作：库存减回、用酒数量补回）
+async function handleDeleteWineReturn(req, res) {
+  const conn = await db.getConnection();
+  try {
+    await ensureWineReturnTable();
+    await conn.beginTransaction();
+    const id = parseInt(req.params.id, 10);
+    if (!id) {
+      await conn.rollback();
+      return res.status(400).json({ error: '无效记录ID' });
+    }
+
+    const [rows] = await conn.query('SELECT * FROM wine_return_logs WHERE id = ? FOR UPDATE', [id]);
+    if (!rows.length) {
+      await conn.rollback();
+      return res.status(404).json({ error: '归还记录不存在' });
+    }
+    const row = rows[0];
+    const qty = parseInt(row.quantity, 10) || 0;
+    if (qty <= 0) {
+      await conn.rollback();
+      return res.status(400).json({ error: '归还数量异常，无法删除' });
+    }
+
+    // 1) 回滚库存增加：减回已归还数量
+    const [invUpd] = await conn.query(
+      'UPDATE wine_inventory SET quantity = quantity - ? WHERE wine_code = ?',
+      [qty, row.wine_code]
+    );
+    if (invUpd.affectedRows === 0) {
+      await conn.query(
+        `INSERT INTO wine_inventory (wine_code, wine_name, spec, quantity, unit_price)
+         VALUES (?, ?, ?, ?, 0)`,
+        [row.wine_code, row.wine_name || row.wine_code, row.spec || '', -qty]
+      );
+    }
+
+    // 2) 补回用酒记录数量（若原记录已删，则重建一条）
+    let usagePatched = false;
+    if (row.usage_id) {
+      const [usageUpd] = await conn.query(
+        'UPDATE wine_usage SET quantity = quantity + ? WHERE id = ? AND wine_code = ?',
+        [qty, row.usage_id, row.wine_code]
+      );
+      usagePatched = usageUpd.affectedRows > 0;
+    }
+    if (!usagePatched) {
+      await conn.query(
+        `INSERT INTO wine_usage
+          (year_frame_id, activity_id, wine_code, wine_name, spec, quantity, usage_date, client_name, operator, remarks)
+         VALUES (?, ?, ?, ?, ?, ?, ?, '', ?, ?)`,
+        [
+          row.year_frame_id || 1,
+          row.activity_id || null,
+          row.wine_code,
+          row.wine_name || row.wine_code,
+          row.spec || '',
+          qty,
+          row.return_date || new Date(),
+          String(req.body?.operator || '').trim() || null,
+          `由删除归还记录 #${id} 自动恢复`,
+        ]
+      );
+    }
+
+    await conn.query('DELETE FROM wine_return_logs WHERE id = ?', [id]);
+    await conn.commit();
+    return res.json({ message: '归还记录已删除并回滚库存/用酒数据' });
+  } catch (err) {
+    await conn.rollback();
+    console.error('删除归还记录失败:', err);
+    return res.status(500).json({ error: '删除归还记录失败: ' + err.message });
+  } finally {
+    conn.release();
+  }
+}
+router.delete('/returns/:id', handleDeleteWineReturn);
+router.post('/returns/:id/delete', handleDeleteWineReturn);
 
 // 更新库存（手动调整）
 router.put('/:wine_code', async (req, res) => {

@@ -9,6 +9,9 @@ const DDL = `
 CREATE TABLE IF NOT EXISTS prop_repairs (
   id INT PRIMARY KEY AUTO_INCREMENT,
   year_frame_id INT NOT NULL COMMENT '所属年框',
+  activity_id INT NULL COMMENT '关联活动ID',
+  merged_into_activity TINYINT(1) NOT NULL DEFAULT 0 COMMENT '是否已计入活动成本',
+  allocation_note VARCHAR(255) NULL COMMENT '计入说明',
   brand_id INT NOT NULL COMMENT '品牌ID',
   repair_date DATE NOT NULL COMMENT '维修日期',
   region VARCHAR(32) NOT NULL COMMENT '区域',

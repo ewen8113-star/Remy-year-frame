@@ -11,6 +11,16 @@ function resolveApiBase() {
 }
 
 const API = resolveApiBase();
+const LOGIN_REMEMBER_KEY = 'remy_login_username';
+
+function applyAuthPageTheme() {
+  const saved = localStorage.getItem('remy_theme');
+  const prefersDark = typeof window !== 'undefined'
+    && window.matchMedia
+    && window.matchMedia('(prefers-color-scheme: dark)').matches;
+  const theme = saved || (prefersDark ? 'dark' : 'light');
+  document.documentElement.setAttribute('data-theme', theme);
+}
 
 async function authMe() {
   const res = await fetch(`${API}/auth/me`, { credentials: 'include' });
@@ -30,6 +40,7 @@ async function submitLogin(e) {
   try {
     const username = document.getElementById('username').value.trim();
     const password = document.getElementById('password').value;
+    const remember = !!document.getElementById('rememberUsername')?.checked;
     const res = await fetch(`${API}/auth/login`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -38,6 +49,8 @@ async function submitLogin(e) {
     });
     const json = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(json.error || '登录失败');
+    if (remember && username) localStorage.setItem(LOGIN_REMEMBER_KEY, username);
+    else localStorage.removeItem(LOGIN_REMEMBER_KEY);
     window.location.href = '/';
   } catch (err) {
     if (errorEl) {
@@ -51,5 +64,11 @@ async function submitLogin(e) {
 }
 
 document.addEventListener('DOMContentLoaded', async () => {
+  applyAuthPageTheme();
+  const remembered = localStorage.getItem(LOGIN_REMEMBER_KEY) || '';
+  const usernameEl = document.getElementById('username');
+  const rememberEl = document.getElementById('rememberUsername');
+  if (usernameEl && remembered) usernameEl.value = remembered;
+  if (rememberEl) rememberEl.checked = !!remembered;
   if (await authMe()) window.location.href = '/';
 });

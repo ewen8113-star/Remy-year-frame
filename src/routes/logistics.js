@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../config/database');
+const LOGISTICS_BRANDS = new Set(['PHD', 'X.O', 'CLUB', 'REMY']);
 
 const LOGISTICS_ROW_SQL = `
   SELECT l.*, yf.year as year_frame_name
@@ -36,6 +37,9 @@ function serializeLogisticsRow(row) {
     'origin_city',
     'destination_city',
     'logistics_company',
+    'express_company',
+    'settlement_month',
+    'brand',
   ];
   textKeys.forEach((k) => {
     if (out[k] != null && Buffer.isBuffer(out[k])) out[k] = out[k].toString('utf8');
@@ -52,6 +56,11 @@ function serializeLogisticsRow(row) {
     out.related_project_code = pc || null;
   }
   return out;
+}
+
+function canonicalBrand(brand) {
+  const v = String(brand || '').trim();
+  return LOGISTICS_BRANDS.has(v) ? v : 'PHD';
 }
 
 async function fetchLogisticsRowById(id) {
@@ -101,7 +110,9 @@ router.get('/summary', async (req, res) => {
       SELECT 
         logistics_company,
         COUNT(*) as count,
-        SUM(fee) as total_fee
+        SUM(fee) as total_fee,
+        SUM(CASE WHEN COALESCE(merged_into_activity, 0) = 0 THEN fee ELSE 0 END) as pooled_fee,
+        SUM(CASE WHEN COALESCE(merged_into_activity, 0) = 1 THEN fee ELSE 0 END) as merged_fee
       FROM logistics
       WHERE 1=1
     `;
@@ -139,27 +150,50 @@ router.get('/:id', async (req, res) => {
 // 创建物流记录
 router.post('/', async (req, res) => {
   try {
-    const { year_frame_id, logistics_company, tracking_number, origin_city, destination_city, shipping_date, fee, remarks } = req.body;
+    const { year_frame_id, activity_id, merged_into_activity, allocation_note, logistics_company, express_company, tracking_number, origin_city, destination_city, shipping_date, fee, remarks, special_car, monthly_settlement, settlement_month, brand } = req.body;
     const relatedProjectCode = parseRelatedProjectCodeFromBody(req.body);
     const yfid = parseInt(year_frame_id, 10);
+    const activityId = activity_id != null && String(activity_id).trim() !== '' ? parseInt(activity_id, 10) : null;
+    const mergedFlag = merged_into_activity === true || merged_into_activity === 1 || String(merged_into_activity) === '1' ? 1 : 0;
     if (!Number.isFinite(yfid)) {
       return res.status(400).json({ error: '无效的年框（年份）' });
     }
     const feeNum = fee != null && fee !== '' ? parseFloat(fee) : 0;
 
+    const settlementMonthInput =
+      settlement_month != null && String(settlement_month).trim() !== '' ? String(settlement_month).trim() : null;
+    const monthlySettlement = monthly_settlement ? 1 : (settlementMonthInput ? 1 : 0);
+    const specialCar = monthlySettlement ? 0 : (special_car ? 1 : 0);
+    const expressCompany = monthlySettlement || specialCar
+      ? null
+      : (express_company != null && String(express_company).trim() !== '' ? String(express_company).trim() : null);
+    const trackingNumber = monthlySettlement || specialCar
+      ? null
+      : (tracking_number != null && String(tracking_number).trim() !== '' ? String(tracking_number).trim() : null);
+    const settlementMonth = monthlySettlement ? settlementMonthInput : null;
+    const logisticsBrand = canonicalBrand(brand);
+
     const [result] = await db.query(`
-      INSERT INTO logistics (year_frame_id, logistics_company, tracking_number, origin_city, destination_city, shipping_date, fee, related_project_code, remarks)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO logistics (year_frame_id, activity_id, merged_into_activity, allocation_note, logistics_company, brand, express_company, tracking_number, settlement_month, origin_city, destination_city, shipping_date, fee, related_project_code, remarks, special_car, monthly_settlement)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `, [
       yfid,
+      Number.isFinite(activityId) ? activityId : null,
+      mergedFlag,
+      allocation_note || null,
       logistics_company,
-      tracking_number,
+      logisticsBrand,
+      expressCompany,
+      trackingNumber,
+      settlementMonth,
       origin_city,
       destination_city,
       shipping_date,
       Number.isFinite(feeNum) ? feeNum : 0,
       relatedProjectCode,
       remarks != null ? remarks : null,
+      specialCar,
+      monthlySettlement,
     ]);
 
     const saved = await fetchLogisticsRowById(result.insertId);
@@ -192,25 +226,48 @@ router.put('/:id', async (req, res) => {
     if (!Number.isFinite(nid)) {
       return res.status(400).json({ error: '无效的记录 ID' });
     }
-    const { logistics_company, tracking_number, origin_city, destination_city, shipping_date, fee, remarks } = req.body;
+    const { activity_id, merged_into_activity, allocation_note, logistics_company, express_company, tracking_number, origin_city, destination_city, shipping_date, fee, remarks, special_car, monthly_settlement, settlement_month, brand } = req.body;
+    const activityId = activity_id != null && String(activity_id).trim() !== '' ? parseInt(activity_id, 10) : null;
+    const mergedFlag = merged_into_activity === true || merged_into_activity === 1 || String(merged_into_activity) === '1' ? 1 : 0;
     const relatedProjectCode = parseRelatedProjectCodeFromBody(req.body);
     const feeNum = fee != null && fee !== '' ? parseFloat(fee) : 0;
+    const settlementMonthInput =
+      settlement_month != null && String(settlement_month).trim() !== '' ? String(settlement_month).trim() : null;
+    const monthlySettlement = monthly_settlement ? 1 : (settlementMonthInput ? 1 : 0);
+    const specialCar = monthlySettlement ? 0 : (special_car ? 1 : 0);
+    const expressCompany = monthlySettlement || specialCar
+      ? null
+      : (express_company != null && String(express_company).trim() !== '' ? String(express_company).trim() : null);
+    const trackingNumber = monthlySettlement || specialCar
+      ? null
+      : (tracking_number != null && String(tracking_number).trim() !== '' ? String(tracking_number).trim() : null);
+    const settlementMonth = monthlySettlement ? settlementMonthInput : null;
+    const logisticsBrand = canonicalBrand(brand);
 
     await db.query(`
       UPDATE logistics SET
-        logistics_company = ?, tracking_number = ?,
+        activity_id = ?, merged_into_activity = ?, allocation_note = ?,
+        logistics_company = ?, brand = ?, express_company = ?, tracking_number = ?, settlement_month = ?,
         origin_city = ?, destination_city = ?, shipping_date = ?,
-        fee = ?, related_project_code = ?, remarks = ?
+        fee = ?, related_project_code = ?, remarks = ?, special_car = ?, monthly_settlement = ?
       WHERE id = ?
     `, [
+      Number.isFinite(activityId) ? activityId : null,
+      mergedFlag,
+      allocation_note || null,
       logistics_company,
-      tracking_number,
+      logisticsBrand,
+      expressCompany,
+      trackingNumber,
+      settlementMonth,
       origin_city,
       destination_city,
       shipping_date,
       Number.isFinite(feeNum) ? feeNum : 0,
       relatedProjectCode,
       remarks != null ? remarks : null,
+      specialCar,
+      monthlySettlement,
       nid,
     ]);
 

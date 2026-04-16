@@ -20,6 +20,34 @@ function pushIn(whereParts, params, column, values) {
   params.push(...values);
 }
 
+function normalizeDateOnly(raw) {
+  if (!raw) return '';
+  const s = String(raw).trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+  const dt = new Date(s);
+  if (Number.isNaN(dt.getTime())) return '';
+  const y = dt.getFullYear();
+  const m = String(dt.getMonth() + 1).padStart(2, '0');
+  const d = String(dt.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+function parseMonthRangeFromDates(startRaw, endRaw) {
+  const start = normalizeDateOnly(startRaw);
+  const end = normalizeDateOnly(endRaw);
+  if (!start || !end || start > end) return [];
+  const startDt = new Date(`${start}T00:00:00`);
+  const endDt = new Date(`${end}T00:00:00`);
+  const months = new Set();
+  const cur = new Date(startDt.getFullYear(), startDt.getMonth(), 1);
+  const endMonth = new Date(endDt.getFullYear(), endDt.getMonth(), 1);
+  while (cur <= endMonth) {
+    months.add(cur.getMonth() + 1);
+    cur.setMonth(cur.getMonth() + 1);
+  }
+  return [...months];
+}
+
 function buildActivityFilters(query, opts = {}) {
   const where = ['a.activity_type IN (?, ?, ?, ?)'];
   const params = [...ALLOWED_TYPES];
@@ -28,10 +56,15 @@ function buildActivityFilters(query, opts = {}) {
     where.push('a.year_frame_id = ?');
     params.push(parseInt(query.yearFrameId, 10));
   }
-  const activityYear = parseInt(query.activityYear, 10);
-  if (Number.isFinite(activityYear) && activityYear >= 2000 && activityYear <= 2100) {
-    where.push('YEAR(a.date) = ?');
-    params.push(activityYear);
+  const dateStart = normalizeDateOnly(query.dateStart);
+  const dateEnd = normalizeDateOnly(query.dateEnd);
+  if (dateStart) {
+    where.push('a.date >= ?');
+    params.push(dateStart);
+  }
+  if (dateEnd) {
+    where.push('a.date <= ?');
+    params.push(dateEnd);
   }
   pushIn(where, params, 'a.brand', parseCsv(query.brands));
   if (!opts.ignoreRegions) {
@@ -40,12 +73,6 @@ function buildActivityFilters(query, opts = {}) {
   pushIn(where, params, 'a.city', parseCsv(query.cities));
   pushIn(where, params, 'a.activity_type', parseCsv(query.activityTypes).filter((v) => ALLOWED_TYPES.includes(v)));
   pushIn(where, params, 'a.period', parseCsv(query.periods));
-
-  const months = parseCsv(query.months).map((m) => parseInt(m, 10)).filter((m) => Number.isFinite(m) && m >= 1 && m <= 12);
-  if (months.length) {
-    where.push(`MONTH(a.date) IN (${months.map(() => '?').join(',')})`);
-    params.push(...months);
-  }
 
   const flags = parseCsv(query.executionFlags);
   if (flags.length === 1) {
@@ -93,7 +120,7 @@ function buildWarehouseFilters(query) {
     where.push('w.year_frame_id = ?');
     params.push(parseInt(query.yearFrameId, 10));
   }
-  const months = parseCsv(query.months).map((m) => parseInt(m, 10)).filter((m) => Number.isFinite(m) && m >= 1 && m <= 12);
+  const months = parseMonthRangeFromDates(query.dateStart, query.dateEnd);
   if (months.length) {
     where.push(`w.month IN (${months.map(() => '?').join(',')})`);
     params.push(...months);
@@ -158,12 +185,17 @@ router.get('/', async (req, res) => {
       whFilter.params
     );
     const [summaryPropRepairRows] = await db.query(
-      `SELECT
-         COALESCE(SUM(pr.quoted_price), 0) AS prop_repair_quoted,
-         COALESCE(SUM(pr.total_amount), 0) AS prop_repair_cost
+      `SELECT COALESCE(SUM(pr.quoted_price), 0) AS prop_repair_quoted
        FROM prop_repairs pr
-       WHERE 1=1 ${req.query.yearFrameId ? ' AND pr.year_frame_id = ?' : ''}`,
-      req.query.yearFrameId ? [parseInt(req.query.yearFrameId, 10)] : []
+       WHERE 1=1
+         ${req.query.yearFrameId ? ' AND pr.year_frame_id = ?' : ''}
+         ${normalizeDateOnly(req.query.dateStart) ? ' AND pr.repair_date >= ?' : ''}
+         ${normalizeDateOnly(req.query.dateEnd) ? ' AND pr.repair_date <= ?' : ''}`,
+      [
+        ...(req.query.yearFrameId ? [parseInt(req.query.yearFrameId, 10)] : []),
+        ...(normalizeDateOnly(req.query.dateStart) ? [normalizeDateOnly(req.query.dateStart)] : []),
+        ...(normalizeDateOnly(req.query.dateEnd) ? [normalizeDateOnly(req.query.dateEnd)] : []),
+      ]
     );
 
     const [activityByType] = await db.query(
@@ -331,7 +363,6 @@ router.get('/', async (req, res) => {
     const activityRevenue = Number(summaryActivityRows[0]?.activity_revenue || 0);
     const warehouseRevenue = Number(summaryWarehouseRows[0]?.warehouse_revenue || 0);
     const propRepairQuoted = Number(summaryPropRepairRows[0]?.prop_repair_quoted || 0);
-    const propRepairCost = Number(summaryPropRepairRows[0]?.prop_repair_cost || 0);
     const activityCount = Number(summaryActivityRows[0]?.activity_count || 0);
 
     res.json({
@@ -341,7 +372,6 @@ router.get('/', async (req, res) => {
         warehouseRevenue,
         totalRevenue: activityRevenue + warehouseRevenue + propRepairQuoted,
         propRepairQuoted,
-        propRepairCost,
         regionShare,
       },
       activityByType,

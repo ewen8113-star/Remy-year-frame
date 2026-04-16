@@ -9,6 +9,9 @@ const DDL = `
 CREATE TABLE IF NOT EXISTS material_purchases (
   id INT PRIMARY KEY AUTO_INCREMENT,
   year_frame_id INT NOT NULL COMMENT '所属年框',
+  activity_id INT NULL COMMENT '关联活动ID',
+  merged_into_activity TINYINT(1) NOT NULL DEFAULT 0 COMMENT '是否已计入活动成本',
+  allocation_note VARCHAR(255) NULL COMMENT '计入说明',
   brand_id INT NOT NULL COMMENT '品牌ID',
   purchase_date DATE NOT NULL COMMENT '采购/报销日期',
   items JSON NOT NULL COMMENT '费用明细 [{name, amount}, ...]',

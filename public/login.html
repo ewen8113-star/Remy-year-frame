@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="zh-CN" data-theme="dark">
+<html lang="zh-CN">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -24,6 +24,10 @@
         <div class="form-group" style="margin-bottom:16px;">
           <label class="form-label">密码</label>
           <input class="form-control" id="password" type="password" autocomplete="current-password" required>
+        </div>
+        <div style="margin:-4px 0 12px;display:flex;align-items:center;gap:8px;">
+          <input type="checkbox" id="rememberUsername" style="width:14px;height:14px;accent-color:var(--accent)">
+          <label for="rememberUsername" style="font-size:13px;color:var(--text-secondary);cursor:pointer;">记住用户名</label>
         </div>
         <div id="loginError" style="display:none;margin-bottom:12px;color:var(--danger);font-size:13px;"></div>
         <button class="btn btn-primary" id="loginBtn" type="submit" style="width:100%;">登录</button>

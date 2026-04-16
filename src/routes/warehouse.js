@@ -10,6 +10,9 @@ const WAREHOUSE_ROW_SQL = `
   SELECT
     w.id,
     w.year_frame_id,
+    w.activity_id,
+    w.merged_into_activity,
+    w.allocation_note,
     w.month,
     w.\`region\` AS region,
     w.brand,
@@ -76,6 +79,9 @@ router.get('/', async (req, res) => {
       SELECT
         w.id,
         w.year_frame_id,
+        w.activity_id,
+        w.merged_into_activity,
+        w.allocation_note,
         w.month,
         w.\`region\` AS region,
         w.brand,
@@ -124,7 +130,9 @@ router.get('/summary', async (req, res) => {
         month,
         COUNT(*) as count,
         SUM(quoted_price) as total_revenue,
-        SUM(actual_cost) as total_cost
+        SUM(CASE WHEN COALESCE(merged_into_activity, 0) = 0 THEN actual_cost ELSE 0 END) as total_cost,
+        SUM(CASE WHEN COALESCE(merged_into_activity, 0) = 0 THEN actual_cost ELSE 0 END) as pooled_cost,
+        SUM(CASE WHEN COALESCE(merged_into_activity, 0) = 1 THEN actual_cost ELSE 0 END) as merged_cost
       FROM warehouse
       WHERE 1=1
     `;
@@ -162,7 +170,9 @@ router.get('/:id', async (req, res) => {
 // 创建仓储记录
 router.post('/', async (req, res) => {
   try {
-    const { month, wine_name, specifications, quantity, unit_price, quoted_price, actual_cost, no_actual_cost, remarks } = req.body;
+    const { month, wine_name, specifications, quantity, unit_price, quoted_price, actual_cost, no_actual_cost, remarks, activity_id, merged_into_activity, allocation_note } = req.body;
+    const activityId = activity_id != null && String(activity_id).trim() !== '' ? parseInt(activity_id, 10) : null;
+    const mergedFlag = merged_into_activity === true || merged_into_activity === 1 || String(merged_into_activity) === '1' ? 1 : 0;
     const yfid = parseInt(req.body.year_frame_id, 10);
     if (!Number.isFinite(yfid)) {
       return res.status(400).json({ error: '无效的年框（年份）选择' });
@@ -185,10 +195,10 @@ router.post('/', async (req, res) => {
 
     const [result] = await db.query(
       `
-      INSERT INTO warehouse (year_frame_id, month, \`region\`, brand, wine_name, specifications, quantity, unit_price, quoted_price, actual_cost, no_actual_cost, remarks)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO warehouse (year_frame_id, activity_id, merged_into_activity, allocation_note, month, \`region\`, brand, wine_name, specifications, quantity, unit_price, quoted_price, actual_cost, no_actual_cost, remarks)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `,
-      [yfid, monthVal, regionNorm, brandNorm, wn, sp, quantity, unit_price, quoted_price, actualCostVal, noActualCost, remarks]
+      [yfid, Number.isFinite(activityId) ? activityId : null, mergedFlag, allocation_note || null, monthVal, regionNorm, brandNorm, wn, sp, quantity, unit_price, quoted_price, actualCostVal, noActualCost, remarks]
     );
 
     const saved = await fetchWarehouseRowById(result.insertId);
@@ -221,7 +231,9 @@ router.put('/:id', async (req, res) => {
     if (!Number.isFinite(nid)) {
       return res.status(400).json({ error: '无效的记录 ID' });
     }
-    const { month, wine_name, specifications, quantity, unit_price, quoted_price, actual_cost, no_actual_cost, remarks } = req.body;
+    const { month, wine_name, specifications, quantity, unit_price, quoted_price, actual_cost, no_actual_cost, remarks, activity_id, merged_into_activity, allocation_note } = req.body;
+    const activityId = activity_id != null && String(activity_id).trim() !== '' ? parseInt(activity_id, 10) : null;
+    const mergedFlag = merged_into_activity === true || merged_into_activity === 1 || String(merged_into_activity) === '1' ? 1 : 0;
     const yfid = parseInt(req.body.year_frame_id, 10);
     if (!Number.isFinite(yfid)) {
       return res.status(400).json({ error: '无效的年框（年份）选择' });
@@ -246,12 +258,13 @@ router.put('/:id', async (req, res) => {
       `
       UPDATE warehouse SET
         year_frame_id = ?,
+        activity_id = ?, merged_into_activity = ?, allocation_note = ?,
         month = ?, \`region\` = ?, brand = ?, wine_name = ?, specifications = ?,
         quantity = ?, unit_price = ?, quoted_price = ?,
         actual_cost = ?, no_actual_cost = ?, remarks = ?
       WHERE id = ?
     `,
-      [yfid, monthVal, regionNorm, brandNorm, wn, sp, quantity, unit_price, quoted_price, actualCostVal, noActualCost, remarks, nid]
+      [yfid, Number.isFinite(activityId) ? activityId : null, mergedFlag, allocation_note || null, monthVal, regionNorm, brandNorm, wn, sp, quantity, unit_price, quoted_price, actualCostVal, noActualCost, remarks, nid]
     );
 
     const saved = await fetchWarehouseRowById(nid);

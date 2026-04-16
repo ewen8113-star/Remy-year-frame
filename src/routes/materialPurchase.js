@@ -45,7 +45,7 @@ router.get('/summary', async (req, res) => {
              bi.brand_name,
              bi.brand_code,
              DATE_FORMAT(mp.purchase_date, '%Y-%m') AS ym,
-             SUM(mp.total_amount) AS subtotal
+             SUM(CASE WHEN COALESCE(mp.merged_into_activity, 0) = 0 THEN mp.total_amount ELSE 0 END) AS subtotal
       FROM material_purchases mp
       LEFT JOIN brand_inventory bi ON mp.brand_id = bi.id
       WHERE 1 = 1
@@ -60,7 +60,11 @@ router.get('/summary', async (req, res) => {
       'ORDER BY DATE_FORMAT(mp.purchase_date, \'%Y-%m\') DESC, mp.brand_id ASC';
     const [byMonth] = await db.query(sql, params);
 
-    let totalSql = 'SELECT COALESCE(SUM(total_amount), 0) AS total FROM material_purchases mp WHERE 1=1';
+    let totalSql = `SELECT
+      COALESCE(SUM(total_amount), 0) AS total,
+      COALESCE(SUM(CASE WHEN COALESCE(merged_into_activity, 0) = 0 THEN total_amount ELSE 0 END), 0) AS pooled_total,
+      COALESCE(SUM(CASE WHEN COALESCE(merged_into_activity, 0) = 1 THEN total_amount ELSE 0 END), 0) AS merged_total
+      FROM material_purchases mp WHERE 1=1`;
     const totalParams = [];
     if (yearFrameId) {
       totalSql += ' AND mp.year_frame_id = ?';
@@ -70,6 +74,8 @@ router.get('/summary', async (req, res) => {
 
     res.json({
       grandTotal: Math.round((parseFloat(tot.total) || 0) * 100) / 100,
+      pooledTotal: Math.round((parseFloat(tot.pooled_total) || 0) * 100) / 100,
+      mergedTotal: Math.round((parseFloat(tot.merged_total) || 0) * 100) / 100,
       byMonth: byMonth || [],
     });
   } catch (e) {
@@ -132,7 +138,9 @@ router.get('/:id', async (req, res) => {
 
 router.post('/', async (req, res) => {
   try {
-    const { year_frame_id, brand_id, purchase_date, items, remarks } = req.body || {};
+    const { year_frame_id, activity_id, merged_into_activity, allocation_note, brand_id, purchase_date, items, remarks } = req.body || {};
+    const activityId = activity_id != null && String(activity_id).trim() !== '' ? parseInt(activity_id, 10) : null;
+    const mergedFlag = merged_into_activity === true || merged_into_activity === 1 || String(merged_into_activity) === '1' ? 1 : 0;
     const yf = parseInt(year_frame_id, 10);
     const bid = parseInt(brand_id, 10);
     if (!yf || !bid) return res.status(400).json({ error: '年框与品牌不能为空' });
@@ -143,9 +151,9 @@ router.post('/', async (req, res) => {
     if (total <= 0) return res.status(400).json({ error: '合计金额须大于 0' });
 
     const [result] = await db.query(
-      `INSERT INTO material_purchases (year_frame_id, brand_id, purchase_date, items, total_amount, remarks)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-      [yf, bid, purchase_date, JSON.stringify(parsed), total, remarks || null]
+      `INSERT INTO material_purchases (year_frame_id, activity_id, merged_into_activity, allocation_note, brand_id, purchase_date, items, total_amount, remarks)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [yf, Number.isFinite(activityId) ? activityId : null, mergedFlag, allocation_note || null, bid, purchase_date, JSON.stringify(parsed), total, remarks || null]
     );
     const [rows] = await db.query(`${LIST_SQL} AND mp.id = ?`, [result.insertId]);
     const row = rows[0];
@@ -160,7 +168,9 @@ router.put('/:id', async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
     if (!id) return res.status(400).json({ error: '无效 ID' });
-    const { brand_id, purchase_date, items, remarks } = req.body || {};
+    const { activity_id, merged_into_activity, allocation_note, brand_id, purchase_date, items, remarks } = req.body || {};
+    const activityId = activity_id != null && String(activity_id).trim() !== '' ? parseInt(activity_id, 10) : null;
+    const mergedFlag = merged_into_activity === true || merged_into_activity === 1 || String(merged_into_activity) === '1' ? 1 : 0;
     const bid = parseInt(brand_id, 10);
     if (!bid) return res.status(400).json({ error: '品牌不能为空' });
     if (!purchase_date) return res.status(400).json({ error: '报销日期不能为空' });
@@ -170,8 +180,8 @@ router.put('/:id', async (req, res) => {
     if (total <= 0) return res.status(400).json({ error: '合计金额须大于 0' });
 
     const [ret] = await db.query(
-      `UPDATE material_purchases SET brand_id = ?, purchase_date = ?, items = ?, total_amount = ?, remarks = ? WHERE id = ?`,
-      [bid, purchase_date, JSON.stringify(parsed), total, remarks || null, id]
+      `UPDATE material_purchases SET activity_id = ?, merged_into_activity = ?, allocation_note = ?, brand_id = ?, purchase_date = ?, items = ?, total_amount = ?, remarks = ? WHERE id = ?`,
+      [Number.isFinite(activityId) ? activityId : null, mergedFlag, allocation_note || null, bid, purchase_date, JSON.stringify(parsed), total, remarks || null, id]
     );
     if (!ret.affectedRows) return res.status(404).json({ error: '记录不存在' });
     const [rows] = await db.query(`${LIST_SQL} AND mp.id = ?`, [id]);

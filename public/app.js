@@ -28,10 +28,18 @@ let currentUserRole = 'operator';
 let activitiesState = { page: 1, search: '', type: '', period: '', region: '', belonging: '', brand: '', year: '', month: '', sortOrder: 'DESC', data: [], total: 0 };
 /** activity_belonging：存储值 → 显示名（与场次页筛选项同源） */
 let actBelongingLabelByValue = {};
-let materialPageState = { filterBrandId: '' };
-let propRepairPageState = { filterBrandId: '' };
+let materialPageState = { filterBrandId: '', mergeFilter: 'all' };
+let propRepairPageState = { filterBrandId: '', mergeFilter: 'all' };
+let reimbursementPageState = { rows: [], activities: [], filterInput: '' };
+const reimbursementActivityIndex = {
+  codes: new Set(),
+  codeToId: new Map(),
+  idToCode: new Map(),
+};
 let logisticsState = { data: [], selectedIds: new Set() };
 let warehouseState = { data: [], selectedIds: new Set() };
+let logisticsMergeFilter = 'all';
+let warehouseMergeFilter = 'all';
 let charts = {};
 let costPendingYMFilter = localStorage.getItem('remy_costPendingYMFilter') || localStorage.getItem('remy_costNoCostYMFilter') || 'all';
 let costWithCostYMFilter = localStorage.getItem('remy_costWithCostYMFilter') || 'all';
@@ -56,6 +64,15 @@ document.addEventListener('DOMContentLoaded', async () => {
   navigate(currentPage);
   checkConnection();
   renderLucideIcons();
+});
+
+document.addEventListener('click', (event) => {
+  if (!dashboardDatePickerState.open) return;
+  const wrap = document.querySelector('.dashboard-date-range-wrap');
+  if (wrap && !wrap.contains(event.target)) {
+    dashboardDatePickerState.open = false;
+    renderDashboardDatePicker();
+  }
 });
 
 // ===== API 请求封装 =====
@@ -124,6 +141,10 @@ function renderAuthUser() {
   el.textContent = `${name} (${role})`;
 }
 
+function getCurrentUserName() {
+  return (currentUser && currentUser.username ? String(currentUser.username).trim() : '') || 'system';
+}
+
 function applyRoleUiGuards() {
   if (!hasWriteAccess()) {
     const selectors = [
@@ -136,6 +157,11 @@ function applyRoleUiGuards() {
       '[onclick*="showLookupEditModal("]',
       '[onclick*="showMaterialPurchaseModal"]',
       '[onclick*="showPropRepairModal"]',
+      '[onclick*="showReimbursementModal"]',
+      '[onclick*="saveReimbursementForm"]',
+      '[onclick*="deleteReimbursementRecord"]',
+      '[onclick*="reimbAppendInvoiceRow"]',
+      '[onclick*="reimbRemoveInvoiceRow"]',
       '[onclick*="materialAppendCustomRow"]',
       '[onclick*="propRepairAppendCustomRow"]',
       '[onclick*="delete"]',
@@ -291,6 +317,7 @@ function navigate(page) {
     wine: '酒品管理',
     material: '物料采购',
     'prop-repair': '道具维修',
+    reimbursement: '报销登记',
     users: '用户管理',
     backup: '数据备份',
   };
@@ -313,6 +340,7 @@ function navigate(page) {
     wine: renderWine,
     material: renderMaterialPurchases,
     'prop-repair': renderPropRepairs,
+    reimbursement: renderReimbursements,
     users: renderUsers,
     backup: renderBackup,
   };
@@ -500,6 +528,14 @@ function toDateInputValue(raw) {
   return `${y}-${mo}-${day}`;
 }
 
+function todayDateInputValue() {
+  const now = new Date();
+  const y = now.getFullYear();
+  const mo = String(now.getMonth() + 1).padStart(2, '0');
+  const day = String(now.getDate()).padStart(2, '0');
+  return `${y}-${mo}-${day}`;
+}
+
 function statusBadge(s) {
   if (s === 'cancelled') return '<span class="badge badge-danger">已取消</span>';
   if (s === 'deferred') {
@@ -528,12 +564,14 @@ function typeColor(type) {
 async function updateBadges() {
   try {
     const qs = currentYearFrameId ? `?yearFrameId=${currentYearFrameId}` : '';
-    const [acts, logs, wars, materials, propRepairs] = await Promise.all([
+    const [acts, logs, wars, materials, propRepairs, reimbs, wines] = await Promise.all([
       api('GET', `/activities${qs}`),
       api('GET', `/logistics${qs}`),
       api('GET', `/warehouse${qs}`),
       api('GET', `/material-purchases${qs}`),
       api('GET', `/prop-repairs${qs}`),
+      api('GET', `/reimbursements${qs}`),
+      api('GET', '/wine'),
     ]);
     document.getElementById('badge-activities').textContent = acts.length || 0;
     document.getElementById('badge-logistics').textContent = logs.length || 0;
@@ -542,6 +580,29 @@ async function updateBadges() {
     if (materialBadge) materialBadge.textContent = materials.length || 0;
     const propRepairBadge = document.getElementById('badge-prop-repair');
     if (propRepairBadge) propRepairBadge.textContent = propRepairs.length || 0;
+    const reimbBadge = document.getElementById('badge-reimbursement');
+    if (reimbBadge) reimbBadge.textContent = reimbs.length || 0;
+    const wineBadge = document.getElementById('badge-wine');
+    if (wineBadge) {
+      const rows = Array.isArray(wines) ? wines : [];
+      if (!rows.length) {
+        wineBadge.textContent = '—';
+        wineBadge.style.color = 'var(--text-muted)';
+      } else {
+        const hasNegative = rows.some((w) => Number(w.quantity || 0) < 0);
+        const hasLow = rows.some((w) => Number(w.quantity || 0) >= 0 && Number(w.quantity || 0) <= 5);
+        if (hasNegative) {
+          wineBadge.textContent = '负库存';
+          wineBadge.style.color = 'var(--danger)';
+        } else if (hasLow) {
+          wineBadge.textContent = '库存不足';
+          wineBadge.style.color = 'var(--warning)';
+        } else {
+          wineBadge.textContent = '有库存';
+          wineBadge.style.color = 'var(--success)';
+        }
+      }
+    }
   } catch (e) {}
 }
 
@@ -554,10 +615,16 @@ let dashboardState = {
   activityType: '',
   executionFlag: '',
   period: '',
-  year: '',
-  month: '',
+  dateStart: '',
+  dateEnd: '',
   /** 右侧对比：空=不对比；「全国」或其它区域 value */
   compareRegion: '',
+};
+let dashboardDatePickerState = {
+  open: false,
+  leftMonth: '',
+  draftStart: '',
+  draftEnd: '',
 };
 /** 区域环形图下钻：选中的区域名，与数据详情筛选独立 */
 let dashboardDrillRegion = null;
@@ -567,24 +634,6 @@ let dashboardLastQuery = '';
 
 /** 与后端 ALLOWED_TYPES 一致，用于区域对比时类别柱图类目顺序 */
 const DASHBOARD_ACTIVITY_TYPES = ['晚宴', '品鉴', '培训', '纯设计'];
-
-/** 自然月 1–12（需配合年份筛选，便于对齐财年内的日历月） */
-function dashboardMonthSelectOptionsHtml() {
-  return (
-    '<option value="">月份</option>' +
-    [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
-      .map((n) => `<option value="${n}">${n}月</option>`)
-      .join('')
-  );
-}
-
-function dashboardYearSelectOptionsHtml() {
-  return (
-    '<option value="">年份</option>' +
-    '<option value="2025">2025年</option>' +
-    '<option value="2026">2026年</option>'
-  );
-}
 
 /** 左侧主口径序列（深色）与右侧对比口径序列（浅色） */
 const DASHBOARD_COMPARE_COLOR_REGION = '#5b21b6';
@@ -599,6 +648,150 @@ function dashboardMetricValue(row) {
   return dashboardChartMetric === 'revenue'
     ? parseFloat(row.revenue) || 0
     : parseInt(row.count, 10) || 0;
+}
+
+function formatDashboardDateRangeLabel() {
+  const s = dashboardState.dateStart || '';
+  const e = dashboardState.dateEnd || '';
+  if (s && e) return `${s} 至 ${e}`;
+  if (s) return `${s} 起`;
+  if (e) return `至 ${e}`;
+  return '选择日期区间';
+}
+
+function formatDashboardMonthTitle(monthKey) {
+  const [y, m] = String(monthKey || '').split('-').map((x) => parseInt(x, 10));
+  if (!y || !m) return '';
+  return `${y}年${m}月`;
+}
+
+function addMonthsToMonthKey(monthKey, delta) {
+  const [y, m] = String(monthKey || '').split('-').map((x) => parseInt(x, 10));
+  const dt = new Date(y || new Date().getFullYear(), (m || 1) - 1 + delta, 1);
+  return `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}`;
+}
+
+function buildDashboardCalendarMonth(monthKey, side) {
+  const [y, m] = String(monthKey || '').split('-').map((x) => parseInt(x, 10));
+  const base = new Date(y, (m || 1) - 1, 1);
+  const firstWeekday = base.getDay();
+  const daysInMonth = new Date(base.getFullYear(), base.getMonth() + 1, 0).getDate();
+  const today = todayDateInputValue();
+  const start = dashboardDatePickerState.draftStart || '';
+  const end = dashboardDatePickerState.draftEnd || '';
+  const cells = [];
+  for (let i = 0; i < firstWeekday; i += 1) cells.push('<div class="dashboard-date-cell empty"></div>');
+  for (let day = 1; day <= daysInMonth; day += 1) {
+    const dateStr = `${base.getFullYear()}-${String(base.getMonth() + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+    const isStart = start === dateStr;
+    const isEnd = end === dateStr;
+    const inRange = start && end && dateStr > start && dateStr < end;
+    const isToday = today === dateStr;
+    const cls = ['dashboard-date-cell', isStart ? 'is-start' : '', isEnd ? 'is-end' : '', inRange ? 'in-range' : '', isToday ? 'is-today' : '']
+      .filter(Boolean)
+      .join(' ');
+    cells.push(`<button type="button" class="${cls}" onclick="pickDashboardDate('${dateStr}')">${day}</button>`);
+  }
+  return `
+    <div class="dashboard-date-month">
+      <div class="dashboard-date-month-head">
+        ${side === 'left' ? `<button type="button" class="btn btn-secondary btn-xs" onclick="shiftDashboardDatePicker(-1)">‹</button>` : '<span></span>'}
+        <strong>${formatDashboardMonthTitle(monthKey)}</strong>
+        ${side === 'right' ? `<button type="button" class="btn btn-secondary btn-xs" onclick="shiftDashboardDatePicker(1)">›</button>` : '<span></span>'}
+      </div>
+      <div class="dashboard-date-weekdays">
+        <span>日</span><span>一</span><span>二</span><span>三</span><span>四</span><span>五</span><span>六</span>
+      </div>
+      <div class="dashboard-date-grid">${cells.join('')}</div>
+    </div>
+  `;
+}
+
+function renderDashboardDatePicker() {
+  const host = document.getElementById('dashboardDateRangeHost');
+  if (!host) return;
+  const left = dashboardDatePickerState.leftMonth || `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}`;
+  const right = addMonthsToMonthKey(left, 1);
+  host.innerHTML = `
+    <div class="dashboard-date-range-wrap">
+      <button type="button" class="filter-select dashboard-date-trigger" onclick="toggleDashboardDatePicker()">
+        <span>${escapeHtml(formatDashboardDateRangeLabel())}</span>
+        <span style="color:var(--text-muted)">日期区间</span>
+      </button>
+      ${dashboardDatePickerState.open ? `
+        <div class="dashboard-date-popover">
+          <div class="dashboard-date-popover-head">
+            <div class="card-sub" style="margin:0">左侧开始日期，右侧结束日期</div>
+            <button type="button" class="btn btn-secondary btn-xs" onclick="toggleDashboardDatePicker(false)">关闭</button>
+          </div>
+          <div class="dashboard-date-months">
+            ${buildDashboardCalendarMonth(left, 'left')}
+            ${buildDashboardCalendarMonth(right, 'right')}
+          </div>
+          <div class="dashboard-date-popover-foot">
+            <div class="card-sub" style="margin:0">${escapeHtml(dashboardDatePickerState.draftStart || '未选开始')} ${dashboardDatePickerState.draftEnd ? `至 ${escapeHtml(dashboardDatePickerState.draftEnd)}` : ''}</div>
+            <div style="display:flex;gap:8px">
+              <button type="button" class="btn btn-secondary btn-sm" onclick="clearDashboardDatePicker()">清空</button>
+              <button type="button" class="btn btn-primary btn-sm" onclick="applyDashboardDatePicker()">确定</button>
+            </div>
+          </div>
+        </div>` : ''}
+    </div>
+  `;
+}
+
+function toggleDashboardDatePicker(forceOpen) {
+  const nextOpen = typeof forceOpen === 'boolean' ? forceOpen : !dashboardDatePickerState.open;
+  if (nextOpen) {
+    const base = dashboardState.dateStart || todayDateInputValue();
+    dashboardDatePickerState.leftMonth = String(base).slice(0, 7);
+    dashboardDatePickerState.draftStart = dashboardState.dateStart || '';
+    dashboardDatePickerState.draftEnd = dashboardState.dateEnd || '';
+  }
+  dashboardDatePickerState.open = nextOpen;
+  renderDashboardDatePicker();
+}
+
+function shiftDashboardDatePicker(delta) {
+  dashboardDatePickerState.leftMonth = addMonthsToMonthKey(dashboardDatePickerState.leftMonth, delta);
+  renderDashboardDatePicker();
+}
+
+function pickDashboardDate(dateStr) {
+  const start = dashboardDatePickerState.draftStart || '';
+  const end = dashboardDatePickerState.draftEnd || '';
+  if (!start || (start && end)) {
+    dashboardDatePickerState.draftStart = dateStr;
+    dashboardDatePickerState.draftEnd = '';
+  } else if (dateStr < start) {
+    dashboardDatePickerState.draftEnd = start;
+    dashboardDatePickerState.draftStart = dateStr;
+  } else {
+    dashboardDatePickerState.draftEnd = dateStr;
+  }
+  renderDashboardDatePicker();
+}
+
+function clearDashboardDatePicker() {
+  dashboardDatePickerState.draftStart = '';
+  dashboardDatePickerState.draftEnd = '';
+  dashboardState.dateStart = '';
+  dashboardState.dateEnd = '';
+  dashboardDatePickerState.open = false;
+  renderDashboardDatePicker();
+  renderDashboard();
+}
+
+function applyDashboardDatePicker() {
+  dashboardState.dateStart = dashboardDatePickerState.draftStart || '';
+  dashboardState.dateEnd = dashboardDatePickerState.draftEnd || '';
+  if (dashboardState.dateStart && dashboardState.dateEnd && dashboardState.dateStart > dashboardState.dateEnd) {
+    showToast('结束日期不能早于开始日期', 'warning');
+    return;
+  }
+  dashboardDatePickerState.open = false;
+  renderDashboardDatePicker();
+  renderDashboard();
 }
 
 function dashboardMetricTick(v) {
@@ -653,22 +846,21 @@ function renderLucideIcons() {
 }
 
 function filterDashboard() {
-  dashboardState.year = document.getElementById('dashFilterYear')?.value || '';
-  dashboardState.month = document.getElementById('dashFilterMonth')?.value || '';
   dashboardState.activityType = document.getElementById('dashFilterType')?.value || '';
   dashboardState.period = document.getElementById('dashFilterPeriod')?.value || '';
   dashboardState.region = document.getElementById('dashFilterRegion')?.value || '';
   dashboardState.brand = document.getElementById('dashFilterBrand')?.value || '';
   dashboardState.executionFlag = document.getElementById('dashFilterExecution')?.value || '';
   dashboardState.compareRegion = document.getElementById('dashCompareRegion')?.value || '';
+  if (dashboardState.dateStart && dashboardState.dateEnd && dashboardState.dateStart > dashboardState.dateEnd) {
+    showToast('结束日期不能早于开始日期', 'warning');
+    return;
+  }
   renderDashboard();
 }
 
 async function populateDashboardFilterSelects() {
-  const yearSel = document.getElementById('dashFilterYear');
-  if (yearSel) yearSel.value = dashboardState.year || '';
-  const monthSel = document.getElementById('dashFilterMonth');
-  if (monthSel) monthSel.value = dashboardState.month || '';
+  renderDashboardDatePicker();
 
   try {
     const types = await api('GET', '/lookups?category=activity_type');
@@ -757,9 +949,15 @@ function resetDashboardFilters() {
     activityType: '',
     executionFlag: '',
     period: '',
-    year: '',
-    month: '',
+    dateStart: '',
+    dateEnd: '',
     compareRegion: '',
+  };
+  dashboardDatePickerState = {
+    open: false,
+    leftMonth: '',
+    draftStart: '',
+    draftEnd: '',
   };
   dashboardDrillRegion = null;
   renderDashboard();
@@ -826,8 +1024,8 @@ function dashboardQueryString() {
   if (dashboardState.activityType) sp.set('activityTypes', dashboardState.activityType);
   if (dashboardState.executionFlag) sp.set('executionFlags', dashboardState.executionFlag);
   if (dashboardState.period) sp.set('periods', dashboardState.period);
-  if (dashboardState.year) sp.set('activityYear', dashboardState.year);
-  if (dashboardState.month) sp.set('months', dashboardState.month);
+  if (dashboardState.dateStart) sp.set('dateStart', dashboardState.dateStart);
+  if (dashboardState.dateEnd) sp.set('dateEnd', dashboardState.dateEnd);
   if (dashboardState.compareRegion) sp.set('compareRegion', dashboardState.compareRegion);
   const q = sp.toString();
   return q ? `?${q}` : '';
@@ -983,7 +1181,7 @@ async function renderDashboard() {
           <div class="stat-icon"><i data-lucide="wrench" style="width:16px;height:16px"></i></div>
           <div class="stat-label">道具维修报价</div>
           <div class="stat-value sm">${fmtMoney(summary.propRepairQuoted || 0)}</div>
-          <div class="stat-sub">维修成本 ${fmtMoney(summary.propRepairCost || 0)} · 当前年框统计</div>
+          <div class="stat-sub">道具维修模块 quoted_price 合计（成本请见「活动成本」）</div>
         </div>
       </div>
       <div class="card" style="margin:16px 0">
@@ -1000,8 +1198,7 @@ async function renderDashboard() {
             <div class="card-sub" style="margin-bottom:8px">主口径（左侧）：品牌、时段、类型等与下方关键数据一致；区域为主数据区域。</div>
             <div class="toolbar" style="margin:0;border:none;padding:0;background:transparent">
               <div class="toolbar-left" style="flex-wrap:wrap">
-                <select class="filter-select" id="dashFilterYear" onchange="filterDashboard()">${dashboardYearSelectOptionsHtml()}</select>
-                <select class="filter-select" id="dashFilterMonth" onchange="filterDashboard()">${dashboardMonthSelectOptionsHtml()}</select>
+                <div id="dashboardDateRangeHost"></div>
                 <select class="filter-select" id="dashFilterType" onchange="filterDashboard()"><option value="">类型</option></select>
                 <select class="filter-select" id="dashFilterPeriod" onchange="filterDashboard()"><option value="">时段</option></select>
                 <select class="filter-select" id="dashFilterRegion" onchange="filterDashboard()"><option value="">区域</option></select>
@@ -1857,6 +2054,7 @@ function genProjectCode() {
   const code = document.getElementById('actYearFrameCode')?.value || '';
   const date = document.getElementById('actDate')?.value || '';
   const city = document.getElementById('actCity')?.value || '';
+  syncActivityBrandFromYearFrameCode();
   const brand = document.getElementById('actBrandField')?.value || '';
   const type = document.getElementById('actActivityType')?.value || '';
   const client = document.getElementById('actClient')?.value || '';
@@ -1870,6 +2068,28 @@ function genProjectCode() {
   const pc = `${code} ${dateStr}${city}${client}${brand}${type}`.trim();
   const el = document.getElementById('actProjectCode');
   if (el) el.value = pc;
+}
+
+function detectActivityBrandByYearFrameCode(rawCode) {
+  const normalized = String(rawCode || '')
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, '');
+  if (!normalized) return '';
+  if (normalized.includes('CLUB')) return 'CLUB';
+  if (normalized.includes('PHD')) return 'PHD';
+  if (normalized.includes('RC')) return 'RC';
+  if (normalized.includes('XO')) return 'X.O';
+  return '';
+}
+
+function syncActivityBrandFromYearFrameCode() {
+  const yearFrameCode = document.getElementById('actYearFrameCode')?.value || '';
+  const brandEl = document.getElementById('actBrandField');
+  if (!brandEl) return;
+  const detected = detectActivityBrandByYearFrameCode(yearFrameCode);
+  if (detected && brandEl.value !== detected) {
+    brandEl.value = detected;
+  }
 }
 
 // ----- 活动表单下拉（lookup_options /api/lookups）-----
@@ -2160,6 +2380,8 @@ async function showActivityModal(id = null) {
     genProjectCode();
   }
 
+  syncActivityBrandFromYearFrameCode();
+
   openModal('modalActivity');
 
   loadWineInventoryForForm();
@@ -2187,7 +2409,9 @@ async function loadWineInventoryForForm() {
       <tr>
         <td style="font-weight:500">${w.wine_name}</td>
         <td>${w.spec}</td>
-        <td style="color:${w.quantity > 0 ? 'var(--success)' : 'var(--text-muted)'}">${w.quantity} 瓶</td>
+        <td style="color:${w.quantity < 0 ? 'var(--danger)' : (w.quantity > 0 ? 'var(--success)' : 'var(--text-muted)')};font-weight:${w.quantity < 0 ? 700 : 500}">
+          ${w.quantity} 瓶${w.quantity < 0 ? '（负库存）' : ''}
+        </td>
         <td><input type="number" class="wine-qty-input" data-wine-code="${w.wine_code}" data-wine-name="${w.wine_name}" data-spec="${w.spec}" value="0" min="0" placeholder="0" style="width:70px;padding:4px 8px;border:1px solid var(--border);border-radius:4px;text-align:right"></td>
       </tr>
     `).join('');
@@ -2229,6 +2453,48 @@ function collectWineDetails() {
   return details;
 }
 
+async function syncActivityWineUsageRecords(activityId, activityBody) {
+  if (!activityId) return;
+  const yearFrameId = Number(activityBody?.year_frame_id || currentYearFrameId || 1);
+  const usageDate = activityBody?.date || todayDateInputValue();
+  const clientName = activityBody?.client_name || activityBody?.client || '';
+  const desiredMap = parseWineDetails(activityBody?.wine_details);
+
+  const usageRows = await api('GET', `/wine/usage?year_frame_id=${yearFrameId}`);
+  const existing = (usageRows || []).filter((r) => Number(r.activity_id) === Number(activityId));
+  const existingByCode = new Map(existing.map((r) => [String(r.wine_code || ''), r]));
+
+  for (const [wineCode, detail] of Object.entries(desiredMap)) {
+    const qty = parseInt(detail?.qty, 10) || 0;
+    if (qty <= 0) continue;
+    const payload = {
+      year_frame_id: yearFrameId,
+      activity_id: Number(activityId),
+      wine_code: wineCode,
+      wine_name: detail?.wine_name || wineCode,
+      spec: detail?.spec || '',
+      quantity: qty,
+      usage_date: usageDate,
+      client_name: clientName,
+      remarks: '来自活动用酒明细同步',
+    };
+    const old = existingByCode.get(wineCode);
+    if (old) {
+      if ((parseInt(old.quantity, 10) || 0) !== qty || old.usage_date !== usageDate || (old.client_name || '') !== clientName) {
+        await api('PUT', `/wine/usage/${old.id}`, payload);
+      }
+      existingByCode.delete(wineCode);
+    } else {
+      await api('POST', '/wine/usage', payload);
+    }
+  }
+
+  // 活动表单删除了某酒品时，删除对应使用记录并回补库存
+  for (const stale of existingByCode.values()) {
+    await api('DELETE', `/wine/usage/${stale.id}`);
+  }
+}
+
 async function saveActivity() {
   const id = document.getElementById('actId').value;
   const body = {
@@ -2254,12 +2520,31 @@ async function saveActivity() {
   };
 
   try {
+    let activityId = id ? Number(id) : 0;
     if (id) {
       await api('PUT', `/activities/${id}`, body);
       showToast('活动已更新', 'success');
     } else {
-      await api('POST', '/activities', body);
+      const created = await api('POST', '/activities', body);
+      activityId = Number(created?.id || created?.data?.id || 0);
+      // Defensive fallback: some environments may return message-only payload.
+      if (!activityId && body.project_code) {
+        const rows = await api('GET', `/activities?yearFrameId=${encodeURIComponent(body.year_frame_id)}`);
+        const matched = (rows || [])
+          .filter((r) => String(r.project_code || '').trim() === String(body.project_code || '').trim())
+          .sort((a, b) => Number(b.id || 0) - Number(a.id || 0))[0];
+        activityId = Number(matched?.id || 0);
+      }
       showToast('活动已创建', 'success');
+    }
+    if (activityId) {
+      try {
+        await syncActivityWineUsageRecords(activityId, body);
+      } catch (syncErr) {
+        showToast(`活动已保存，但用酒库存同步失败：${syncErr.message || syncErr}`, 'warning');
+      }
+    } else if (Object.keys(body.wine_details || {}).length > 0) {
+      showToast('活动已保存，但未拿到活动ID，未能同步用酒库存。请打开该场次后重新保存一次。', 'warning');
     }
     closeModal();
     loadActivities();
@@ -2422,19 +2707,19 @@ async function showActivityDetail(id) {
             ? `<div class="activity-detail-remarks activity-detail-block"><h4>备注</h4><p>${escapeHtml(a.remarks)}</p></div>`
             : ''
         }
-        ${
-          wineRows
-            ? `<div class="activity-detail-wine activity-detail-block">
-            <h4>用酒明细</h4>
-            <div class="table-wrapper">
+        <div class="activity-detail-wine activity-detail-block">
+          <h4>用酒明细</h4>
+          ${
+            wineRows
+              ? `<div class="table-wrapper">
               <table class="data-table" style="font-size:13px">
                 <thead><tr><th>酒品</th><th>规格</th><th style="text-align:right">数量</th></tr></thead>
                 <tbody>${wineRows}</tbody>
               </table>
-            </div>
-          </div>`
-            : ''
-        }
+            </div>`
+              : '<p style="margin:0;color:var(--text-muted);font-size:13px">未填写用酒明细</p>'
+          }
+        </div>
 
         <div class="activity-detail-actions">
           <button type="button" class="btn btn-success btn-sm" onclick="closeModal();setTimeout(()=>showCostFill(${id}),100)"><i data-lucide="wallet" style="width:13px;height:13px"></i>填写成本</button>
@@ -2722,6 +3007,115 @@ function toggleCostSection(section) {
   localStorage.setItem(`remy_costSectionCollapsed_${section}`, willCollapse ? '1' : '0');
 }
 
+const COST_STATS_CARD_ORDER_KEY = 'remy_costStatsCardOrder';
+const COST_STATS_CARD_KEYS = ['totalRev', 'totalCost', 'allocatedCost', 'pooledCost', 'grossProfit', 'filledCount', 'propRepairCost', 'logisticsCost', 'materialCost', 'reimbursementCost'];
+
+function normalizeCostStatsCardOrder(input) {
+  const arr = Array.isArray(input) ? input.map((x) => String(x || '').trim()).filter(Boolean) : [];
+  const seen = new Set();
+  const out = [];
+  arr.forEach((k) => {
+    if (COST_STATS_CARD_KEYS.includes(k) && !seen.has(k)) {
+      seen.add(k);
+      out.push(k);
+    }
+  });
+  COST_STATS_CARD_KEYS.forEach((k) => {
+    if (!seen.has(k)) out.push(k);
+  });
+  return out;
+}
+
+function readCostStatsCardOrder() {
+  try {
+    const raw = localStorage.getItem(COST_STATS_CARD_ORDER_KEY);
+    if (!raw) return [...COST_STATS_CARD_KEYS];
+    return normalizeCostStatsCardOrder(JSON.parse(raw));
+  } catch {
+    return [...COST_STATS_CARD_KEYS];
+  }
+}
+
+function writeCostStatsCardOrder(order) {
+  try {
+    localStorage.setItem(COST_STATS_CARD_ORDER_KEY, JSON.stringify(normalizeCostStatsCardOrder(order)));
+  } catch {}
+}
+
+function applySavedCostStatsCardOrder(grid) {
+  if (!grid) return;
+  const order = readCostStatsCardOrder();
+  order.forEach((key) => {
+    const card = grid.querySelector(`[data-cost-card-key="${key}"]`);
+    if (card) grid.appendChild(card);
+  });
+}
+
+function bindCostStatsCardDrag(grid) {
+  if (!grid) return;
+  const cards = Array.from(grid.querySelectorAll('[data-cost-card-key]'));
+  cards.forEach((card) => {
+    card.draggable = true;
+    card.style.cursor = 'grab';
+    card.addEventListener('dragstart', (e) => {
+      const key = card.getAttribute('data-cost-card-key') || '';
+      if (e.dataTransfer) {
+        e.dataTransfer.effectAllowed = 'move';
+        e.dataTransfer.setData('text/plain', key);
+      }
+      card.classList.add('dragging');
+      card.style.opacity = '0.6';
+    });
+    card.addEventListener('dragend', () => {
+      card.classList.remove('dragging');
+      card.style.opacity = '';
+      const orderedKeys = Array.from(grid.querySelectorAll('[data-cost-card-key]')).map((el) => el.getAttribute('data-cost-card-key'));
+      writeCostStatsCardOrder(orderedKeys);
+    });
+  });
+
+  grid.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    const dragging = grid.querySelector('[data-cost-card-key].dragging');
+    if (!dragging) return;
+    const target = e.target.closest('[data-cost-card-key]');
+    if (!target || target === dragging || !grid.contains(target)) return;
+    const rect = target.getBoundingClientRect();
+    const after = e.clientY > rect.top + rect.height / 2;
+    if (after) grid.insertBefore(dragging, target.nextSibling);
+    else grid.insertBefore(dragging, target);
+  });
+}
+
+function buildReimbByActivityMap(reimbursements) {
+  const reimbByAct = {};
+  let mergedTotal = 0;
+  (reimbursements || []).forEach((r) => {
+    const aid = r.activity_id;
+    if (aid == null || aid === '') return;
+    const idKey = Number(aid);
+    if (!Number.isFinite(idKey) || idKey <= 0) return;
+    const amt = parseFloat(r.amount) || 0;
+    const merged = r.merged_into_activity === 1 || r.merged_into_activity === true;
+    if (merged) mergedTotal += amt;
+    if (!reimbByAct[idKey]) reimbByAct[idKey] = { standalone: 0, merged: 0 };
+    if (merged) reimbByAct[idKey].merged += amt;
+    else reimbByAct[idKey].standalone += amt;
+  });
+  return { reimbByAct, mergedTotal };
+}
+
+function activityReimbCellHtml(reimbByAct, actId) {
+  const o = reimbByAct[Number(actId)];
+  if (!o || (o.standalone <= 0 && o.merged <= 0)) return '<span class="amount amount-neutral">—</span>';
+  const bits = [];
+  if (o.standalone > 0) bits.push(`<span class="amount amount-cost">${fmtMoney(o.standalone)}</span>`);
+  if (o.merged > 0) {
+    bits.push(`<span style="font-size:11px;color:var(--text-muted)">已合 ${fmtMoney(o.merged)}</span>`);
+  }
+  return bits.join('<br>');
+}
+
 async function renderCost() {
   const container = document.getElementById('pageContainer');
 
@@ -2736,28 +3130,52 @@ async function renderCost() {
     ]);
 
     let materialCost = 0;
+    let materialMergedCost = 0;
     let propRepairCost = 0;
+    let propRepairMergedCost = 0;
+    let workforceAnalytics = null;
     if (qs) {
       try {
         const mpS = await api('GET', `/material-purchases/summary${qs}`);
-        materialCost = roundMoney2(mpS.grandTotal || 0);
+        materialCost = roundMoney2(
+          mpS && mpS.pooledTotal != null ? mpS.pooledTotal : (mpS.grandTotal || 0)
+        );
+        materialMergedCost = roundMoney2(mpS && mpS.mergedTotal != null ? mpS.mergedTotal : 0);
       } catch {
         materialCost = 0;
+        materialMergedCost = 0;
       }
       try {
         const prS = await api('GET', `/prop-repairs/summary${qs}`);
-        propRepairCost = roundMoney2(prS.grandTotal || 0);
+        propRepairCost = roundMoney2(
+          prS && prS.pooledTotal != null ? prS.pooledTotal : (prS.grandTotal || 0)
+        );
+        propRepairMergedCost = roundMoney2(prS && prS.mergedTotal != null ? prS.mergedTotal : 0);
       } catch {
         propRepairCost = 0;
+        propRepairMergedCost = 0;
+      }
+      try {
+        const wr = await api('GET', `/cost/analytics/workforce${qs}`);
+        workforceAnalytics = wr && wr.success ? wr.data : null;
+      } catch {
+        workforceAnalytics = null;
       }
     }
 
     // 计算统计
     const actCost = activities.reduce((s, a) => s + (parseFloat(a.total_cost)||0), 0);
-    const warCost = warehouse.reduce((s, w) => s + (parseFloat(w.actual_cost)||0), 0);
+    const warCost = warehouse
+      .filter((w) => !(w.merged_into_activity === 1 || w.merged_into_activity === true))
+      .reduce((s, w) => s + (parseFloat(w.actual_cost)||0), 0);
     const warRev = warehouse.reduce((s, w) => s + (parseFloat(w.quoted_price)||0), 0);
-    const logCost = logistics.reduce((s, l) => s + (parseFloat(l.fee)||0), 0);
-    const reimCost = reimbursements.reduce((s, r) => s + (parseFloat(r.amount)||0), 0);
+    const logCost = logistics
+      .filter((l) => !(l.merged_into_activity === 1 || l.merged_into_activity === true))
+      .reduce((s, l) => s + (parseFloat(l.fee)||0), 0);
+    const reimCost = reimbursements
+      .filter((r) => !(r.merged_into_activity === 1 || r.merged_into_activity === true))
+      .reduce((s, r) => s + (parseFloat(r.amount) || 0), 0);
+    const { reimbByAct, mergedTotal: reimMergedTotal } = buildReimbByActivityMap(reimbursements);
     const totalCost = roundMoney2(actCost + warCost + logCost + reimCost + materialCost + propRepairCost);
     const totalRev = activities.reduce((s, a) => s + (parseFloat(a.quoted_price)||0), 0) + warRev;
 
@@ -2778,37 +3196,123 @@ async function renderCost() {
     const filteredActsWithCost = applyCostYmFilter(actsWithCost, costWithCostYMFilter);
     const filteredActsMarkedNoCost = applyCostYmFilter(actsMarkedNoCost, costMarkedNoCostYMFilter);
 
+    const pooledCost = roundMoney2(warCost + logCost + reimCost + materialCost + propRepairCost);
     container.innerHTML = `
-      <div class="stats-grid">
-        <div class="stat-card success">
+      <div class="stats-grid" id="costStatsGrid">
+        <div class="stat-card success" data-cost-card-key="totalRev" title="拖拽调整卡片顺序">
           <div class="stat-icon"><i data-lucide="wallet" style="width:16px;height:16px"></i></div>
           <div class="stat-label">总报价</div>
           <div class="stat-value sm">${fmtMoney(totalRev)}</div>
           <div class="stat-sub">场次 ${fmtMoney(totalRev-warRev)} ｜ 仓储 ${fmtMoney(warRev)}</div>
         </div>
-        <div class="stat-card warning">
+        <div class="stat-card warning" data-cost-card-key="totalCost" title="拖拽调整卡片顺序">
           <div class="stat-icon"><i data-lucide="hand-coins" style="width:16px;height:16px"></i></div>
           <div class="stat-label">总成本</div>
           <div class="stat-value sm">${fmtMoney(totalCost)}</div>
-          <div class="stat-sub">场次 ${fmtMoney(actCost)} ｜ 仓储 ${fmtMoney(warCost)} ｜ 物流 ${fmtMoney(logCost)} ｜ 报销 ${fmtMoney(reimCost)} ｜ 物料 ${fmtMoney(materialCost)} ｜ 维修 ${fmtMoney(propRepairCost)} · <a href="javascript:void(0)" onclick="navigate('material');return false;" style="color:var(--accent)">物料登记</a> / <a href="javascript:void(0)" onclick="navigate('prop-repair');return false;" style="color:var(--accent)">维修登记</a></div>
+          <div class="stat-sub">已计入活动 ${fmtMoney(actCost)} ｜ 公共池：仓储 ${fmtMoney(warCost)}、物流 ${fmtMoney(logCost)}、报销 ${fmtMoney(reimCost)}、物料 ${fmtMoney(materialCost)}、维修 ${fmtMoney(propRepairCost)} · <a href="javascript:void(0)" onclick="navigate('reimbursement');return false;" style="color:var(--accent)">报销登记</a> / <a href="javascript:void(0)" onclick="navigate('material');return false;" style="color:var(--accent)">物料登记</a> / <a href="javascript:void(0)" onclick="navigate('prop-repair');return false;" style="color:var(--accent)">维修登记</a></div>
         </div>
-        <div class="stat-card accent">
+        <div class="stat-card blue" data-cost-card-key="allocatedCost" title="拖拽调整卡片顺序">
+          <div class="stat-icon"><i data-lucide="folder-sync" style="width:16px;height:16px"></i></div>
+          <div class="stat-label">已计入活动成本</div>
+          <div class="stat-value sm">${fmtMoney(actCost)}</div>
+          <div class="stat-sub">来源：活动 total_cost（含已同步计入的公共成本）</div>
+        </div>
+        <div class="stat-card blue" data-cost-card-key="pooledCost" title="拖拽调整卡片顺序">
+          <div class="stat-icon"><i data-lucide="layers-2" style="width:16px;height:16px"></i></div>
+          <div class="stat-label">公共成本池（未计入）</div>
+          <div class="stat-value sm">${fmtMoney(pooledCost)}</div>
+          <div class="stat-sub">仓储+物流+报销+物料+维修中尚未计入活动成本的成本</div>
+        </div>
+        <div class="stat-card accent" data-cost-card-key="grossProfit" title="拖拽调整卡片顺序">
           <div class="stat-icon"><i data-lucide="chart-column" style="width:16px;height:16px"></i></div>
           <div class="stat-label">毛利润</div>
           <div class="stat-value sm">${fmtMoney(totalRev - totalCost)}</div>
           <div class="stat-sub">毛利率 ${totalRev > 0 ? ((totalRev-totalCost)/totalRev*100).toFixed(1) : 0}%</div>
         </div>
-        <div class="stat-card blue">
+        <div class="stat-card blue" data-cost-card-key="filledCount" title="拖拽调整卡片顺序">
           <div class="stat-icon"><i data-lucide="clipboard-list" style="width:16px;height:16px"></i></div>
           <div class="stat-label">已填成本场次</div>
           <div class="stat-value">${actsWithCost.length}</div>
           <div class="stat-sub">待填 ${actsPendingCost.length} 场 ｜ 无成本 ${actsMarkedNoCost.length} 场</div>
         </div>
-        <div class="stat-card danger">
+        <div class="stat-card danger" data-cost-card-key="propRepairCost" title="拖拽调整卡片顺序">
           <div class="stat-icon"><i data-lucide="wrench" style="width:16px;height:16px"></i></div>
           <div class="stat-label">道具维修成本</div>
           <div class="stat-value sm">${fmtMoney(propRepairCost)}</div>
-          <div class="stat-sub">来源：道具维修模块（无成本记录按 0 计）</div>
+          <div class="stat-sub">公共池（未计入）${fmtMoney(propRepairCost)} ｜ 已计入活动 ${fmtMoney(propRepairMergedCost)}</div>
+        </div>
+        <div class="stat-card blue" data-cost-card-key="logisticsCost" title="拖拽调整卡片顺序">
+          <div class="stat-icon"><i data-lucide="truck" style="width:16px;height:16px"></i></div>
+          <div class="stat-label">物流成本</div>
+          <div class="stat-value sm">${fmtMoney(logCost)}</div>
+          <div class="stat-sub">来源：物流模块（仅公共池未计入记录）</div>
+        </div>
+        <div class="stat-card warning" data-cost-card-key="materialCost" title="拖拽调整卡片顺序">
+          <div class="stat-icon"><i data-lucide="shopping-cart" style="width:16px;height:16px"></i></div>
+          <div class="stat-label">物料采购成本</div>
+          <div class="stat-value sm">${fmtMoney(materialCost)}</div>
+          <div class="stat-sub">公共池（未计入）${fmtMoney(materialCost)} ｜ 已计入活动 ${fmtMoney(materialMergedCost)}</div>
+        </div>
+        <div class="stat-card accent" data-cost-card-key="reimbursementCost" title="拖拽调整卡片顺序">
+          <div class="stat-icon"><i data-lucide="receipt" style="width:16px;height:16px"></i></div>
+          <div class="stat-label">报销成本</div>
+          <div class="stat-value sm">${fmtMoney(reimCost)}</div>
+          <div class="stat-sub">公共池（未计入）${fmtMoney(reimCost)} ｜ 已计入活动成本（场次） ${fmtMoney(reimMergedTotal)}（已含在活动成本）</div>
+        </div>
+      </div>
+
+      <div class="card" style="margin:0 0 16px 0">
+        <div class="card-body" style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+          <div style="padding:12px;border:1px dashed var(--border);border-radius:var(--radius-sm);background:var(--bg-input)">
+            <div class="card-title" style="font-size:13px">已计入活动成本口径</div>
+            <div class="card-sub">用于单场成本构成、超支判断、活动维度分析（活动成本明细 + 已同步计入）</div>
+          </div>
+          <div style="padding:12px;border:1px dashed var(--border);border-radius:var(--radius-sm);background:var(--bg-input)">
+            <div class="card-title" style="font-size:13px">公共成本池口径</div>
+            <div class="card-sub">用于总账补充（尚未计入到活动的仓储/物流/采购/维修/报销）</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card" style="margin-bottom:16px">
+        <div class="card-header">
+          <div class="card-title"><i data-lucide="users" style="width:14px;height:14px;vertical-align:-2px;margin-right:6px"></i>活动维度人力分析（基于已计入活动明细）</div>
+        </div>
+        <div class="card-body">
+          ${
+            workforceAnalytics
+              ? `
+              <div class="stats-grid" style="margin-bottom:10px">
+                <div class="stat-card"><div class="stat-label">督导费用</div><div class="stat-value sm">${fmtMoney(workforceAnalytics.byItem?.supervisor || 0)}</div></div>
+                <div class="stat-card"><div class="stat-label">PG费用</div><div class="stat-value sm">${fmtMoney(workforceAnalytics.byItem?.pg || 0)}</div></div>
+                <div class="stat-card"><div class="stat-label">兼职费用</div><div class="stat-value sm">${fmtMoney(workforceAnalytics.byItem?.parttime || 0)}</div></div>
+                <div class="stat-card"><div class="stat-label">调酒师费用</div><div class="stat-value sm">${fmtMoney(workforceAnalytics.byItem?.bartender || 0)}</div></div>
+                <div class="stat-card"><div class="stat-label">演职人员费用</div><div class="stat-value sm">${fmtMoney(workforceAnalytics.byItem?.performance || 0)}</div></div>
+              </div>
+              <div class="card-sub" style="margin-bottom:8px">
+                区域用人成本最高：${escapeHtml(workforceAnalytics.topRegion?.region || '—')}（${fmtMoney(workforceAnalytics.topRegion?.humanCost || 0)}）
+                ｜最低：${escapeHtml(workforceAnalytics.lowRegion?.region || '—')}（${fmtMoney(workforceAnalytics.lowRegion?.humanCost || 0)}）
+              </div>
+              <div class="table-wrapper">
+                <table>
+                  <thead><tr><th>区域</th><th>活动数</th><th>用人成本</th><th>督导</th><th>PG</th><th>兼职</th><th>调酒师</th><th>演职</th></tr></thead>
+                  <tbody>
+                    ${(workforceAnalytics.byRegion || []).map((r) => `
+                      <tr>
+                        <td>${escapeHtml(r.region)}</td>
+                        <td>${r.activityCount || 0}</td>
+                        <td class="amount amount-cost">${fmtMoney(r.humanCost || 0)}</td>
+                        <td>${fmtMoney(r.supervisor || 0)}</td>
+                        <td>${fmtMoney(r.pg || 0)}</td>
+                        <td>${fmtMoney(r.parttime || 0)}</td>
+                        <td>${fmtMoney(r.bartender || 0)}</td>
+                        <td>${fmtMoney(r.performance || 0)}</td>
+                      </tr>`).join('')}
+                  </tbody>
+                </table>
+              </div>`
+              : '<div class="card-sub">暂无可分析数据（请先在活动成本明细中沉淀人员类成本）</div>'
+          }
         </div>
       </div>
 
@@ -2839,6 +3343,7 @@ async function renderCost() {
                   <th>类型</th>
                   <th>报价</th>
                   <th>成本</th>
+                  <th>关联报销</th>
                   <th>操作</th>
                 </tr>
               </thead>
@@ -2853,10 +3358,11 @@ async function renderCost() {
                     <td><span class="badge badge-${typeColor(a.activity_type)}">${a.activity_type||'—'}</span></td>
                     <td class="amount amount-revenue">${fmtMoney(a.quoted_price)}</td>
                     <td class="amount amount-neutral">—</td>
+                    <td style="font-size:11px;line-height:1.35">${activityReimbCellHtml(reimbByAct, a.id)}</td>
                     <td><button class="btn btn-success btn-sm" onclick="showCostFillFromCost(${a.id})">+ 填写</button></td>
                   </tr>
                 `).join('')}
-                ${filteredActsPending.length > 30 ? `<tr><td colspan="9" style="text-align:center;color:var(--text-muted);padding:10px">还有 ${filteredActsPending.length-30} 条，请在场次记录中查看</td></tr>` : ''}
+                ${filteredActsPending.length > 30 ? `<tr><td colspan="10" style="text-align:center;color:var(--text-muted);padding:10px">还有 ${filteredActsPending.length-30} 条，请在场次记录中查看</td></tr>` : ''}
               </tbody>
             </table>
           </div>
@@ -2890,6 +3396,7 @@ async function renderCost() {
                   <th>类型</th>
                   <th>报价</th>
                   <th>成本</th>
+                  <th>关联报销</th>
                   <th>操作</th>
                 </tr>
               </thead>
@@ -2904,6 +3411,7 @@ async function renderCost() {
                     <td><span class="badge badge-${typeColor(a.activity_type)}">${a.activity_type||'—'}</span></td>
                     <td class="amount amount-revenue">${fmtMoney(a.quoted_price)}</td>
                     <td class="amount amount-neutral">无成本</td>
+                    <td style="font-size:11px;line-height:1.35">${activityReimbCellHtml(reimbByAct, a.id)}</td>
                     <td><button class="btn btn-secondary btn-sm" onclick="showCostFillFromCost(${a.id})">修改</button></td>
                   </tr>
                 `).join('')}
@@ -2939,6 +3447,7 @@ async function renderCost() {
                 <th>类型</th>
                 <th>报价</th>
                 <th>成本</th>
+                <th>关联报销</th>
                 <th>利润</th>
                 <th>操作</th>
               </tr>
@@ -2956,6 +3465,7 @@ async function renderCost() {
                     <td><span class="badge badge-${typeColor(a.activity_type)}">${a.activity_type||'—'}</span></td>
                     <td class="amount amount-revenue">${fmtMoney(a.quoted_price)}</td>
                     <td class="amount amount-cost">${fmtMoney(a.total_cost)}</td>
+                    <td style="font-size:11px;line-height:1.35">${activityReimbCellHtml(reimbByAct, a.id)}</td>
                     <td class="amount ${profit>=0?'amount-revenue':'amount-cost'}">${fmtMoney(profit)}</td>
                     <td><button class="btn btn-secondary btn-sm" onclick="showCostFillFromCost(${a.id})">修改</button></td>
                   </tr>
@@ -2967,6 +3477,9 @@ async function renderCost() {
         </div>
       </div>
     `;
+    const costStatsGrid = document.getElementById('costStatsGrid');
+    applySavedCostStatsCardOrder(costStatsGrid);
+    bindCostStatsCardDrag(costStatsGrid);
     renderLucideIcons();
   } catch (err) {
     container.innerHTML = `<div class="empty-state"><div class="empty-icon"><i data-lucide="triangle-alert" style="width:20px;height:20px"></i></div><div class="empty-title">加载失败</div><div class="empty-sub">${err.message}</div></div>`;
@@ -3140,6 +3653,11 @@ async function renderLogistics() {
     <div class="toolbar">
       <div class="toolbar-left">
         <input type="text" class="search-input" id="logSearch" placeholder="搜索单号/城市/项目编号..." oninput="filterLogistics()">
+        <select class="filter-select" id="logMergeFilter" onchange="setLogisticsMergeFilter(this.value)">
+          <option value="all">计入：全部</option>
+          <option value="unmerged">计入：未计入</option>
+          <option value="merged">计入：已计入</option>
+        </select>
       </div>
       <div class="toolbar-right" style="display:flex;gap:8px;align-items:center">
         <button type="button" class="btn btn-danger btn-sm" id="logBatchDeleteBtn" disabled onclick="deleteSelectedLogistics()">一键删除</button>
@@ -3150,20 +3668,78 @@ async function renderLogistics() {
   `;
 
   await loadLogistics();
+  const mf = document.getElementById('logMergeFilter');
+  if (mf) mf.value = logisticsMergeFilter;
 }
 
 /** 与物流表格一致：当前已加载数据 + 搜索框过滤后的可见行 */
 function getLogisticsVisibleRows() {
   const search = (document.getElementById('logSearch')?.value || '').toLowerCase();
-  const data = logisticsState.data || [];
+  let data = logisticsState.data || [];
+  if (logisticsMergeFilter === 'merged') data = data.filter((l) => isMergedFlag(l.merged_into_activity));
+  if (logisticsMergeFilter === 'unmerged') data = data.filter((l) => !isMergedFlag(l.merged_into_activity));
   if (!search) return data;
   return data.filter((l) =>
     (l.tracking_number || '').toLowerCase().includes(search) ||
+    (l.logistics_company || '').toLowerCase().includes(search) ||
+    (l.express_company || '').toLowerCase().includes(search) ||
     (l.origin_city || '').toLowerCase().includes(search) ||
     (l.destination_city || '').toLowerCase().includes(search) ||
     (l.related_project_code || '').toLowerCase().includes(search) ||
     (l.project_code || '').toLowerCase().includes(search)
   );
+}
+
+function setLogisticsMergeFilter(v) {
+  logisticsMergeFilter = v || 'all';
+  loadLogistics();
+}
+
+function settlementYearOptions() {
+  return ['2025', '2026', '2027'];
+}
+
+function settlementMonthOptions() {
+  const options = [];
+  for (let m = 1; m <= 12; m += 1) options.push(String(m));
+  return options;
+}
+
+function parseSettlementMonthValue(v) {
+  if (!v) return { year: '', month: '' };
+  const text = String(v).trim();
+  const m = text.match(/^(\d{4})-(\d{1,2})$/);
+  if (!m) return { year: '', month: '' };
+  return { year: m[1], month: String(Number(m[2])) };
+}
+
+function isTruthyFlag(v) {
+  return v === true || v === 1 || v === '1' || String(v).toLowerCase() === 'true';
+}
+
+function logisticsDisplayDate(row) {
+  if (!row) return '—';
+  const settlement = parseSettlementMonthValue(row.settlement_month);
+  const hasSettlementMonth = !!(settlement.year && settlement.month);
+  const isMonthly = isTruthyFlag(row.monthly_settlement);
+  if (hasSettlementMonth && (isMonthly || !row.shipping_date)) return `${settlement.year}-${settlement.month}`;
+  return fmtDateShort(row.shipping_date);
+}
+
+function initLogisticsSettlementMonthSelect() {
+  const yearSel = document.getElementById('logSettlementYear');
+  const monthSel = document.getElementById('logSettlementMonth');
+  if (!yearSel || !monthSel) return;
+  const years = settlementYearOptions();
+  const months = settlementMonthOptions();
+  yearSel.innerHTML = [
+    '<option value="">请选择年份</option>',
+    ...years.map((x) => `<option value="${escapeHtml(x)}">${escapeHtml(x)}</option>`),
+  ].join('');
+  monthSel.innerHTML = [
+    '<option value="">请选择月份</option>',
+    ...months.map((x) => `<option value="${escapeHtml(x)}">${escapeHtml(x)}月</option>`),
+  ].join('');
 }
 
 async function loadLogistics() {
@@ -3172,7 +3748,21 @@ async function loadLogistics() {
   try {
     const qs = currentYearFrameId ? `?yearFrameId=${currentYearFrameId}` : '';
     const data = await api('GET', `/logistics${qs}`);
-    logisticsState.data = data;
+    const logisticsBrands = new Set(['PHD', 'X.O', 'CLUB', 'REMY']);
+    const logisticsCompanies = new Set(['东区仓库（叶老板）', '南区仓库（天空）', '北区仓库（叶老板）']);
+    const expressCompanies = new Set(['顺丰', '京东', '中通', '圆通', '其他']);
+    logisticsState.data = (data || []).map((l) => {
+      const row = { ...l };
+      const lc = String(row.logistics_company || '').trim();
+      const ec = String(row.express_company || '').trim();
+      const brand = String(row.brand || '').trim();
+      if (!logisticsCompanies.has(lc) && expressCompanies.has(lc) && !ec) {
+        // 兼容旧数据：历史上快递公司写在 logistics_company 字段里
+        row.express_company = lc;
+      }
+      row.brand = logisticsBrands.has(brand) ? brand : 'PHD';
+      return row;
+    });
 
     const filtered = getLogisticsVisibleRows();
 
@@ -3199,7 +3789,7 @@ async function loadLogistics() {
               <th style="width:44px;text-align:center" title="多选">
                 <input type="checkbox" id="logSelectAll" style="width:16px;height:16px;cursor:pointer;accent-color:var(--accent)" onchange="toggleLogisticsSelectAll(this.checked)" aria-label="全选当前列表">
               </th>
-              <th>日期</th><th>物流公司</th><th>单号</th><th>路线</th><th>费用</th><th>关联项目</th><th>操作</th>
+              <th>日期</th><th>品牌</th><th>物流公司</th><th>单号</th><th>路线</th><th>费用</th><th>关联项目</th><th>计入状态</th><th>操作</th>
           </tr></thead>
           <tbody>
             ${filtered.length ? filtered.map(l => {
@@ -3210,16 +3800,25 @@ async function loadLogistics() {
                 <td style="text-align:center;vertical-align:middle">
                   <input type="checkbox" class="log-row-cb" data-log-id="${lid}" ${isSel ? 'checked' : ''} style="width:16px;height:16px;cursor:pointer;accent-color:var(--accent)" onchange="toggleLogisticsRowSelect(${lid}, this.checked)" aria-label="选择该条物流记录">
                 </td>
-                <td>${fmtDateShort(l.shipping_date)}</td>
-                <td><span class="badge badge-blue">${l.logistics_company||'—'}</span></td>
+                <td>${logisticsDisplayDate(l)}</td>
+                <td><span class="badge badge-purple">${escapeHtml(l.brand || 'PHD')}</span></td>
                 <td>
-                  ${l.tracking_number
-                    ? `<a href="https://www.sf-express.com/cn/sc/dynamic_function/waybill/#search/bill-number/${l.tracking_number}" target="_blank" style="color:var(--accent);font-family:monospace;font-size:12px">${l.tracking_number}</a>`
-                    : '—'}
+                  <span class="badge badge-blue">${l.logistics_company||'—'}</span>
+                  ${l.special_car ? '' : (l.express_company ? `<span style="margin-left:6px;color:var(--text-secondary);font-size:12px">${l.express_company}</span>` : '')}
+                </td>
+                <td>
+                  ${isTruthyFlag(l.monthly_settlement)
+                    ? `<span class="badge badge-green">月结${l.settlement_month ? ` ${escapeHtml(l.settlement_month)}` : ''}</span>`
+                    : l.special_car
+                    ? '<span class="badge badge-accent">专车</span>'
+                    : l.tracking_number
+                      ? `<a href="https://www.sf-express.com/cn/sc/dynamic_function/waybill/#search/bill-number/${l.tracking_number}" target="_blank" style="color:var(--accent);font-family:monospace;font-size:12px">${l.tracking_number}</a>`
+                      : '—'}
                 </td>
                 <td style="font-size:12px">${l.origin_city||''}→${l.destination_city||''}</td>
                 <td class="amount ${parseFloat(l.fee)>0?'amount-cost':'amount-neutral'}">${parseFloat(l.fee)>0?fmtMoney(l.fee):'—'}</td>
                 <td class="project-code">${formatLogisticsRelatedProject(l)}</td>
+                <td>${isMergedFlag(l.merged_into_activity) ? '<span class="badge badge-success">已计入</span>' : '<span class="badge badge-gray">未计入</span>'}</td>
                 <td>
                   <div style="display:flex;gap:4px">
                     <button class="btn btn-secondary btn-sm" onclick="showLogisticsModal(${l.id})">编辑</button>
@@ -3228,7 +3827,7 @@ async function loadLogistics() {
                 </td>
               </tr>
             `;
-            }).join('') : '<tr><td colspan="8" style="text-align:center;color:var(--text-muted);padding:30px">暂无数据</td></tr>'}
+            }).join('') : '<tr><td colspan="10" style="text-align:center;color:var(--text-muted);padding:30px">暂无数据</td></tr>'}
           </tbody>
         </table>
       </div>
@@ -3308,6 +3907,10 @@ function filterLogistics() {
   loadLogistics();
 }
 
+function isMergedFlag(v) {
+  return v === true || v === 1 || String(v) === '1';
+}
+
 /** 列表/弹窗展示用：关联项目编号（兼容接口字段） */
 function formatLogisticsRelatedProject(l) {
   const a =
@@ -3326,23 +3929,31 @@ const logisticsProjectIndex = {
   codeToId: new Map(),
 };
 
+async function ensureActivityProjectIndex() {
+  let qs = '?sortBy=date&sortOrder=DESC';
+  if (currentYearFrameId) qs += `&yearFrameId=${currentYearFrameId}`;
+  const acts = await api('GET', `/activities${qs}`);
+  const codes = (acts || [])
+    .map((x) => ({ id: Number(x.id), code: (x.project_code || '').replace(/^\uFEFF/, '').trim() }))
+    .filter((x) => x.code);
+  logisticsProjectIndex.codes = new Set(codes.map((x) => x.code));
+  logisticsProjectIndex.codeToId = new Map(codes.map((x) => [x.code, x.id]).filter(([, id]) => Number.isFinite(id)));
+  return [...new Set(codes.map((x) => x.code))].sort();
+}
+
 /** 打开物流弹窗时填充「关联项目编号」下拉建议（当前年度活动 project_code） */
 async function loadLogProjectDatalist() {
   const dl = document.getElementById('logProjectList');
-  if (!dl) return;
+  const warDl = document.getElementById('warProjectList');
+  if (!dl && !warDl) return;
   try {
-    let qs = '?sortBy=date&sortOrder=DESC';
-    if (currentYearFrameId) qs += `&yearFrameId=${currentYearFrameId}`;
-    const acts = await api('GET', `/activities${qs}`);
-    const codes = (acts || [])
-      .map((x) => ({ id: Number(x.id), code: (x.project_code || '').replace(/^\uFEFF/, '').trim() }))
-      .filter((x) => x.code);
-    logisticsProjectIndex.codes = new Set(codes.map((x) => x.code));
-    logisticsProjectIndex.codeToId = new Map(codes.map((x) => [x.code, x.id]).filter(([, id]) => Number.isFinite(id)));
-    const uniqSorted = [...new Set(codes.map((x) => x.code))].sort();
-    dl.innerHTML = uniqSorted.map((c) => `<option value="${escapeHtml(c)}"></option>`).join('');
+    const uniqSorted = await ensureActivityProjectIndex();
+    const opts = uniqSorted.map((c) => `<option value="${escapeHtml(c)}"></option>`).join('');
+    if (dl) dl.innerHTML = opts;
+    if (warDl) warDl.innerHTML = opts;
   } catch (_) {
-    dl.innerHTML = '';
+    if (dl) dl.innerHTML = '';
+    if (warDl) warDl.innerHTML = '';
     logisticsProjectIndex.codes = new Set();
     logisticsProjectIndex.codeToId = new Map();
   }
@@ -3351,11 +3962,21 @@ async function loadLogProjectDatalist() {
 async function showLogisticsModal(id = null) {
   document.getElementById('logModalTitle').textContent = id ? '编辑物流记录' : '新建物流记录';
   document.getElementById('logId').value = id || '';
-  ['logCompany', 'logTrack', 'logOrigin', 'logDest', 'logDate', 'logFee', 'logProject', 'logRemarks'].forEach((f) => {
+  ['logCompany', 'logExpress', 'logTrack', 'logSettlementYear', 'logSettlementMonth', 'logBrand', 'logOrigin', 'logDest', 'logDate', 'logFee', 'logProject', 'logAllocationNote', 'logRemarks'].forEach((f) => {
     const el = document.getElementById(f);
     if (el) el.value = '';
   });
-  document.getElementById('logCompany').value = '顺丰';
+  initLogisticsSettlementMonthSelect();
+  const logSpecialCarCb = document.getElementById('logSpecialCar');
+  const logMonthlySettlementCb = document.getElementById('logMonthlySettlement');
+  if (logSpecialCarCb) logSpecialCarCb.checked = false;
+  if (logMonthlySettlementCb) logMonthlySettlementCb.checked = false;
+  const logMergedCb = document.getElementById('logMergedIntoActivity');
+  if (logMergedCb) logMergedCb.checked = false;
+  document.getElementById('logCompany').value = '东区仓库（叶老板）';
+  document.getElementById('logExpress').value = '顺丰';
+  document.getElementById('logBrand').value = 'PHD';
+  toggleLogSpecialCar();
 
   await loadLogProjectDatalist();
 
@@ -3368,11 +3989,32 @@ async function showLogisticsModal(id = null) {
       item = logisticsState.data.find((l) => Number(l.id) === nid) || null;
     }
     if (item) {
-      document.getElementById('logCompany').value = item.logistics_company || '顺丰';
+      const logisticsCompanies = ['东区仓库（叶老板）', '南区仓库（天空）', '北区仓库（叶老板）'];
+      const expressCompanies = ['顺丰', '京东', '中通', '圆通', '其他'];
+      const rawLogistics = item.logistics_company || '';
+      const rawExpress = item.express_company || '';
+      document.getElementById('logCompany').value = logisticsCompanies.includes(rawLogistics) ? rawLogistics : '东区仓库（叶老板）';
+      document.getElementById('logExpress').value =
+        expressCompanies.includes(rawExpress)
+          ? rawExpress
+          : (expressCompanies.includes(rawLogistics) ? rawLogistics : '顺丰');
       document.getElementById('logTrack').value = item.tracking_number || '';
+      document.getElementById('logBrand').value = ['PHD', 'X.O', 'CLUB', 'REMY'].includes(item.brand) ? item.brand : 'PHD';
+      const settlement = parseSettlementMonthValue(item.settlement_month);
+      document.getElementById('logSettlementYear').value = settlement.year;
+      document.getElementById('logSettlementMonth').value = settlement.month;
+      if (logSpecialCarCb) {
+        const special = item.special_car === true || item.special_car === 1 || String(item.special_car) === '1';
+        logSpecialCarCb.checked = special;
+      }
+      if (logMonthlySettlementCb) {
+        const monthly = isTruthyFlag(item.monthly_settlement) || !!String(item.settlement_month || '').trim();
+        logMonthlySettlementCb.checked = monthly;
+      }
+      toggleLogSpecialCar();
       document.getElementById('logOrigin').value = item.origin_city || '';
       document.getElementById('logDest').value = item.destination_city || '';
-      if (item.shipping_date) document.getElementById('logDate').value = new Date(item.shipping_date).toISOString().split('T')[0];
+      if (item.shipping_date) document.getElementById('logDate').value = toDateInputValue(item.shipping_date);
       document.getElementById('logFee').value =
         item.fee != null && item.fee !== '' ? roundMoney2(item.fee).toFixed(2) : '';
       const rpc =
@@ -3382,10 +4024,53 @@ async function showLogisticsModal(id = null) {
             ? String(item.project_code).trim()
             : '';
       document.getElementById('logProject').value = rpc;
+      if (logMergedCb) {
+        const merged = item.merged_into_activity === true || item.merged_into_activity === 1 || String(item.merged_into_activity) === '1';
+        logMergedCb.checked = merged;
+      }
+      document.getElementById('logAllocationNote').value = item.allocation_note || '';
       document.getElementById('logRemarks').value = item.remarks || '';
     }
   }
   openModal('modalLogistics');
+}
+
+function toggleLogSpecialCar() {
+  const cb = document.getElementById('logSpecialCar');
+  const monthlyCb = document.getElementById('logMonthlySettlement');
+  const track = document.getElementById('logTrack');
+  const express = document.getElementById('logExpress');
+  const settlementYear = document.getElementById('logSettlementYear');
+  const settlementMonth = document.getElementById('logSettlementMonth');
+  if (!cb || !monthlyCb || !track || !express || !settlementYear || !settlementMonth) return;
+  const special = !!cb.checked;
+  const monthly = !!monthlyCb.checked;
+  if (monthly) {
+    cb.checked = false;
+    track.value = '';
+    track.disabled = true;
+    express.disabled = true;
+    cb.disabled = true;
+    settlementYear.disabled = false;
+    settlementMonth.disabled = false;
+    track.placeholder = '月结无需专车和单号';
+    return;
+  }
+  cb.disabled = false;
+  settlementYear.value = '';
+  settlementYear.disabled = true;
+  settlementMonth.value = '';
+  settlementMonth.disabled = true;
+  if (special) {
+    track.value = '';
+    track.disabled = true;
+    express.disabled = true;
+    track.placeholder = '专车无需单号';
+  } else {
+    track.disabled = false;
+    express.disabled = false;
+    track.placeholder = '顺丰请填写单号';
+  }
 }
 
 async function saveLogistics() {
@@ -3398,15 +4083,51 @@ async function saveLogistics() {
       return;
     }
   }
+  const mergedIntoActivity = !!document.getElementById('logMergedIntoActivity')?.checked;
+  if (mergedIntoActivity && !rpcRaw) {
+    showToast('勾选计入活动成本时，必须选择关联项目编号', 'error');
+    return;
+  }
+  const activityId = rpcRaw ? logisticsProjectIndex.codeToId.get(rpcRaw) : null;
+  if (mergedIntoActivity && !activityId) {
+    showToast('关联项目编号无效，请从下拉建议中选择', 'error');
+    return;
+  }
+  const isSpecialCar = !!document.getElementById('logSpecialCar')?.checked;
+  const isMonthlySettlement = !!document.getElementById('logMonthlySettlement')?.checked;
+  const settlementYear = document.getElementById('logSettlementYear')?.value || '';
+  const settlementMonth = document.getElementById('logSettlementMonth')?.value || '';
+  const hasSettlementInput = !!(settlementYear && settlementMonth);
+  const monthlySettlementFinal = isMonthlySettlement || hasSettlementInput;
+  const logisticsCompany = document.getElementById('logCompany').value;
+  const logisticsBrand = document.getElementById('logBrand').value;
+  const expressCompany = document.getElementById('logExpress').value;
+  const trackingNumber = document.getElementById('logTrack').value;
+  if (isMonthlySettlement && !hasSettlementInput) {
+    showToast('勾选月结后请填写月份', 'error');
+    return;
+  }
+  if (!monthlySettlementFinal && !isSpecialCar && expressCompany === '顺丰' && !String(trackingNumber || '').trim()) {
+    showToast('顺丰发货请填写单号；若为包车请勾选“专车”', 'error');
+    return;
+  }
   const body = {
     year_frame_id: currentYearFrameId || 1,
-    logistics_company: document.getElementById('logCompany').value,
-    tracking_number: document.getElementById('logTrack').value,
+    logistics_company: logisticsCompany,
+    brand: logisticsBrand,
+    express_company: (isSpecialCar || monthlySettlementFinal) ? null : expressCompany,
+    tracking_number: (isSpecialCar || monthlySettlementFinal) ? null : trackingNumber,
+    special_car: monthlySettlementFinal ? 0 : (isSpecialCar ? 1 : 0),
+    monthly_settlement: monthlySettlementFinal ? 1 : 0,
+    settlement_month: monthlySettlementFinal ? `${settlementYear}-${settlementMonth}` : null,
     origin_city: document.getElementById('logOrigin').value,
     destination_city: document.getElementById('logDest').value,
     shipping_date: document.getElementById('logDate').value || null,
     fee: roundMoney2(document.getElementById('logFee').value),
     related_project_code: rpcRaw || null,
+    activity_id: activityId || null,
+    merged_into_activity: mergedIntoActivity ? 1 : 0,
+    allocation_note: document.getElementById('logAllocationNote')?.value?.trim() || null,
     remarks: document.getElementById('logRemarks').value,
   };
   try {
@@ -3442,7 +4163,14 @@ async function renderWarehouse() {
   const container = document.getElementById('pageContainer');
 
   container.innerHTML = `
-    <div class="toolbar" style="justify-content:flex-end">
+    <div class="toolbar" style="justify-content:space-between">
+      <div class="toolbar-left">
+        <select class="filter-select" id="warMergeFilter" onchange="setWarehouseMergeFilter(this.value)">
+          <option value="all">计入：全部</option>
+          <option value="unmerged">计入：未计入</option>
+          <option value="merged">计入：已计入</option>
+        </select>
+      </div>
       <div class="toolbar-right" style="display:flex;gap:8px;align-items:center">
         <button type="button" class="btn btn-danger btn-sm" id="warBatchDeleteBtn" disabled onclick="deleteSelectedWarehouse()">一键删除</button>
         <button type="button" class="btn btn-primary btn-sm" onclick="showWarehouseModal()">+ 新建仓储</button>
@@ -3453,6 +4181,8 @@ async function renderWarehouse() {
   `;
 
   await loadWarehouse();
+  const mf = document.getElementById('warMergeFilter');
+  if (mf) mf.value = warehouseMergeFilter;
 }
 
 const WAREHOUSE_REGION_OPTIONS = ['东区', '北区', '南区'];
@@ -3488,7 +4218,12 @@ async function loadWarehouse() {
 
     const data = await api('GET', `/warehouse${qs}`);
     warehouseState.data = data;
-    const idSetOnPage = new Set(data.map((w) => Number(w.id)));
+    const filteredData = (warehouseMergeFilter === 'merged')
+      ? data.filter((w) => isMergedFlag(w.merged_into_activity))
+      : (warehouseMergeFilter === 'unmerged')
+        ? data.filter((w) => !isMergedFlag(w.merged_into_activity))
+        : data;
+    const idSetOnPage = new Set(filteredData.map((w) => Number(w.id)));
     const nextSel = new Set();
     warehouseState.selectedIds.forEach((id) => {
       if (idSetOnPage.has(id)) nextSel.add(id);
@@ -3505,10 +4240,10 @@ async function loadWarehouse() {
 
       const TAX_RATE = 0.06; // 报价含税 6%
       const taxDiv = 1 + TAX_RATE;
-      const totalQuotedAll = data.reduce((s, w) => s + (parseFloat(w.quoted_price) || 0), 0);
-      const totalCostAll = data.reduce((s, w) => s + (parseFloat(w.actual_cost) || 0), 0);
+      const totalQuotedAll = filteredData.reduce((s, w) => s + (parseFloat(w.quoted_price) || 0), 0);
+      const totalCostAll = filteredData.reduce((s, w) => s + (parseFloat(w.actual_cost) || 0), 0);
       const rowsByRegion = new Map(REGION_META.map((r) => [r.key, []]));
-      data.forEach((w) => {
+      filteredData.forEach((w) => {
         const r = normalizeWarehouseRegion(w.region);
         if (rowsByRegion.has(r)) rowsByRegion.get(r).push(w);
       });
@@ -3582,10 +4317,11 @@ async function loadWarehouse() {
               <th>报价<br><span style="font-size:10px;font-weight:500;color:var(--text-muted);text-transform:none;letter-spacing:0">（数量×单价）</span></th>
               <th>实际成本</th>
               <th>备注</th>
+              <th>计入状态</th>
               <th>操作</th>
             </tr></thead>
             <tbody>
-              ${data.length ? data.map(w => {
+              ${filteredData.length ? filteredData.map(w => {
                 const qty = parseFloat(w.quantity);
                 const qtySafe = Number.isFinite(qty) ? qty : 0;
                 const upNum = parseFloat(w.unit_price);
@@ -3611,6 +4347,7 @@ async function loadWarehouse() {
                   </td>
                   <td class="amount ${w.no_actual_cost ? 'amount-neutral' : (parseFloat(w.actual_cost)>0?'amount-cost':'amount-neutral')}">${w.no_actual_cost ? '无' : (parseFloat(w.actual_cost)>0?fmtMoney(w.actual_cost):'—')}</td>
                   <td style="font-size:12px;color:var(--text-muted)">${escapeHtml(w.remarks||'')}</td>
+                  <td>${isMergedFlag(w.merged_into_activity) ? '<span class="badge badge-success">已计入</span>' : '<span class="badge badge-gray">未计入</span>'}</td>
                   <td>
                     <div style="display:flex;gap:4px">
                       <button class="btn btn-secondary btn-sm" onclick="showWarehouseModal(${w.id})">编辑</button>
@@ -3619,7 +4356,7 @@ async function loadWarehouse() {
                   </td>
                 </tr>
               `;
-              }).join('') : '<tr><td colspan="10" style="text-align:center;color:var(--text-muted);padding:30px">暂无数据</td></tr>'}
+              }).join('') : '<tr><td colspan="11" style="text-align:center;color:var(--text-muted);padding:30px">暂无数据</td></tr>'}
             </tbody>
           </table>
         </div>
@@ -3672,6 +4409,11 @@ function updateWarehouseSelectUi() {
     btn.disabled = n === 0;
     btn.textContent = n > 0 ? `一键删除（已选 ${n} 条）` : '一键删除';
   }
+}
+
+function setWarehouseMergeFilter(v) {
+  warehouseMergeFilter = v || 'all';
+  loadWarehouse();
 }
 
 async function deleteSelectedWarehouse() {
@@ -3738,7 +4480,7 @@ async function showWarehouseModal(id = null) {
 
   document.getElementById('warModalTitle').textContent = editing ? '编辑仓储记录' : '新建仓储记录';
   document.getElementById('warId').value = editing ? String(wid) : '';
-  ['warQty', 'warUnitPrice', 'warQuotedPrice', 'warActualCost', 'warRemarks'].forEach(fid => {
+  ['warQty', 'warUnitPrice', 'warQuotedPrice', 'warActualCost', 'warRemarks', 'warProject', 'warAllocationNote'].forEach(fid => {
     const el = document.getElementById(fid);
     if (el) el.value = '';
   });
@@ -3747,8 +4489,11 @@ async function showWarehouseModal(id = null) {
   const brandEl = document.getElementById('warBrand');
   if (brandEl) brandEl.value = 'PHD';
   const noCostCb = document.getElementById('warNoActualCost');
+  const warMergedCb = document.getElementById('warMergedIntoActivity');
   if (noCostCb) noCostCb.checked = false;
+  if (warMergedCb) warMergedCb.checked = false;
   toggleWarNoActualCost();
+  await loadLogProjectDatalist();
 
   let preferredYf = currentYearFrameId;
   let item = null;
@@ -3781,6 +4526,18 @@ async function showWarehouseModal(id = null) {
     if (noActual) document.getElementById('warActualCost').value = '';
     toggleWarNoActualCost();
     document.getElementById('warRemarks').value = item.remarks || '';
+    if (warMergedCb) {
+      const merged = item.merged_into_activity === true || item.merged_into_activity === 1 || String(item.merged_into_activity) === '1';
+      warMergedCb.checked = merged;
+    }
+    document.getElementById('warAllocationNote').value = item.allocation_note || '';
+    const rpc = item.related_project_code != null && String(item.related_project_code).trim() !== ''
+      ? String(item.related_project_code).trim()
+      : item.project_code != null && String(item.project_code).trim() !== ''
+        ? String(item.project_code).trim()
+        : '';
+    const warProjectEl = document.getElementById('warProject');
+    if (warProjectEl) warProjectEl.value = rpc;
   }
 
   try {
@@ -3824,6 +4581,21 @@ async function saveWarehouse() {
     showToast('单价须大于 0', 'error');
     return;
   }
+  const warProjectRaw = (document.getElementById('warProject')?.value || '').replace(/^\uFEFF/, '').trim();
+  if (warProjectRaw && !logisticsProjectIndex.codes.has(warProjectRaw)) {
+    showToast('关联项目编号必须从活动项目编号中选择（请从下拉建议中选中）', 'error');
+    return;
+  }
+  const mergedIntoActivity = !!document.getElementById('warMergedIntoActivity')?.checked;
+  if (mergedIntoActivity && !warProjectRaw) {
+    showToast('勾选计入活动成本时，必须选择关联项目编号', 'error');
+    return;
+  }
+  const activityId = warProjectRaw ? logisticsProjectIndex.codeToId.get(warProjectRaw) : null;
+  if (mergedIntoActivity && !activityId) {
+    showToast('关联项目编号无效，请从下拉建议中选择', 'error');
+    return;
+  }
   const body = {
     year_frame_id: yearFrameId,
     month: null,
@@ -3836,6 +4608,9 @@ async function saveWarehouse() {
     quoted_price: roundMoney2(document.getElementById('warQuotedPrice').value),
     actual_cost: document.getElementById('warNoActualCost')?.checked ? 0 : roundMoney2(document.getElementById('warActualCost').value),
     no_actual_cost: document.getElementById('warNoActualCost')?.checked ? 1 : 0,
+    activity_id: activityId || null,
+    merged_into_activity: mergedIntoActivity ? 1 : 0,
+    allocation_note: document.getElementById('warAllocationNote')?.value?.trim() || null,
     remarks: document.getElementById('warRemarks').value,
   };
   try {
@@ -4055,11 +4830,13 @@ const MATERIAL_FIXED_ITEM_NAMES = [
 
 function materialPurchaseRowHtml(r) {
   const rem = r.remarks ? String(r.remarks).slice(0, 48) + (String(r.remarks).length > 48 ? '…' : '') : '—';
+  const merged = isMergedFlag(r.merged_into_activity);
   return `<tr>
     <td>${r.id}</td>
     <td>${escapeHtml(fmtDate(r.purchase_date))}</td>
     <td><span class="badge badge-${brandColor(r.brand_code || r.brand_name)}">${escapeHtml(r.brand_name || r.brand_code || '—')}</span></td>
     <td class="amount" style="text-align:right">${fmtMoney(r.total_amount)}</td>
+    <td>${merged ? '<span class="badge badge-success">已计入</span>' : '<span class="badge badge-gray">未计入</span>'}</td>
     <td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;font-size:12px;color:var(--text-secondary)" title="${escapeHtml(r.remarks || '')}">${escapeHtml(rem)}</td>
     <td onclick="event.stopPropagation()" style="white-space:nowrap">
       <button type="button" class="btn btn-secondary btn-sm" onclick="showMaterialPurchaseModal(${r.id})">编辑</button>
@@ -4070,6 +4847,11 @@ function materialPurchaseRowHtml(r) {
 
 function materialSetBrandFilter(v) {
   materialPageState.filterBrandId = v || '';
+  renderMaterialPurchases();
+}
+
+function materialSetMergeFilter(v) {
+  materialPageState.mergeFilter = v || 'all';
   renderMaterialPurchases();
 }
 
@@ -4121,9 +4903,14 @@ async function renderMaterialPurchases() {
       )
       .join('');
 
-    const listBody = (rows || []).length
-      ? (rows || []).map((r) => materialPurchaseRowHtml(r)).join('')
-      : '<tr><td colspan="6" style="text-align:center;color:var(--text-muted);padding:20px">暂无记录</td></tr>';
+    const listRows = (materialPageState.mergeFilter === 'merged')
+      ? (rows || []).filter((r) => isMergedFlag(r.merged_into_activity))
+      : (materialPageState.mergeFilter === 'unmerged')
+        ? (rows || []).filter((r) => !isMergedFlag(r.merged_into_activity))
+        : (rows || []);
+    const listBody = listRows.length
+      ? listRows.map((r) => materialPurchaseRowHtml(r)).join('')
+      : '<tr><td colspan="7" style="text-align:center;color:var(--text-muted);padding:20px">暂无记录</td></tr>';
 
     container.innerHTML = `
       <div class="stats-grid" style="margin-bottom:16px">
@@ -4146,13 +4933,18 @@ async function renderMaterialPurchases() {
             <select class="filter-select" id="mpListBrandFilter" onchange="materialSetBrandFilter(this.value)">
               <option value="">全部品牌</option>${brandOpts}
             </select>
+            <select class="filter-select" id="mpListMergeFilter" onchange="materialSetMergeFilter(this.value)">
+              <option value="all" ${materialPageState.mergeFilter === 'all' ? 'selected' : ''}>计入：全部</option>
+              <option value="unmerged" ${materialPageState.mergeFilter === 'unmerged' ? 'selected' : ''}>计入：未计入</option>
+              <option value="merged" ${materialPageState.mergeFilter === 'merged' ? 'selected' : ''}>计入：已计入</option>
+            </select>
             <button type="button" class="btn btn-primary btn-sm" onclick="showMaterialPurchaseModal(null)">+ 新建登记</button>
           </div>
         </div>
         <div class="card-body" style="padding:0">
           <div class="table-wrapper">
             <table>
-              <thead><tr><th>ID</th><th>日期</th><th>品牌</th><th style="text-align:right">合计</th><th>备注</th><th>操作</th></tr></thead>
+              <thead><tr><th>ID</th><th>日期</th><th>品牌</th><th style="text-align:right">合计</th><th>计入状态</th><th>备注</th><th>操作</th></tr></thead>
               <tbody>${listBody}</tbody>
             </table>
           </div>
@@ -4238,14 +5030,21 @@ async function showMaterialPurchaseModal(id) {
   } catch {
     brands = [];
   }
+  let projectOptions = '';
+  try {
+    const codes = await ensureActivityProjectIndex();
+    projectOptions = codes.map((c) => `<option value="${escapeHtml(c)}"></option>`).join('');
+  } catch {
+    projectOptions = '';
+  }
   const brandOpts = brands
     .map((b) => `<option value="${b.id}">${escapeHtml(b.brand_name || b.brand_code)}</option>`)
     .join('');
 
   const defaultBrand = record ? String(record.brand_id) : brands[0] ? String(brands[0].id) : '';
   const dateVal = record && record.purchase_date
-    ? String(record.purchase_date).slice(0, 10)
-    : new Date().toISOString().slice(0, 10);
+    ? toDateInputValue(record.purchase_date)
+    : todayDateInputValue();
 
   const itemsMap = {};
   (record && Array.isArray(record.items) ? record.items : []).forEach((it) => {
@@ -4277,6 +5076,8 @@ async function showMaterialPurchaseModal(id) {
     .join('');
 
   const remarksAttr = record && record.remarks ? escapeHtml(record.remarks) : '';
+  const mergedMp = record && (record.merged_into_activity === true || record.merged_into_activity === 1 || String(record.merged_into_activity) === '1');
+  const mpProject = record && record.activity_id ? (Array.from(logisticsProjectIndex.codeToId.entries()).find(([, id]) => Number(id) === Number(record.activity_id)) || [record.related_project_code || '', 0])[0] : '';
 
   body.innerHTML = `
     <input type="hidden" id="mpRecordId" value="${record ? record.id : ''}">
@@ -4305,6 +5106,19 @@ async function showMaterialPurchaseModal(id) {
       <label class="form-label">备注</label>
       <input type="text" class="form-control" id="mpRemarks" placeholder="选填" value="${remarksAttr}">
     </div>
+    <div class="form-group">
+      <label class="form-label">关联项目编号（可选）</label>
+      <input type="text" class="form-control" id="mpProjectCode" list="mpProjectList" autocomplete="off" placeholder="输入并从下拉选择（仅允许活动项目编号）" value="${escapeHtml(mpProject)}">
+      <datalist id="mpProjectList">${projectOptions}</datalist>
+    </div>
+    <label style="display:flex;align-items:center;gap:8px;margin:0 0 10px;color:var(--text-secondary);cursor:pointer">
+      <input type="checkbox" id="mpMergedIntoActivity" ${mergedMp ? 'checked' : ''}>
+      <span>计入活动成本（勾选时需选择关联项目编号）</span>
+    </label>
+    <div class="form-group">
+      <label class="form-label">计入说明</label>
+      <input type="text" class="form-control" id="mpAllocationNote" placeholder="选填" value="${escapeHtml((record && record.allocation_note) || '')}">
+    </div>
     <div style="margin-top:12px;padding:12px;background:var(--accent-soft);border-radius:var(--radius-sm);display:flex;justify-content:space-between;align-items:center">
       <span style="color:var(--text-secondary)">合计</span>
       <span class="amount" id="mpTotalDisplay" style="font-size:18px;font-weight:700">${fmtMoney(0)}</span>
@@ -4326,6 +5140,21 @@ async function saveMaterialPurchaseForm() {
   const brand_id = parseInt(document.getElementById('mpBrandId')?.value, 10);
   const purchase_date = document.getElementById('mpPurchaseDate')?.value;
   const remarks = document.getElementById('mpRemarks')?.value?.trim() || '';
+  const projectCode = (document.getElementById('mpProjectCode')?.value || '').replace(/^\uFEFF/, '').trim();
+  const mergedIntoActivity = !!document.getElementById('mpMergedIntoActivity')?.checked;
+  if (projectCode && !logisticsProjectIndex.codes.has(projectCode)) {
+    showToast('关联项目编号必须从活动项目编号中选择', 'warning');
+    return;
+  }
+  if (mergedIntoActivity && !projectCode) {
+    showToast('勾选计入活动成本时，必须选择关联项目编号', 'warning');
+    return;
+  }
+  const activityId = projectCode ? logisticsProjectIndex.codeToId.get(projectCode) : null;
+  if (mergedIntoActivity && !activityId) {
+    showToast('关联项目编号无效，请从下拉建议中选择', 'warning');
+    return;
+  }
   const items = collectMaterialPurchaseItemsFromForm();
   const total = roundMoney2(items.reduce((s, x) => s + x.amount, 0));
   if (!brand_id) {
@@ -4346,6 +5175,9 @@ async function saveMaterialPurchaseForm() {
     purchase_date,
     items,
     remarks,
+    activity_id: activityId || null,
+    merged_into_activity: mergedIntoActivity ? 1 : 0,
+    allocation_note: document.getElementById('mpAllocationNote')?.value?.trim() || null,
   };
   try {
     if (id) {
@@ -4378,11 +5210,652 @@ async function deleteMaterialPurchaseRecord(rid) {
 }
 
 /* =============================================
+   页面：报销登记（场次 + 费用明细 + 发票 + 同步到场次成本）
+   ============================================= */
+function reimbActivityLine(a) {
+  if (!a) return '—';
+  const pc = (a.project_code || '').trim() || '—';
+  const d = fmtDateShort(a.date || a.activity_date);
+  return `${d} · ${escapeHtml(pc)} · ${escapeHtml(a.city || '—')} · ${escapeHtml(a.activity_type || '')}`;
+}
+
+function reimbRenderActivityPicker() {
+  const dl = document.getElementById('reimbProjectList');
+  if (!dl) return;
+  const acts = reimbursementPageState.activities || [];
+  const rows = acts
+    .map((a) => ({ id: Number(a.id), code: String(a.project_code || '').replace(/^\uFEFF/, '').trim() }))
+    .filter((x) => Number.isFinite(x.id) && x.id > 0 && x.code);
+  reimbursementActivityIndex.codes = new Set(rows.map((x) => x.code));
+  reimbursementActivityIndex.idToCode = new Map(rows.map((x) => [x.id, x.code]));
+  reimbursementActivityIndex.codeToId = new Map();
+  rows.forEach((x) => {
+    if (!reimbursementActivityIndex.codeToId.has(x.code)) reimbursementActivityIndex.codeToId.set(x.code, x.id);
+  });
+  const uniqSorted = [...new Set(rows.map((x) => x.code))].sort();
+  dl.innerHTML = uniqSorted.map((c) => `<option value="${escapeHtml(c)}"></option>`).join('');
+}
+
+function reimbSelectActivity(id) {
+  const idNum = Number(id);
+  const a = (reimbursementPageState.activities || []).find((x) => Number(x.id) === idNum);
+  const hid = document.getElementById('reimbActivityId');
+  const input = document.getElementById('reimbProjectCode');
+  const lbl = document.getElementById('reimbActivityPicked');
+  if (hid) hid.value = a ? String(a.id) : '';
+  if (input) input.value = a ? (a.project_code || '') : '';
+  if (lbl) {
+    if (a) {
+      lbl.innerHTML = reimbActivityLine(a);
+      lbl.style.display = 'block';
+    } else {
+      lbl.textContent = '';
+      lbl.style.display = 'none';
+    }
+  }
+  const brandEl = document.getElementById('reimbBrand');
+  if (brandEl && a && !brandEl.value) {
+    brandEl.value = a.brand || '';
+  }
+}
+
+function reimbProjectInputChanged() {
+  const input = document.getElementById('reimbProjectCode');
+  const hid = document.getElementById('reimbActivityId');
+  const lbl = document.getElementById('reimbActivityPicked');
+  const code = (input?.value || '').replace(/^\uFEFF/, '').trim();
+  const id = code ? reimbursementActivityIndex.codeToId.get(code) : null;
+  if (hid) hid.value = id ? String(id) : '';
+  if (lbl) {
+    if (!id) {
+      lbl.style.display = 'none';
+      lbl.textContent = '';
+    } else {
+      const a = (reimbursementPageState.activities || []).find((x) => Number(x.id) === Number(id));
+      lbl.innerHTML = a ? reimbActivityLine(a) : code;
+      lbl.style.display = 'block';
+    }
+  }
+}
+
+function reimbToggleInvoiceSection() {
+  const yes = document.getElementById('reimbHasInvY')?.checked;
+  const sec = document.getElementById('reimbInvoiceSection');
+  if (!sec) return;
+  sec.style.display = yes ? 'block' : 'none';
+  if (yes) {
+    const wrap = document.getElementById('reimbInvoiceRows');
+    if (wrap && !wrap.querySelector('.reimb-inv-row')) reimbAppendInvoiceRow(null);
+  }
+}
+
+function reimbAppendInvoiceRow(row) {
+  const wrap = document.getElementById('reimbInvoiceRows');
+  if (!wrap) return;
+  const ct = row && row.invoice_content != null ? escapeHtml(String(row.invoice_content)) : '';
+  const no = row && row.invoice_no != null ? escapeHtml(String(row.invoice_no)) : '';
+  const dt = row && row.invoice_date ? String(row.invoice_date).slice(0, 10) : '';
+  const k = row && row.invoice_kind === '普票' ? '普票' : '专票';
+  const div = document.createElement('div');
+  div.className = 'reimb-inv-row';
+  div.style.cssText =
+    'display:grid;grid-template-columns:1.2fr 1fr 130px 88px 44px;gap:8px;margin-bottom:8px;align-items:center';
+  div.innerHTML = `
+    <input type="text" class="form-control reimb-inv-content" placeholder="发票内容" value="${ct}">
+    <input type="text" class="form-control reimb-inv-no" placeholder="发票号码" value="${no}">
+    <input type="date" class="form-control reimb-inv-date" value="${dt}">
+    <select class="form-control reimb-inv-kind">
+      <option value="专票" ${k === '专票' ? 'selected' : ''}>专票</option>
+      <option value="普票" ${k === '普票' ? 'selected' : ''}>普票</option>
+    </select>
+    <button type="button" class="btn btn-secondary btn-sm" onclick="reimbRemoveInvoiceRow(this)">删</button>`;
+  wrap.appendChild(div);
+}
+
+function reimbRemoveInvoiceRow(btn) {
+  const row = btn && btn.closest && btn.closest('.reimb-inv-row');
+  if (!row) return;
+  row.remove();
+  const wrap = document.getElementById('reimbInvoiceRows');
+  if (wrap && !wrap.querySelector('.reimb-inv-row') && document.getElementById('reimbHasInvY')?.checked) {
+    reimbAppendInvoiceRow(null);
+  }
+}
+
+function updateReimbCostTotal() {
+  const d = collectCostDetails('reimb-cost-field');
+  const t = calcCostDetailsTotal(d);
+  const el = document.getElementById('reimbCostTotal');
+  if (el) el.textContent = fmtMoney(t);
+}
+
+function reimbCollectInvoicesFromForm() {
+  const out = [];
+  document.querySelectorAll('.reimb-inv-row').forEach((row) => {
+    const invoice_content = row.querySelector('.reimb-inv-content')?.value?.trim() || '';
+    const invoice_no = row.querySelector('.reimb-inv-no')?.value?.trim() || '';
+    const invoice_date = row.querySelector('.reimb-inv-date')?.value?.trim() || '';
+    const invoice_kind = row.querySelector('.reimb-inv-kind')?.value || '';
+    if (invoice_content || invoice_no || invoice_date || invoice_kind) out.push({ invoice_content, invoice_no, invoice_date, invoice_kind });
+  });
+  return out;
+}
+
+function reimbExportPayloadFromForm() {
+  const id = document.getElementById('reimbRecordId')?.value?.trim();
+  const date = document.getElementById('reimbDate')?.value || '';
+  const remarks = document.getElementById('reimbRemarks')?.value?.trim() || '';
+  const actId = parseInt(document.getElementById('reimbActivityId')?.value, 10);
+  const act = (reimbursementPageState.activities || []).find((x) => Number(x.id) === actId);
+  const brand = document.getElementById('reimbBrand')?.value?.trim() || '';
+  const has_invoice = !!document.getElementById('reimbHasInvY')?.checked;
+  const invoices = has_invoice ? reimbCollectInvoicesFromForm() : [];
+  const cost_details = collectCostDetails('reimb-cost-field');
+  const amount = roundMoney2(calcCostDetailsTotal(cost_details));
+  const merged = document.getElementById('reimbMergedNote')?.dataset?.merged === '1';
+  return {
+    id,
+    date,
+    remarks,
+    activity_id: actId,
+    brand,
+    project_code: act?.project_code || '',
+    has_invoice,
+    invoices,
+    cost_details,
+    amount,
+    merged_into_activity: merged,
+  };
+}
+
+function reimbursementDownloadCsvFromForm() {
+  const p = reimbExportPayloadFromForm();
+  const lines = [];
+  const esc = (v) => {
+    const s = v == null ? '' : String(v);
+    if (/[",\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+    return s;
+  };
+  lines.push(['报销日期', p.date, '金额合计', p.amount].join(','));
+  lines.push(['品牌', esc(p.brand), '项目编号', esc(p.project_code), '关联场次ID', p.activity_id || ''].join(','));
+  lines.push(['备注', esc(p.remarks)].join(','));
+  lines.push(['有发票', p.has_invoice ? '是' : '否'].join(','));
+  if (p.has_invoice && p.invoices.length) {
+    lines.push('发票内容,发票号码,开票日期,专票/普票');
+    p.invoices.forEach((iv) =>
+      lines.push([esc(iv.invoice_content), esc(iv.invoice_no), iv.invoice_date, esc(iv.invoice_kind)].join(','))
+    );
+  }
+  lines.push('');
+  lines.push('费用明细项,金额');
+  COST_DETAIL_GROUPS.forEach((g) => {
+    g.items.forEach((it) => {
+      const v = p.cost_details[it.key];
+      if (v && roundMoney2(v) !== 0) lines.push([esc(it.label), roundMoney2(v)].join(','));
+    });
+  });
+  const blob = new Blob(['\uFEFF' + lines.join('\n')], { type: 'text/csv;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `报销_${p.date || 'export'}.csv`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+function reimbursementPrintCurrentForm() {
+  const p = reimbExportPayloadFromForm();
+  let invHtml = '';
+  if (p.has_invoice && p.invoices.length) {
+    invHtml = `<h3>发票明细</h3><table border="1" cellpadding="6" cellspacing="0" style="max-width:720px"><tr><th>发票内容</th><th>发票号码</th><th>开票日期</th><th>类型</th></tr>
+      ${p.invoices
+        .map(
+          (iv) =>
+            `<tr><td>${escapeHtml(iv.invoice_content || '')}</td><td>${escapeHtml(iv.invoice_no)}</td><td>${escapeHtml(iv.invoice_date)}</td><td>${escapeHtml(iv.invoice_kind)}</td></tr>`
+        )
+        .join('')}
+    </table>`;
+  }
+  let detailRows = '';
+  COST_DETAIL_GROUPS.forEach((g) => {
+    g.items.forEach((it) => {
+      const v = roundMoney2(p.cost_details[it.key]);
+      if (v) detailRows += `<tr><td>${escapeHtml(it.label)}</td><td style="text-align:right">${v.toFixed(2)}</td></tr>`;
+    });
+  });
+  const w = window.open('', '_blank');
+  if (!w) {
+    showToast('请允许弹出窗口以使用打印预览', 'warning');
+    return;
+  }
+  w.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>报销打印</title>
+    <style>body{font-family:sans-serif;padding:24px;color:#111} table{border-collapse:collapse;width:100%;max-width:720px} h2{margin-top:0}</style>
+  </head><body>
+  <h2>报销单（预览）</h2>
+  <p>日期：${escapeHtml(p.date)}　品牌：${escapeHtml(p.brand || '—')}　项目编号：${escapeHtml(p.project_code || '—')}　金额合计：<strong>${p.amount.toFixed(2)}</strong> 元</p>
+  <p>备注：${escapeHtml(p.remarks || '—')}</p>
+  ${invHtml}
+  <h3>费用明细</h3>
+  <table border="1" cellpadding="6" cellspacing="0"><tr><th>项目</th><th>金额（元）</th></tr>${detailRows}<tr><th>合计</th><th style="text-align:right">${p.amount.toFixed(2)}</th></tr></table>
+  <p style="margin-top:24px;font-size:12px;color:#666">已计入活动成本（场次）：${p.merged_into_activity ? '是' : '否'}</p>
+  <script>window.onload=function(){window.print();}<\/script>
+  </body></html>`);
+  w.document.close();
+}
+
+async function reimbursementEditById(id) {
+  try {
+    const r = await api('GET', `/reimbursements/${id}`);
+    await showReimbursementModal(r);
+  } catch (e) {
+    showToast(e.message || '加载失败', 'error');
+  }
+}
+
+async function showReimbursementModal(record) {
+  const body = document.getElementById('modalReimbursementBody');
+  const title = document.getElementById('modalReimbursementTitle');
+  if (!body || !title) return;
+  if (!currentYearFrameId) {
+    showToast('请先选择年度并确保已加载年框', 'warning');
+    return;
+  }
+  try {
+    if (!reimbursementPageState.activities.length) {
+      reimbursementPageState.activities = await api(
+        'GET',
+        `/activities?yearFrameId=${currentYearFrameId}&sortBy=date&sortOrder=DESC`
+      );
+    }
+  } catch (e) {
+    showToast('加载场次失败: ' + e.message, 'error');
+    return;
+  }
+
+  const rid = record && record.id ? String(record.id) : '';
+  const merged = !!(record && (record.merged_into_activity === 1 || record.merged_into_activity === true));
+  const actId = record && record.activity_id ? Number(record.activity_id) : 0;
+  const dateVal =
+    record && record.date
+      ? toDateInputValue(record.date)
+      : todayDateInputValue();
+  const remarksEsc = record && record.remarks ? escapeHtml(String(record.remarks)) : '';
+  const details = record
+    ? parseActivityCostDetails({ cost_details: record.cost_details })
+    : parseActivityCostDetails({});
+  const hi =
+    record &&
+    (record.has_invoice === 1 || record.has_invoice === true || String(record.has_invoice) === '1');
+  const invList =
+    record && Array.isArray(record.invoices) && record.invoices.length ? record.invoices : [];
+  const brandVal = record && record.brand ? String(record.brand) : '';
+  const brandOpts = FIXED_BRAND_CODES
+    .map((code) => `<option value="${escapeHtml(code)}">${escapeHtml(code)}</option>`)
+    .join('');
+
+  let pickedMergedLabel = '—';
+  if (merged && actId) {
+    const ax = reimbursementPageState.activities.find((x) => Number(x.id) === actId);
+    pickedMergedLabel = ax ? reimbActivityLine(ax) : `场次 #${actId}`;
+  }
+
+  title.textContent = rid ? `编辑报销 #${rid}` : '新建报销';
+  body.innerHTML = `
+    <input type="hidden" id="reimbRecordId" value="${rid}">
+    <input type="hidden" id="reimbActivityId" value="${actId || ''}">
+    <div id="reimbMergedNote" style="display:${merged ? 'block' : 'none'};margin-bottom:10px;padding:10px;background:var(--accent-soft);border-radius:var(--radius-sm);font-size:12px;color:var(--text-primary)" data-merged="${merged ? '1' : '0'}">
+      本单已同步到场次成本；保存时将按「报销金额 &gt; 0 的项覆盖场次对应字段」再次合并。不可更换关联场次。
+    </div>
+    <div class="form-group">
+      <label class="form-label">关联场次（可选）</label>
+      ${
+        merged
+          ? `<div style="font-size:13px;padding:10px;background:var(--bg-input);border-radius:var(--radius-sm)">${pickedMergedLabel}</div>`
+          : `<input type="text" class="form-control" id="reimbProjectCode" list="reimbProjectList" autocomplete="off" placeholder="输入关键字并从下拉选择项目编号（可留空）" oninput="reimbProjectInputChanged()">
+             <datalist id="reimbProjectList"></datalist>
+             <div id="reimbActivityPicked" style="display:none;margin-top:8px;font-size:12px;color:var(--text-secondary)"></div>`
+      }
+    </div>
+    <div class="form-grid" style="grid-template-columns:1fr 1fr 1fr">
+      <div class="form-group">
+        <label class="form-label">报销日期 <span class="required">*</span></label>
+        <input type="date" class="form-control" id="reimbDate" value="${dateVal}">
+      </div>
+      <div class="form-group">
+        <label class="form-label">品牌 <span class="required">*</span></label>
+        <select class="form-control" id="reimbBrand">
+          <option value="">请选择品牌</option>
+          ${brandOpts}
+        </select>
+      </div>
+      <div class="form-group">
+        <label class="form-label">是否有发票</label>
+        <div style="display:flex;gap:16px;align-items:center;height:38px">
+          <label style="display:flex;gap:6px;cursor:pointer;font-size:13px"><input type="radio" name="reimbHasInv" id="reimbHasInvY" value="1" ${hi ? 'checked' : ''} onchange="reimbToggleInvoiceSection()"> 有发票</label>
+          <label style="display:flex;gap:6px;cursor:pointer;font-size:13px"><input type="radio" name="reimbHasInv" id="reimbHasInvN" value="0" ${!hi ? 'checked' : ''} onchange="reimbToggleInvoiceSection()"> 无发票</label>
+        </div>
+      </div>
+    </div>
+    <div class="form-group" id="reimbInvoiceSection" style="display:${hi ? 'block' : 'none'}">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+        <span class="form-label" style="margin:0">发票明细</span>
+        <button type="button" class="btn btn-secondary btn-sm" onclick="reimbAppendInvoiceRow(null)">+ 添加发票行</button>
+      </div>
+      <div id="reimbInvoiceRows"></div>
+    </div>
+    <label class="form-group" style="display:flex;align-items:flex-start;gap:10px;padding:10px 12px;border:1px solid var(--border);border-radius:var(--radius-sm);cursor:pointer;margin-bottom:12px;background:var(--bg-input)">
+      <input type="checkbox" id="reimbSyncToActivity" ${merged ? 'checked disabled' : ''} style="margin-top:3px">
+      <span style="font-size:13px;color:var(--text-primary)">同步到场次成本（默认不勾选；勾选时必须选择关联场次。保存时将报销明细中金额<strong>大于 0</strong>的项写入该场次成本）</span>
+    </label>
+    <div class="form-label" style="margin-bottom:8px">费用明细（¥）</div>
+    ${renderCostDetailSections('reimb-cost-field', details, 'updateReimbCostTotal()')}
+    <div style="margin-top:14px;padding:12px;background:var(--accent-soft);border-radius:var(--radius-sm);display:flex;justify-content:space-between;align-items:center">
+      <span style="color:var(--text-secondary);font-size:13px">成本合计</span>
+      <span class="amount" style="font-size:18px;font-weight:700;color:var(--accent)" id="reimbCostTotal">${fmtMoney(calcCostDetailsTotal(details))}</span>
+    </div>
+    <div class="form-group" style="margin-top:12px">
+      <label class="form-label">备注</label>
+      <textarea class="form-control" id="reimbRemarks" rows="2" placeholder="选填">${remarksEsc}</textarea>
+    </div>
+  `;
+
+  const wrap = document.getElementById('reimbInvoiceRows');
+  if (wrap) {
+    if (hi && invList.length) invList.forEach((iv) => reimbAppendInvoiceRow(iv));
+    else if (hi) reimbAppendInvoiceRow(null);
+  }
+  if (!merged) {
+    reimbRenderActivityPicker();
+    if (actId) reimbSelectActivity(actId);
+  } else if (document.getElementById('reimbActivityId') && actId) {
+    document.getElementById('reimbActivityId').value = String(actId);
+  }
+  const brandEl = document.getElementById('reimbBrand');
+  if (brandEl) {
+    if (brandVal) brandEl.value = brandVal;
+    if (!brandEl.value) brandEl.value = FIXED_BRAND_CODES[0] || 'PHD';
+  }
+  reimbToggleInvoiceSection();
+  openModal('modalReimbursement');
+  updateReimbCostTotal();
+  renderLucideIcons();
+}
+
+async function saveReimbursementForm() {
+  if (!hasWriteAccess()) {
+    showToast('仅管理员可保存', 'warning');
+    return;
+  }
+  const rid = document.getElementById('reimbRecordId')?.value?.trim();
+  const actId = parseInt(document.getElementById('reimbActivityId')?.value, 10);
+  const hasAct = Number.isFinite(actId) && actId > 0;
+  const projectCodeInput = (document.getElementById('reimbProjectCode')?.value || '').replace(/^\uFEFF/, '').trim();
+  const brand = document.getElementById('reimbBrand')?.value?.trim() || '';
+  const date = document.getElementById('reimbDate')?.value;
+  const remarks = document.getElementById('reimbRemarks')?.value?.trim() || '';
+  const has_invoice = !!document.getElementById('reimbHasInvY')?.checked;
+  const invoices = has_invoice ? reimbCollectInvoicesFromForm() : [];
+  const cost_details = collectCostDetails('reimb-cost-field');
+  const total = roundMoney2(calcCostDetailsTotal(cost_details));
+  const syncEl = document.getElementById('reimbSyncToActivity');
+  const mergedNote = document.getElementById('reimbMergedNote');
+  const alreadyMerged = mergedNote && mergedNote.dataset.merged === '1';
+  const sync_to_activity = alreadyMerged ? true : !!syncEl?.checked;
+
+  if (!currentYearFrameId) {
+    showToast('年框未就绪', 'warning');
+    return;
+  }
+  if (!brand) {
+    showToast('请选择品牌', 'warning');
+    return;
+  }
+  if (!date) {
+    showToast('请选择报销日期', 'warning');
+    return;
+  }
+  if (projectCodeInput && !hasAct) {
+    showToast('关联场次请从下拉候选中选中；若不关联请清空输入', 'warning');
+    return;
+  }
+  if (total <= 0) {
+    showToast('费用明细合计须大于 0', 'warning');
+    return;
+  }
+  if (has_invoice) {
+    const ok = invoices.some(
+      (x) =>
+        x.invoice_no &&
+        x.invoice_date &&
+        (x.invoice_kind === '专票' || x.invoice_kind === '普票')
+    );
+    if (!ok) {
+      showToast('有发票时至少一行需填写：发票号码、开票日期、专票/普票', 'warning');
+      return;
+    }
+  }
+  if (sync_to_activity && !hasAct) {
+    showToast('勾选同步到场次成本时，必须选择关联场次', 'warning');
+    return;
+  }
+
+  const body = {
+    year_frame_id: currentYearFrameId,
+    activity_id: hasAct ? actId : null,
+    brand,
+    date,
+    remarks,
+    has_invoice,
+    invoices,
+    cost_details,
+    sync_to_activity,
+  };
+  const a = hasAct ? reimbursementPageState.activities.find((x) => Number(x.id) === actId) : null;
+  if (a) {
+    body.city = a.city || null;
+    body.related_project_code = a.project_code || null;
+    if (!body.brand) body.brand = a.brand || '';
+  }
+
+  try {
+    if (rid) {
+      await api('PUT', `/reimbursements/${rid}`, body);
+      showToast('已更新', 'success');
+    } else {
+      await api('POST', '/reimbursements', body);
+      showToast('已保存', 'success');
+    }
+    closeModal();
+    if (currentPage === 'reimbursement') await renderReimbursements();
+    if (currentPage === 'cost') await renderCost();
+    void updateBadges();
+  } catch (e) {
+    showToast(e.message || '保存失败', 'error');
+  }
+}
+
+async function deleteReimbursementRecord(id) {
+  if (!hasWriteAccess()) {
+    showToast('仅管理员可删除', 'warning');
+    return;
+  }
+  if (!confirm('确定删除该条报销？')) return;
+  try {
+    await api('DELETE', `/reimbursements/${id}`);
+    showToast('已删除', 'success');
+    if (currentPage === 'reimbursement') await renderReimbursements();
+    void updateBadges();
+    if (currentPage === 'cost') await renderCost();
+  } catch (e) {
+    showToast(e.message || '删除失败', 'error');
+  }
+}
+
+let _reimbListFilterT;
+function reimbursementListFilterDebounced() {
+  clearTimeout(_reimbListFilterT);
+  _reimbListFilterT = setTimeout(() => {
+    reimbursementPageState.filterInput = document.getElementById('reimbListFilter')?.value || '';
+    reimbursementRenderListDom();
+  }, 220);
+}
+
+function reimbursementRenderListDom() {
+  const container = document.getElementById('pageContainer');
+  if (!container) return;
+  const rows = reimbursementPageState.rows || [];
+  const kw = (reimbursementPageState.filterInput || '').trim().toLowerCase();
+  const filtered = !kw
+    ? rows
+    : rows.filter((r) => {
+        const pc = String(r.related_project_code || '').toLowerCase();
+        const brand = String(r.brand || '').toLowerCase();
+        const city = String(r.city || '').toLowerCase();
+        const rm = String(r.remarks || '').toLowerCase();
+        return pc.includes(kw) || brand.includes(kw) || city.includes(kw) || rm.includes(kw) || String(r.id).includes(kw);
+      });
+  const fi = escapeHtml(reimbursementPageState.filterInput || '');
+  container.innerHTML = `
+      <div class="page-toolbar" style="margin-bottom:16px;display:flex;flex-wrap:wrap;gap:10px;align-items:center">
+        <button type="button" class="btn btn-primary" onclick="showReimbursementModal(null)">新建报销</button>
+        <input type="search" class="form-control" id="reimbListFilter" placeholder="筛选：品牌 / 项目编号 / 城市 / 备注" style="max-width:320px"
+          value="${fi}"
+          oninput="reimbursementPageState.filterInput=this.value;reimbursementListFilterDebounced()">
+      </div>
+      <div class="card">
+        <div class="card-body" style="padding:0">
+          <div style="overflow-x:auto">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th style="min-width:88px">日期</th>
+                  <th style="min-width:72px">品牌</th>
+                  <th style="min-width:120px;text-align:left">金额</th>
+                  <th style="min-width:140px">项目编号</th>
+                  <th style="min-width:88px">合并场次</th>
+                  <th style="min-width:72px">发票</th>
+                  <th style="min-width:180px">备注</th>
+                  <th style="min-width:120px">操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${filtered
+                  .map((r) => {
+                    const m = r.merged_into_activity === 1 || r.merged_into_activity === true;
+                    const hi = r.has_invoice === 1 || r.has_invoice === true;
+                    return `<tr>
+                    <td style="white-space:nowrap">${escapeHtml(fmtDateShort(r.date))}</td>
+                    <td style="white-space:nowrap">${escapeHtml(r.brand || '—')}</td>
+                    <td class="amount" style="text-align:left;white-space:nowrap">${fmtMoney(r.amount)}</td>
+                    <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis" title="${escapeHtml(r.related_project_code || '')}">${escapeHtml(r.related_project_code || '—')}</td>
+                    <td style="white-space:nowrap">${m ? '<span class="badge badge-success">已计入</span>' : '—'}</td>
+                    <td style="white-space:nowrap">${hi ? '有' : '无'}</td>
+                    <td style="max-width:220px;overflow:hidden;text-overflow:ellipsis" title="${escapeHtml(r.remarks || '')}">${escapeHtml(r.remarks || '—')}</td>
+                    <td onclick="event.stopPropagation()" style="white-space:nowrap">
+                      <button type="button" class="btn btn-secondary btn-sm" onclick="reimbursementEditById(${r.id})">编辑</button>
+                      <button type="button" class="btn btn-secondary btn-sm" onclick="reimbursementQuickExport(${r.id})">CSV</button>
+                      <button type="button" class="btn btn-danger btn-sm" onclick="deleteReimbursementRecord(${r.id})">删除</button>
+                    </td>
+                  </tr>`;
+                  })
+                  .join('')}
+              </tbody>
+            </table>
+          </div>
+          ${
+            !filtered.length
+              ? '<div class="empty-state" style="padding:24px"><div class="empty-title">暂无报销记录</div></div>'
+              : ''
+          }
+        </div>
+      </div>
+    `;
+  renderLucideIcons();
+}
+
+async function renderReimbursements() {
+  const container = document.getElementById('pageContainer');
+  if (!container) return;
+  if (!currentYearFrameId) {
+    container.innerHTML =
+      '<div class="empty-state"><div class="empty-title">请先选择年度</div></div>';
+    return;
+  }
+  container.innerHTML = '<div class="empty-state"><div class="skeleton skeleton-title"></div></div>';
+  try {
+    const qs = `?yearFrameId=${currentYearFrameId}`;
+    const [rows, acts] = await Promise.all([
+      api('GET', `/reimbursements${qs}`),
+      api('GET', `/activities?yearFrameId=${currentYearFrameId}&sortBy=date&sortOrder=DESC`),
+    ]);
+    reimbursementPageState.rows = rows;
+    reimbursementPageState.activities = acts;
+    if (reimbursementPageState.filterInput == null) reimbursementPageState.filterInput = '';
+    reimbursementRenderListDom();
+  } catch (e) {
+    container.innerHTML = `<div class="empty-state"><div class="empty-title">加载失败</div><div class="empty-sub">${escapeHtml(e.message)}</div></div>`;
+  }
+}
+
+async function reimbursementQuickExport(id) {
+  try {
+    const r = await api('GET', `/reimbursements/${id}`);
+    const p = {
+      id: r.id,
+      date: r.date,
+      remarks: r.remarks || '',
+      activity_id: r.activity_id,
+      brand: r.brand || '',
+      project_code: r.related_project_code || '',
+      has_invoice: !!(r.has_invoice === 1 || r.has_invoice === true),
+      invoices: Array.isArray(r.invoices) ? r.invoices : [],
+      cost_details: parseActivityCostDetails({ cost_details: r.cost_details }),
+      amount: parseFloat(r.amount) || 0,
+      merged_into_activity: !!(r.merged_into_activity === 1 || r.merged_into_activity === true),
+    };
+    const lines = [];
+    const esc = (v) => {
+      const s = v == null ? '' : String(v);
+      if (/[",\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+      return s;
+    };
+    lines.push(['报销ID', p.id, '报销日期', p.date, '金额', p.amount].join(','));
+    lines.push(['品牌', esc(p.brand), '项目编号', esc(p.project_code)].join(','));
+    lines.push(['备注', esc(p.remarks)].join(','));
+    lines.push(
+      ['有发票', p.has_invoice ? '是' : '否', '已计入活动成本（场次）', p.merged_into_activity ? '是' : '否'].join(',')
+    );
+    if (p.has_invoice && p.invoices.length) {
+      lines.push('发票内容,发票号码,开票日期,专票/普票');
+      p.invoices.forEach((iv) =>
+        lines.push([esc(iv.invoice_content), esc(iv.invoice_no), iv.invoice_date, esc(iv.invoice_kind)].join(','))
+      );
+    }
+    lines.push('');
+    lines.push('费用明细项,金额');
+    COST_DETAIL_GROUPS.forEach((g) => {
+      g.items.forEach((it) => {
+        const v = p.cost_details[it.key];
+        if (v && roundMoney2(v) !== 0) lines.push([esc(it.label), roundMoney2(v)].join(','));
+      });
+    });
+    const blob = new Blob(['\uFEFF' + lines.join('\n')], { type: 'text/csv;charset=utf-8' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `报销_${p.id}_${(p.date || '').slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  } catch (e) {
+    showToast(e.message || '导出失败', 'error');
+  }
+}
+
+/* =============================================
    页面：道具维修（品牌 + 自定义项目 + 无成本）
    ============================================= */
 function propRepairRowHtml(r) {
   const rem = r.remarks ? String(r.remarks).slice(0, 48) + (String(r.remarks).length > 48 ? '…' : '') : '—';
   const noCost = r.no_cost === true || r.no_cost === 1 || String(r.no_cost) === '1';
+  const merged = isMergedFlag(r.merged_into_activity);
   return `<tr>
     <td>${r.id}</td>
     <td>${escapeHtml(fmtDate(r.repair_date))}</td>
@@ -4390,6 +5863,7 @@ function propRepairRowHtml(r) {
     <td><span class="badge badge-${brandColor(r.brand_code || r.brand_name)}">${escapeHtml(r.brand_name || r.brand_code || '—')}</span></td>
     <td class="amount amount-revenue" style="text-align:right">${fmtMoney(r.quoted_price || 0)}</td>
     <td class="amount" style="text-align:right">${noCost ? '无成本' : fmtMoney(r.total_amount)}</td>
+    <td>${merged ? '<span class="badge badge-success">已计入</span>' : '<span class="badge badge-gray">未计入</span>'}</td>
     <td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;font-size:12px;color:var(--text-secondary)" title="${escapeHtml(r.remarks || '')}">${escapeHtml(rem)}</td>
     <td onclick="event.stopPropagation()" style="white-space:nowrap">
       <button type="button" class="btn btn-secondary btn-sm" onclick="showPropRepairModal(${r.id})">编辑</button>
@@ -4400,6 +5874,11 @@ function propRepairRowHtml(r) {
 
 function propRepairSetBrandFilter(v) {
   propRepairPageState.filterBrandId = v || '';
+  renderPropRepairs();
+}
+
+function propRepairSetMergeFilter(v) {
+  propRepairPageState.mergeFilter = v || 'all';
   renderPropRepairs();
 }
 
@@ -4495,9 +5974,14 @@ async function renderPropRepairs() {
       )
       .join('');
 
-    const listBody = (rows || []).length
-      ? (rows || []).map((r) => propRepairRowHtml(r)).join('')
-      : '<tr><td colspan="8" style="text-align:center;color:var(--text-muted);padding:20px">暂无记录</td></tr>';
+    const listRows = (propRepairPageState.mergeFilter === 'merged')
+      ? (rows || []).filter((r) => isMergedFlag(r.merged_into_activity))
+      : (propRepairPageState.mergeFilter === 'unmerged')
+        ? (rows || []).filter((r) => !isMergedFlag(r.merged_into_activity))
+        : (rows || []);
+    const listBody = listRows.length
+      ? listRows.map((r) => propRepairRowHtml(r)).join('')
+      : '<tr><td colspan="9" style="text-align:center;color:var(--text-muted);padding:20px">暂无记录</td></tr>';
 
     container.innerHTML = `
       <div class="stats-grid" style="margin-bottom:16px">
@@ -4520,13 +6004,18 @@ async function renderPropRepairs() {
             <select class="filter-select" id="prListBrandFilter" onchange="propRepairSetBrandFilter(this.value)">
               <option value="">全部品牌</option>${brandOpts}
             </select>
+            <select class="filter-select" id="prListMergeFilter" onchange="propRepairSetMergeFilter(this.value)">
+              <option value="all" ${propRepairPageState.mergeFilter === 'all' ? 'selected' : ''}>计入：全部</option>
+              <option value="unmerged" ${propRepairPageState.mergeFilter === 'unmerged' ? 'selected' : ''}>计入：未计入</option>
+              <option value="merged" ${propRepairPageState.mergeFilter === 'merged' ? 'selected' : ''}>计入：已计入</option>
+            </select>
             <button type="button" class="btn btn-primary btn-sm" onclick="showPropRepairModal(null)">+ 新建登记</button>
           </div>
         </div>
         <div class="card-body" style="padding:0">
           <div class="table-wrapper">
             <table>
-              <thead><tr><th>ID</th><th>日期</th><th>区域</th><th>品牌</th><th style="text-align:right">报价</th><th style="text-align:right">维修费</th><th>备注</th><th>操作</th></tr></thead>
+              <thead><tr><th>ID</th><th>日期</th><th>区域</th><th>品牌</th><th style="text-align:right">报价</th><th style="text-align:right">维修费</th><th>计入状态</th><th>备注</th><th>操作</th></tr></thead>
               <tbody>${listBody}</tbody>
             </table>
           </div>
@@ -4569,14 +6058,21 @@ async function showPropRepairModal(id) {
   } catch {
     brands = [];
   }
+  let projectOptions = '';
+  try {
+    const codes = await ensureActivityProjectIndex();
+    projectOptions = codes.map((c) => `<option value="${escapeHtml(c)}"></option>`).join('');
+  } catch {
+    projectOptions = '';
+  }
   const brandOpts = brands
     .map((b) => `<option value="${b.id}">${escapeHtml(b.brand_name || b.brand_code)}</option>`)
     .join('');
 
   const defaultBrand = record ? String(record.brand_id) : brands[0] ? String(brands[0].id) : '';
   const dateVal = record && record.repair_date
-    ? String(record.repair_date).slice(0, 10)
-    : new Date().toISOString().slice(0, 10);
+    ? toDateInputValue(record.repair_date)
+    : todayDateInputValue();
 
   const customFromRecord = (record && Array.isArray(record.items) ? record.items : []).filter(
     (it) => it && it.name
@@ -4584,6 +6080,8 @@ async function showPropRepairModal(id) {
   const remarksAttr = record && record.remarks ? escapeHtml(record.remarks) : '';
   const noCost = record && (record.no_cost === true || record.no_cost === 1 || String(record.no_cost) === '1');
   const quotedPrice = record && record.quoted_price != null ? roundMoney2(record.quoted_price).toFixed(2) : '';
+  const mergedPr = record && (record.merged_into_activity === true || record.merged_into_activity === 1 || String(record.merged_into_activity) === '1');
+  const prProject = record && record.activity_id ? (Array.from(logisticsProjectIndex.codeToId.entries()).find(([, idv]) => Number(idv) === Number(record.activity_id)) || [record.related_project_code || '', 0])[0] : '';
 
   body.innerHTML = `
     <input type="hidden" id="prRecordId" value="${record ? record.id : ''}">
@@ -4626,6 +6124,19 @@ async function showPropRepairModal(id) {
       <label class="form-label">备注</label>
       <input type="text" class="form-control" id="prRemarks" placeholder="选填" value="${remarksAttr}">
     </div>
+    <div class="form-group">
+      <label class="form-label">关联项目编号（可选）</label>
+      <input type="text" class="form-control" id="prProjectCode" list="prProjectList" autocomplete="off" placeholder="输入并从下拉选择（仅允许活动项目编号）" value="${escapeHtml(prProject)}">
+      <datalist id="prProjectList">${projectOptions}</datalist>
+    </div>
+    <label style="display:flex;align-items:center;gap:8px;margin:0 0 10px;color:var(--text-secondary);cursor:pointer">
+      <input type="checkbox" id="prMergedIntoActivity" ${mergedPr ? 'checked' : ''}>
+      <span>计入活动成本（勾选时需选择关联项目编号）</span>
+    </label>
+    <div class="form-group">
+      <label class="form-label">计入说明</label>
+      <input type="text" class="form-control" id="prAllocationNote" placeholder="选填" value="${escapeHtml((record && record.allocation_note) || '')}">
+    </div>
     <div style="margin-top:12px;padding:12px;background:var(--accent-soft);border-radius:var(--radius-sm);display:flex;justify-content:space-between;align-items:center">
       <span style="color:var(--text-secondary)">合计</span>
       <span class="amount" id="prTotalDisplay" style="font-size:18px;font-weight:700">${fmtMoney(0)}</span>
@@ -4657,6 +6168,21 @@ async function savePropRepairForm() {
   const quoted_price = roundMoney2(document.getElementById('prQuotedPrice')?.value);
   const remarks = document.getElementById('prRemarks')?.value?.trim() || '';
   const no_cost = !!document.getElementById('prNoCost')?.checked;
+  const projectCode = (document.getElementById('prProjectCode')?.value || '').replace(/^\uFEFF/, '').trim();
+  const mergedIntoActivity = !!document.getElementById('prMergedIntoActivity')?.checked;
+  if (projectCode && !logisticsProjectIndex.codes.has(projectCode)) {
+    showToast('关联项目编号必须从活动项目编号中选择', 'warning');
+    return;
+  }
+  if (mergedIntoActivity && !projectCode) {
+    showToast('勾选计入活动成本时，必须选择关联项目编号', 'warning');
+    return;
+  }
+  const activityId = projectCode ? logisticsProjectIndex.codeToId.get(projectCode) : null;
+  if (mergedIntoActivity && !activityId) {
+    showToast('关联项目编号无效，请从下拉建议中选择', 'warning');
+    return;
+  }
   const items = no_cost ? [] : collectPropRepairItemsFromForm();
   const total = no_cost ? 0 : roundMoney2(items.reduce((s, x) => s + x.amount, 0));
   if (!brand_id) {
@@ -4683,6 +6209,9 @@ async function savePropRepairForm() {
     quoted_price,
     items,
     no_cost: no_cost ? 1 : 0,
+    activity_id: activityId || null,
+    merged_into_activity: mergedIntoActivity ? 1 : 0,
+    allocation_note: document.getElementById('prAllocationNote')?.value?.trim() || null,
     remarks,
   };
   try {
@@ -4725,6 +6254,7 @@ async function renderWine() {
     <div class="page-header" style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px">
       <div></div>
       <div style="display:flex;gap:8px">
+        <button class="btn btn-secondary btn-sm" onclick="showWineUsageModal()"><i data-lucide="rotate-ccw" style="width:14px;height:14px"></i>酒品归还</button>
         <button class="btn btn-primary btn-sm" onclick="showWineStockInModal()"><i data-lucide="download" style="width:14px;height:14px"></i>酒品入库</button>
       </div>
     </div>
@@ -4745,7 +6275,8 @@ async function renderWine() {
     <!-- 入库记录 -->
     <div class="card">
       <div class="card-header">
-        <div class="card-title"><i data-lucide="package" style="width:14px;height:14px;vertical-align:-2px;margin-right:6px"></i>入库记录</div>
+        <div class="card-title"><i data-lucide="package" style="width:14px;height:14px;vertical-align:-2px;margin-right:6px"></i>库存流水</div>
+        <div id="wineRecordTabs" style="display:flex;gap:8px;align-items:center"></div>
       </div>
       <div class="card-body" id="wineRecordsContent">
         <div style="color:var(--text-muted);padding:20px;text-align:center">加载中...</div>
@@ -4757,27 +6288,52 @@ async function renderWine() {
   await loadWineRecords('stockIn');
 }
 
+function renderWineRecordTabs(activeTab = 'stockIn') {
+  const host = document.getElementById('wineRecordTabs');
+  if (!host) return;
+  const cls = (tab) => (tab === activeTab ? 'btn btn-primary btn-xs' : 'btn btn-secondary btn-xs');
+  host.innerHTML = `
+    <button class="${cls('stockIn')}" onclick="loadWineRecords('stockIn')">入库记录</button>
+    <button class="${cls('usage')}" onclick="loadWineRecords('usage')">用酒记录</button>
+    <button class="${cls('returns')}" onclick="loadWineRecords('returns')">归还记录</button>
+  `;
+}
+
 async function loadWineInventory() {
   try {
     const wines = await api('GET', '/wine');
     const LOW_STOCK_THRESHOLD = 5;
     const stats = wines.reduce((acc, w) => {
-      acc.totalQty += w.quantity;
+      const q = Number(w.quantity) || 0;
+      acc.totalQty += q;
+      if (q < 0) acc.negativeKinds += 1;
       return acc;
-    }, { totalQty: 0, lowStock: 0 });
+    }, { totalQty: 0, negativeKinds: 0 });
 
+    const inStockKinds = wines.filter((w) => Number(w.quantity) > 0).length;
     document.getElementById('wineStats').innerHTML = `
-      <div class="stat-card">
-        <div class="stat-label">总库存</div>
-        <div class="stat-value">${stats.totalQty} <span style="font-size:13px;color:var(--text-muted)">瓶</span></div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-label">品种数</div>
-        <div class="stat-value">${wines.length}</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-label">有库存品种</div>
-        <div class="stat-value" style="color:${wines.filter(w=>w.quantity>0).length>0?'var(--success)':'var(--text-muted)'}">${wines.filter(w=>w.quantity>0).length}</div>
+      <div class="stat-card" style="width:100%;display:flex;flex-direction:column;gap:10px">
+        <div class="stat-label" style="display:flex;align-items:center;gap:6px">
+          <i data-lucide="bar-chart-3" style="width:14px;height:14px"></i>库存总览
+        </div>
+        <div style="display:flex;gap:18px;flex-wrap:wrap">
+          <div>
+            <div class="stat-sub">总库存</div>
+            <div class="stat-value">${stats.totalQty} <span style="font-size:13px;color:var(--text-muted)">瓶</span></div>
+          </div>
+          <div>
+            <div class="stat-sub">品种数</div>
+            <div class="stat-value">${wines.length}</div>
+          </div>
+          <div>
+            <div class="stat-sub">有库存品种</div>
+            <div class="stat-value" style="color:${inStockKinds > 0 ? 'var(--success)' : 'var(--text-muted)'}">${inStockKinds}</div>
+          </div>
+          <div>
+            <div class="stat-sub">负库存品种</div>
+            <div class="stat-value" style="color:${stats.negativeKinds > 0 ? 'var(--danger)' : 'var(--text-muted)'}">${stats.negativeKinds}</div>
+          </div>
+        </div>
       </div>
     `;
 
@@ -4792,6 +6348,7 @@ async function loadWineInventory() {
     const inventoryHtml = Object.entries(grouped).map(([name, specs]) => {
       const total = specs.reduce((sum, s) => sum + (parseInt(s.quantity, 10) || 0), 0);
       const hasStock = total > 0;
+      const hasNegative = specs.some((s) => (parseInt(s.quantity, 10) || 0) < 0);
       const hasLowStockSpec = specs.some((s) => {
         const q = parseInt(s.quantity, 10) || 0;
         return q > 0 && q <= LOW_STOCK_THRESHOLD;
@@ -4800,8 +6357,8 @@ async function loadWineInventory() {
         <div class="wine-inventory-card">
           <div class="wine-card-header">
             <div class="wine-card-title">${escapeHtml(name)}</div>
-            <div class="wine-card-total ${hasLowStockSpec ? 'low-stock' : (hasStock ? 'has-stock' : 'no-stock')}">
-              ${total} 瓶${hasLowStockSpec ? `<span class="wine-low-stock-tag">低库存</span>` : ''}
+            <div class="wine-card-total ${hasNegative ? 'no-stock' : (hasLowStockSpec ? 'low-stock' : (hasStock ? 'has-stock' : 'no-stock'))}">
+              ${total} 瓶${hasNegative ? `<span class="wine-low-stock-tag" style="background:var(--danger);color:#fff">负库存</span>` : (hasLowStockSpec ? `<span class="wine-low-stock-tag">低库存</span>` : '')}
             </div>
           </div>
           <div class="wine-card-spec-list">
@@ -4812,10 +6369,11 @@ async function loadWineInventory() {
                   <div class="wine-card-spec-qty ${
                     (() => {
                       const q = parseInt(s.quantity, 10) || 0;
+                      if (q < 0) return 'no-stock';
                       if (q > 0 && q <= LOW_STOCK_THRESHOLD) return 'low-stock';
                       return q > 0 ? 'has-stock' : 'no-stock';
                     })()
-                  }">${parseInt(s.quantity, 10) || 0} 瓶</div>
+                  }" style="${(parseInt(s.quantity, 10) || 0) < 0 ? 'color:var(--danger);font-weight:700' : ''}">${parseInt(s.quantity, 10) || 0} 瓶</div>
                   <button class="btn btn-secondary btn-xs" onclick="editWineInventory('${escapeHtml(String(s.wine_code || ''))}', ${parseInt(s.quantity, 10) || 0})">编辑</button>
                 </div>
               </div>
@@ -4842,11 +6400,11 @@ async function editWineInventory(wineCode, currentQty) {
     showToast('缺少酒品编码，无法编辑库存', 'error');
     return;
   }
-  const input = prompt(`手动修改库存（编码：${code}）\n请输入最新库存数量（整数，>= 0）`, String(currentQty || 0));
+  const input = prompt(`手动修改库存（编码：${code}）\n请输入最新库存数量（整数，可为负数）`, String(currentQty || 0));
   if (input == null) return;
   const qty = parseInt(String(input).trim(), 10);
-  if (!Number.isFinite(qty) || qty < 0) {
-    showToast('库存数量必须是大于等于 0 的整数', 'error');
+  if (!Number.isFinite(qty)) {
+    showToast('库存数量必须是整数', 'error');
     return;
   }
   try {
@@ -4859,24 +6417,37 @@ async function editWineInventory(wineCode, currentQty) {
 }
 
 async function loadWineRecords(tab) {
+  renderWineRecordTabs(tab || 'stockIn');
   const content = document.getElementById('wineRecordsContent');
   content.innerHTML = `<div style="color:var(--text-muted);padding:20px;text-align:center">加载中...</div>`;
   
   try {
     const qs = currentYearFrameId ? `?year_frame_id=${currentYearFrameId}` : '';
-    const records = tab === 'stockIn'
-      ? await api('GET', `/wine/stock-in${qs}`)
-      : await api('GET', `/wine/usage${qs}`);
+    const activityRows = await api('GET', `/activities${currentYearFrameId ? `?yearFrameId=${currentYearFrameId}` : ''}`);
+    const activityCodeMap = new Map((activityRows || []).map((a) => [Number(a.id), String(a.project_code || '').trim()]));
+    const activityRefHtml = (activityId) => {
+      const idNum = Number(activityId || 0);
+      if (!idNum) return '—';
+      const code = activityCodeMap.get(idNum) || `#${idNum}`;
+      return `<a href="#" onclick="event.preventDefault();showActivityDetail(${idNum})">${escapeHtml(code)}</a>`;
+    };
+    const records =
+      tab === 'stockIn'
+        ? await api('GET', `/wine/stock-in${qs}`)
+        : tab === 'returns'
+          ? await api('GET', `/wine/returns${qs}`)
+          : await api('GET', `/wine/usage${qs}`);
     
     if (records.length === 0) {
-      content.innerHTML = `<div style="color:var(--text-muted);padding:30px;text-align:center">暂无${tab === 'stockIn' ? '入库' : '使用'}记录</div>`;
+      const typeLabel = tab === 'stockIn' ? '入库' : tab === 'returns' ? '归还' : '使用';
+      content.innerHTML = `<div style="color:var(--text-muted);padding:30px;text-align:center">暂无${typeLabel}记录</div>`;
       return;
     }
 
     if (tab === 'stockIn') {
       content.innerHTML = `
         <table class="data-table">
-          <thead><tr><th>日期</th><th>酒品</th><th>规格</th><th>数量</th><th>金额</th><th>供应商</th></tr></thead>
+          <thead><tr><th>日期</th><th>酒品</th><th>规格</th><th>数量</th><th>金额</th><th>供应商</th><th>操作</th></tr></thead>
           <tbody>
             ${records.slice(0, 50).map(r => `
               <tr>
@@ -4886,13 +6457,14 @@ async function loadWineRecords(tab) {
                 <td style="color:var(--success);font-weight:600">+${r.quantity}</td>
                 <td>${fmtMoney(r.total_amount)}</td>
                 <td style="color:var(--text-muted)">${r.supplier || '—'}</td>
+                <td><button class="btn btn-danger btn-sm" onclick="deleteWineStockIn(${r.id})" title="删除入库记录"><i data-lucide="trash-2" style="width:13px;height:13px"></i></button></td>
               </tr>
             `).join('')}
           </tbody>
         </table>
       `;
       renderLucideIcons();
-    } else {
+    } else if (tab === 'usage') {
       content.innerHTML = `
         <table class="data-table">
           <thead><tr><th>日期</th><th>酒品</th><th>规格</th><th>数量</th><th>客户</th><th>关联活动</th><th>操作</th></tr></thead>
@@ -4904,10 +6476,10 @@ async function loadWineRecords(tab) {
                 <td>${r.spec}</td>
                 <td style="color:var(--danger);font-weight:600">-${r.quantity}</td>
                 <td>${r.client_name || '—'}</td>
-                <td>${r.activity_id ? `<a href="#" onclick="event.preventDefault();showActivityDetail(${r.activity_id})">#${r.activity_id}</a>` : '—'}</td>
+                <td>${activityRefHtml(r.activity_id)}</td>
                 <td>
                   <div style="display:flex;gap:6px">
-                    <button class="btn btn-secondary btn-sm" onclick="showWineUsageModal(${r.id})" title="修改">编辑</button>
+                    <button class="btn btn-primary btn-sm" onclick="showWineUsageModal(${r.id})" title="归还入库">归还</button>
                     <button class="btn btn-danger btn-sm" onclick="deleteWineUsage(${r.id})" title="删除"><i data-lucide="trash-2" style="width:13px;height:13px"></i></button>
                   </div>
                 </td>
@@ -4917,8 +6489,32 @@ async function loadWineRecords(tab) {
         </table>
       `;
       renderLucideIcons();
+    } else {
+      content.innerHTML = `
+        <table class="data-table">
+          <thead><tr><th>日期</th><th>酒品</th><th>规格</th><th>归还数量</th><th>关联活动</th><th>备注</th><th>操作</th></tr></thead>
+          <tbody>
+            ${records.slice(0, 50).map(r => `
+              <tr>
+                <td>${fmtDate(r.return_date)}</td>
+                <td>${r.wine_name}</td>
+                <td>${r.spec || '—'}</td>
+                <td style="color:var(--success);font-weight:600">+${r.quantity}</td>
+                <td>${activityRefHtml(r.activity_id)}</td>
+                <td style="color:var(--text-muted)">${escapeHtml(r.remarks || '—')}</td>
+                <td><button class="btn btn-danger btn-sm" onclick="deleteWineReturnLog(${r.id})" title="删除归还记录"><i data-lucide="trash-2" style="width:13px;height:13px"></i></button></td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>
+      `;
+      renderLucideIcons();
     }
   } catch (err) {
+    if (tab === 'returns' && String(err?.message || '').includes('404')) {
+      content.innerHTML = `<div style="color:var(--warning);padding:20px">归还记录接口未生效（404）。请重启后端服务后重试。</div>`;
+      return;
+    }
     content.innerHTML = `<div style="color:var(--danger);padding:20px">加载失败: ${err.message}</div>`;
   }
 }
@@ -4947,12 +6543,19 @@ async function showWineStockInModal() {
           </div>
           <div class="form-group">
             <label class="form-label">入库日期 <span class="required">*</span></label>
-            <input type="date" class="form-control" id="wineDate" value="${new Date().toISOString().split('T')[0]}" required>
+            <input type="date" class="form-control" id="wineDate" value="${todayDateInputValue()}" required>
           </div>
         </div>
         <div class="form-group">
           <label class="form-label">供应商</label>
-          <input type="text" class="form-control" id="wineSupplier" placeholder="供应商名称">
+          <select class="form-control" id="wineSupplier">
+            <option value="">请选择</option>
+            <option value="东区">东区</option>
+            <option value="南区">南区</option>
+            <option value="东南区">东南区</option>
+            <option value="总部培训">总部培训</option>
+            <option value="其他">其他</option>
+          </select>
         </div>
         <div class="form-group">
           <label class="form-label">备注</label>
@@ -4997,108 +6600,211 @@ async function confirmWineStockIn() {
   }
 }
 
-// 显示酒品使用记录弹窗
-async function showWineUsageModal(editId = null) {
+let wineReturnDialogState = {
+  usageRows: [],
+  projectRows: [],
+  projectToUsages: new Map(),
+  projectCodeToActivityId: new Map(),
+};
+
+function renderWineReturnProjectOptions() {
+  const dl = document.getElementById('wineReturnProjectList');
+  if (!dl) return;
+  const rows = (wineReturnDialogState.projectRows || []);
+  dl.innerHTML = rows
+    .map((p) => `<option value="${escapeHtml(p.project_code || `#${p.activity_id}`)}"></option>`)
+    .join('');
+}
+
+function renderWineReturnUsageOptions() {
+  const projectInput = document.getElementById('wineReturnProject');
+  const usageSel = document.getElementById('wineUseSel');
+  const maxText = document.getElementById('wineUseWarning');
+  if (!projectInput || !usageSel || !maxText) return;
+  const projectCode = String(projectInput.value || '').trim();
+  const actId = Number(wineReturnDialogState.projectCodeToActivityId.get(projectCode) || 0);
+  const rows = actId ? (wineReturnDialogState.projectToUsages.get(actId) || []) : [];
+  usageSel.innerHTML = `<option value="">请选择酒品</option>` + rows
+    .map((r) => `<option value="${r.id}" data-max="${r.quantity || 0}" data-wine="${escapeHtml(r.wine_name || '')}">${escapeHtml(r.wine_name || '—')} ${escapeHtml(r.spec || '')}（可归还: ${r.quantity || 0} 瓶）</option>`)
+    .join('');
+  if (projectCode && !actId) {
+    maxText.style.display = 'block';
+    maxText.textContent = '项目编号无效，请从下拉建议中选择';
+    return;
+  }
+  maxText.style.display = 'none';
+}
+
+function updateWineReturnLimit() {
+  const usageSel = document.getElementById('wineUseSel');
+  const qtyInput = document.getElementById('wineUseQty');
+  const maxText = document.getElementById('wineUseWarning');
+  if (!usageSel || !qtyInput || !maxText) return;
+  const opt = usageSel.options[usageSel.selectedIndex];
+  if (!opt || !opt.value) {
+    maxText.style.display = 'none';
+    return;
+  }
+  const max = parseInt(opt.dataset.max || '0', 10) || 0;
+  qtyInput.max = String(max || 1);
+  if (!qtyInput.value || Number(qtyInput.value) > max) qtyInput.value = String(max || 1);
+  maxText.style.display = 'block';
+  maxText.textContent = `当前酒品最多可归还 ${max} 瓶`;
+}
+
+// 显示酒品归还弹窗（项目编号输入 + datalist 建议）
+async function showWineUsageModal(prefillUsageId = null) {
   const content = document.getElementById('wineUsageContent');
+  if (!content) {
+    showToast('找不到酒品归还弹窗，请刷新页面', 'error');
+    return;
+  }
   content.innerHTML = `<div style="color:var(--text-muted);padding:10px">加载中...</div>`;
   openModal('modalWineUsage');
   
   try {
-    const wines = await api('GET', '/wine');
+    const qs = currentYearFrameId ? `?year_frame_id=${currentYearFrameId}` : '';
+    const [usageRows, activityRows] = await Promise.all([
+      api('GET', `/wine/usage${qs}`),
+      api('GET', `/activities${currentYearFrameId ? `?yearFrameId=${currentYearFrameId}` : ''}`),
+    ]);
+    const validUsages = (usageRows || []).filter((r) => Number(r.quantity) > 0 && Number(r.activity_id) > 0);
+    const actMap = new Map((activityRows || []).map((a) => [Number(a.id), a]));
+    const projectRows = [];
+    const seen = new Set();
+    const projectToUsages = new Map();
+    const projectCodeToActivityId = new Map();
+    validUsages.forEach((r) => {
+      const actId = Number(r.activity_id);
+      if (!projectToUsages.has(actId)) projectToUsages.set(actId, []);
+      projectToUsages.get(actId).push(r);
+      if (!seen.has(actId)) {
+        const act = actMap.get(actId) || {};
+        const code = String(act.project_code || `#${actId}`);
+        projectRows.push({
+          activity_id: actId,
+          project_code: code,
+          city: act.city || '',
+          activity_type: act.activity_type || '',
+        });
+        projectCodeToActivityId.set(code, actId);
+        seen.add(actId);
+      }
+    });
+    wineReturnDialogState = { usageRows: validUsages, projectRows, projectToUsages, projectCodeToActivityId };
+
     content.innerHTML = `
       <form id="wineUsageForm" style="display:flex;flex-direction:column;gap:12px">
-        <input type="hidden" id="wineUsageId" value="${editId || ''}">
+        <input type="hidden" id="wineUsageId" value="">
+        <div class="form-group">
+          <label class="form-label">项目编号 <span class="required">*</span></label>
+          <input type="text" class="form-control" id="wineReturnProject" list="wineReturnProjectList" placeholder="输入关键词并从下拉建议中选择项目编号" required>
+          <datalist id="wineReturnProjectList"></datalist>
+        </div>
         <div class="form-group">
           <label class="form-label">酒品 <span class="required">*</span></label>
           <select class="form-control" id="wineUseSel" required>
-            <option value="">请选择酒品</option>
-            ${wines.map(w => `<option value="${w.wine_code}" data-name="${w.wine_name}" data-spec="${w.spec}" data-qty="${w.quantity}">${w.wine_name} ${w.spec}（库存: ${w.quantity}瓶）</option>`).join('')}
+            <option value="">请先选择项目编号</option>
           </select>
         </div>
         <div class="form-grid" style="grid-template-columns:1fr 1fr">
           <div class="form-group">
-            <label class="form-label">使用数量（瓶）<span class="required">*</span></label>
+            <label class="form-label">归还数量（瓶）<span class="required">*</span></label>
             <input type="number" class="form-control" id="wineUseQty" min="1" value="1" required>
           </div>
           <div class="form-group">
-            <label class="form-label">使用日期 <span class="required">*</span></label>
-            <input type="date" class="form-control" id="wineUseDate" value="${new Date().toISOString().split('T')[0]}" required>
+            <label class="form-label">归还说明</label>
+            <input type="text" class="form-control" id="wineUseRemarks" placeholder="如：活动剩余未开封">
           </div>
-        </div>
-        <div class="form-grid" style="grid-template-columns:1fr 1fr">
-          <div class="form-group">
-            <label class="form-label">关联活动ID</label>
-            <input type="number" class="form-control" id="wineActId" placeholder="留空表示手动记录">
-          </div>
-          <div class="form-group">
-            <label class="form-label">客户名称</label>
-            <input type="text" class="form-control" id="wineClient" placeholder="客户/场所名称">
-          </div>
-        </div>
-        <div class="form-group">
-          <label class="form-label">备注</label>
-          <input type="text" class="form-control" id="wineUseRemarks" placeholder="备注...">
         </div>
         <div id="wineUseWarning" style="display:none;padding:10px;background:#FEF3C7;border-radius:var(--radius-sm);font-size:13px;color:#92400E">
-          库存不足，无法记录使用
+          请先选择项目和酒品
         </div>
       </form>
     `;
 
-    if (editId) {
-      const qs = currentYearFrameId ? `?year_frame_id=${currentYearFrameId}` : '';
-      const records = await api('GET', `/wine/usage${qs}`);
-      const target = records.find((r) => Number(r.id) === Number(editId));
-      if (!target) {
-        showToast('未找到要编辑的使用记录', 'error');
-        return;
+    const titleEl = document.querySelector('#modalWineUsage .modal-title');
+    if (titleEl) titleEl.innerHTML = '<i data-lucide="rotate-ccw" style="width:14px;height:14px;vertical-align:-2px;margin-right:4px"></i>酒品归还';
+
+    const projectInput = document.getElementById('wineReturnProject');
+    const usageSel = document.getElementById('wineUseSel');
+    const qtyInput = document.getElementById('wineUseQty');
+    if (projectInput) projectInput.oninput = () => renderWineReturnUsageOptions();
+    if (usageSel) usageSel.onchange = () => updateWineReturnLimit();
+    if (qtyInput) qtyInput.oninput = () => updateWineReturnLimit();
+
+    renderWineReturnProjectOptions();
+    if (prefillUsageId) {
+      const target = validUsages.find((r) => Number(r.id) === Number(prefillUsageId));
+      if (target && projectInput && usageSel) {
+        const p = projectRows.find((x) => Number(x.activity_id) === Number(target.activity_id));
+        projectInput.value = p ? p.project_code : '';
+        renderWineReturnUsageOptions();
+        usageSel.value = String(target.id);
+        updateWineReturnLimit();
       }
-      const sel = document.getElementById('wineUseSel');
-      if (sel) sel.value = target.wine_code || '';
-      document.getElementById('wineUseQty').value = target.quantity || 1;
-      document.getElementById('wineUseDate').value = target.usage_date ? new Date(target.usage_date).toISOString().split('T')[0] : new Date().toISOString().split('T')[0];
-      document.getElementById('wineActId').value = target.activity_id || '';
-      document.getElementById('wineClient').value = target.client_name || '';
-      document.getElementById('wineUseRemarks').value = target.remarks || '';
-      const modalTitle = document.querySelector('#modalWineUsage .modal-title');
-      if (modalTitle) modalTitle.textContent = '修改酒品使用';
-    } else {
-      const modalTitle = document.querySelector('#modalWineUsage .modal-title');
-      if (modalTitle) modalTitle.textContent = '记录酒品使用';
     }
+    renderLucideIcons();
   } catch (err) {
     content.innerHTML = `<div style="color:var(--danger)">加载失败: ${err.message}</div>`;
   }
 }
 
 async function confirmWineUsage() {
-  const usageId = document.getElementById('wineUsageId')?.value || '';
-  const sel = document.getElementById('wineUseSel');
-  const opt = sel.options[sel.selectedIndex];
-  if (!sel.value) { showToast('请选择酒品', 'error'); return; }
-  
-  const body = {
-    year_frame_id: currentYearFrameId || 1,
-    wine_code: sel.value,
-    wine_name: opt.dataset.name,
-    spec: opt.dataset.spec,
-    quantity: parseInt(document.getElementById('wineUseQty').value) || 0,
-    usage_date: document.getElementById('wineUseDate').value,
-    activity_id: parseInt(document.getElementById('wineActId').value) || null,
-    client_name: document.getElementById('wineClient').value,
-    remarks: document.getElementById('wineUseRemarks').value,
-  };
-  
-  if (!body.usage_date || !body.quantity) { showToast('请填写必填项', 'error'); return; }
-  
+  const usageId = parseInt(document.getElementById('wineUseSel')?.value || '', 10);
+  const qty = parseInt(document.getElementById('wineUseQty')?.value || '', 10) || 0;
+  const max = parseInt(document.getElementById('wineUseSel')?.selectedOptions?.[0]?.dataset?.max || '0', 10) || 0;
+  const remarks = document.getElementById('wineUseRemarks')?.value || '';
+  if (!usageId) { showToast('请选择项目下的酒品', 'error'); return; }
+  if (!qty || qty < 1 || qty > max) { showToast(`归还数量需在 1-${max} 之间`, 'error'); return; }
+
   try {
-    if (usageId) await api('PUT', `/wine/usage/${usageId}`, body);
-    else await api('POST', '/wine/usage', body);
+    await api('POST', `/wine/usage/${usageId}/return`, {
+      quantity: qty,
+      remarks,
+      operator: getCurrentUserName(),
+    });
     closeModal();
-    showToast(usageId ? '使用记录已更新' : '使用记录已保存', 'success');
-    renderWine();
+    showToast('酒品归还成功', 'success');
+    await loadWineInventory();
+    await loadWineRecords('returns');
   } catch (err) {
-    showToast(err.message || '记录失败', 'error');
+    showToast(err.message || '归还失败', 'error');
+  }
+}
+
+async function deleteWineStockIn(id) {
+  if (!confirm('确定删除这条入库记录？删除后会回滚库存。')) return;
+  try {
+    try {
+      await api('DELETE', `/wine/stock-in/${id}`);
+    } catch (err) {
+      if (!String(err?.message || '').includes('(404)')) throw err;
+      // 兼容某些环境不支持 DELETE 路由
+      await api('POST', `/wine/stock-in/${id}/delete`, {});
+    }
+    showToast('入库记录已删除并回滚库存', 'success');
+    await loadWineInventory();
+    await loadWineRecords('stockIn');
+  } catch (err) {
+    showToast(err.message || '删除入库记录失败', 'error');
+  }
+}
+
+async function deleteWineReturnLog(id) {
+  if (!confirm('确定删除这条归还记录？删除后会回滚库存并恢复用酒数量。')) return;
+  try {
+    try {
+      await api('DELETE', `/wine/returns/${id}`);
+    } catch (err) {
+      if (!String(err?.message || '').includes('(404)')) throw err;
+      await api('POST', `/wine/returns/${id}/delete`, {});
+    }
+    showToast('归还记录已删除并完成回滚', 'success');
+    await loadWineInventory();
+    await loadWineRecords('returns');
+  } catch (err) {
+    showToast(err.message || '删除归还记录失败', 'error');
   }
 }
 
@@ -5117,6 +6823,7 @@ async function deleteWineUsage(id) {
    品牌管理
    ============================================= */
 let _brandCache = [];
+const FIXED_BRAND_CODES = ['RC', 'PHD', 'CLUB', 'X.O'];
 
 // 初始化时加载品牌列表
 async function initBrands() {
@@ -5137,18 +6844,27 @@ async function initBrands() {
 }
 
 function renderBrandOptions() {
-  const selects = [
-    document.getElementById('actBrandField'),
+  const activityBrandSelect = document.getElementById('actBrandField');
+  if (activityBrandSelect) {
+    const currentVal = activityBrandSelect.value || 'PHD';
+    activityBrandSelect.innerHTML = FIXED_BRAND_CODES
+      .map((b) => `<option value="${b}">${b}</option>`)
+      .join('');
+    activityBrandSelect.value = FIXED_BRAND_CODES.includes(currentVal) ? currentVal : 'PHD';
+  }
+
+  const otherSelects = [
     document.getElementById('actBrand'),
     document.getElementById('dashFilterBrand'),
+    document.getElementById('reimbBrand'),
   ];
-  selects.forEach(sel => {
+  otherSelects.forEach(sel => {
     if (!sel) return;
     const currentVal = sel.value;
     const emptyLabel = sel.id === 'dashFilterBrand' ? '品牌' : '全部品牌';
     sel.innerHTML = `<option value="">${emptyLabel}</option>` +
-      _brandCache.map(b => `<option value="${b.brand_code}">${b.brand_name}</option>`).join('');
-    if (currentVal && _brandCache.find(b => b.brand_code === currentVal)) {
+      FIXED_BRAND_CODES.map((code) => `<option value="${code}">${code}</option>`).join('');
+    if (currentVal && FIXED_BRAND_CODES.includes(currentVal)) {
       sel.value = currentVal;
     }
   });

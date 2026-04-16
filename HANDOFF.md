@@ -7,81 +7,91 @@
 
 ## 日期
 
-- **交接日**：2026-04-14（周二）
-- **下一工作日**：2026-04-15（周三）
+- **交接日**：2026-04-16（周四）
+- **下一工作日**：2026-04-17（周五）
 
 ---
 
 ## 当天完成
 
-- 完成“场次信息 Excel 导入（先预览后落库）”脚本化：
-  - `src/scripts/importActivitiesFromExcel.js`
-  - 支持 preview/apply、冲突清单、事务写入、备份与结果报告。
-- 修复成本导入差异：
-  - 补映射 `快递（闪送） -> express`、`物流 -> logistics`
-  - 修复重复 `project_code` 更新错位问题（按冲突行顺序匹配 DB 行更新）
-  - 25年度成本总额校验对齐：`424668.23`。
-- 活动模块 UI/字段升级：
-  - 场次列表列顺序调整为：日期、项目编号、时段、品牌、区域、归属、城市、客户、类型、执行、操作
-  - 新增“归属”字段（新建/编辑/列表显示）
-  - 新增“归属”筛选与“重置筛选”按钮。
-- lookup 主数据增强：
-  - 新增 `activity_belonging` 分类与种子值（RC-Off/RC-On/RC-Training/RM-CLUB婚宴/RM-X.O婚宴/区域）
-  - 活动表单“归属”接入 lookup 可维护编辑。
-- 暗色样式修复：
-  - 修复活动日期控件图标在暗色下不可见（WebKit/Firefox 兼容）。
-- 登录/权限体系落地（当前 main 已具备）：
-  - 后端：`express-session`、`/api/auth/*`、`/api/users/*`、鉴权中间件、admin 写权限控制。
-  - 前端：`login/register` 页面、主界面登录态校验、退出登录、系统侧边栏“用户管理”入口。
-  - 安全约束：最后一个 admin 不可降级/停用，当前管理员不可自锁。
+- 报销模块升级：
+  - 新增品牌字段，品牌下拉统一收敛为 `RC`、`PHD`、`CLUB`、`X.O`。
+  - 关联活动改为可选，并支持项目编号关键词搜索联想。
+  - 发票明细新增“发票内容”，列表增加“备注”，隐藏 `ID`，并优化日期/品牌/金额列排版。
+  - 前端文案统一把“归集”等表达调整为“计入活动成本”。
+- 活动成本与数据看板口径调整：
+  - 数据看板仅保留报价相关数据：活动总场次、总报价、仓储报价、活动报价、道具维修报价。
+  - 各类成本数据集中到“活动成本”页，并补入物料采购统计。
+  - 数据看板筛选由“年份 + 月份”升级为“日期区间”。
+- 数据看板日期筛选交互优化：
+  - 由两个独立日期框改为单字段入口。
+  - 点击后弹出左右双日历，左侧选择开始日期，右侧选择结束日期，并支持清空、确认、点击空白关闭。
+- 新建场次与详情体验优化：
+  - 选择年框编号后自动识别并锁定品牌。
+  - 客户名称输入提示调整为“酒吧/经销商等”。
+  - 活动详情页增加用酒明细显示。
+- 酒品管理模块增强：
+  - 允许库存为负数，并对负库存/低库存做颜色提醒。
+  - 酒品管理页统计区调整为看板式卡片展示。
+  - 新增“酒品归还”流程、归还记录、删除入库记录、删除归还记录。
+  - 库存流水中的关联活动改为显示项目编号而非 `ID`。
+  - 侧边栏“酒品管理”徽标改为状态文本：有库存 / 库存不足 / 负库存。
+- 登录与权限修复：
+  - 登录页支持“记住用户名”。
+  - 登录页主题跟随系统亮暗色或用户上次设置。
+  - 权限中间件改为每次请求实时读取数据库角色，避免管理员权限变更后会话未同步。
+- 日期处理问题修复：
+  - 修复编辑记录时日期自动减一天的问题，统一使用本地日期格式写入表单。
 
 ---
 
 ## 当天未完成 / 进行中
 
+- 场次报价明细与按区域 Excel 报价模板导出尚未开始开发。
 - “修改密码（本人）/管理员重置密码”尚未实现。
-- 生产服务器部署（Nginx + HTTPS + PM2）仅给出步骤，未实际执行上线。
+- 生产服务器部署（Nginx + HTTPS + PM2）尚未实际执行上线。
 
 ---
 
 ## 重要结论与备忘
 
-- 登录失败优先排查端口占用：`EADDRINUSE` 时新代码不会生效，需先杀旧进程再 `npm run start`。
-- 当前环境已有管理员：
-  - `admin`（默认）
-  - `Synrox`（来自 `.env` 初始化）
-- 公开注册默认 `operator`，提权通过“系统 > 用户管理”完成。
-- `.env` 需配置：`SESSION_SECRET`、`ADMIN_USERNAME`、`ADMIN_PASSWORD`。
+- 登录失败或新代码未生效时，优先检查端口占用；出现 `EADDRINUSE` 需先结束旧进程再启动。
+- 报销、仓储、物流、物料采购、道具维修都已引入“是否计入活动成本”的统一口径，统计时要避免重复累计。
+- 编辑表单中的日期字段不能继续用 UTC 截断写法，否则会再次出现“日期减一天”的问题。
+- 酒品管理当前允许负库存，库存值以流水重算结果为准；删除入库/归还记录时会联动回滚库存。
+- 品牌选项当前按业务固定为 `RC`、`PHD`、`CLUB`、`X.O`，新增表单或筛选时应保持一致。
 
 ---
 
 ## 阻塞与依赖
 
-- 无阻塞（本地 MySQL 正常，登录链路可跑通）。
+- 无硬阻塞；本地服务可运行，当前 `npm run start` 正常。
 
 ---
 
 ## 涉及文件与提交
 
 - 文件/目录（本次关键）：
-  - `src/server.js`
-  - `src/routes/auth.js`
-  - `src/routes/user.js`
-  - `src/middleware/auth.js`
-  - `src/scripts/addUsersAuthTable.js`
-  - `public/login.html`
-  - `public/login.js`
-  - `public/register.html`
-  - `public/register.js`
   - `public/app.js`
   - `public/index.html`
-  - `src/routes/activity.js`
-  - `src/scripts/importActivitiesFromExcel.js`
-  - `src/scripts/addLookupOptionsTable.js`
+  - `public/style.css`
+  - `public/login.html`
+  - `public/login.js`
+  - `src/middleware/auth.js`
+  - `src/routes/dashboard.js`
+  - `src/routes/reimbursement.js`
+  - `src/routes/wine.js`
+  - `src/routes/logistics.js`
+  - `src/routes/warehouse.js`
+  - `src/routes/materialPurchase.js`
+  - `src/routes/propRepair.js`
+  - `src/routes/cost.js`
+  - `src/routes/yearFrame.js`
+  - `init.sql`
   - `package.json`
-  - `package-lock.json`
-  - `.env.example`
-  - `README.md`
+  - `src/scripts/addCostPoolMergeColumns.js`
+  - `src/scripts/addReimbursementBrandColumn.js`
+  - `src/scripts/addReimbursementV2Columns.js`
   - `HANDOFF.md`
 - Git：`待本次提交`
 
@@ -89,9 +99,9 @@
 
 ## 第二天计划
 
-1. 增加“修改密码（本人）”与“管理员重置密码”。
-2. 登录态与权限做一轮端到端回归（admin/operator 注册/提权/降级/停用边界）。
-3. 准备服务器部署（Ubuntu + Nginx + PM2 + HTTPS）并执行首发。
+1. 继续做“场次报价明细 + 区域版 Excel 报价模板导出”。
+2. 给数据看板日期区间补快捷选项，如本月、上月、本季度。
+3. 增加“修改密码（本人）”与“管理员重置密码”。
 
 ---
 
@@ -99,7 +109,7 @@
 
 <!-- 例如：「正在做仓储模块 region 字段与前端联动」 -->
 
-> 登录/注册/用户管理与 Excel 导入修复已完成，下一步优先做密码管理与生产部署。
+> 今天已完成报销、酒品管理、登录页、数据看板日期区间和活动成本口径的一轮集中升级，下一步优先推进报价模板导出与密码管理。
 
 ---
 

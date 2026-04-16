@@ -43,6 +43,9 @@ CREATE TABLE IF NOT EXISTS activities (
 CREATE TABLE IF NOT EXISTS warehouse (
     id INT PRIMARY KEY AUTO_INCREMENT,
     year_frame_id INT NOT NULL,
+    activity_id INT NULL COMMENT '关联活动ID',
+    merged_into_activity TINYINT(1) NOT NULL DEFAULT 0 COMMENT '是否已计入活动成本',
+    allocation_note VARCHAR(255) NULL COMMENT '计入说明',
     month VARCHAR(20),
     region VARCHAR(32),
     brand VARCHAR(20) NOT NULL DEFAULT 'PHD',
@@ -63,8 +66,16 @@ CREATE TABLE IF NOT EXISTS warehouse (
 CREATE TABLE IF NOT EXISTS logistics (
     id INT PRIMARY KEY AUTO_INCREMENT,
     year_frame_id INT NOT NULL,
+    activity_id INT NULL COMMENT '关联活动ID',
+    merged_into_activity TINYINT(1) NOT NULL DEFAULT 0 COMMENT '是否已计入活动成本',
+    allocation_note VARCHAR(255) NULL COMMENT '计入说明',
     logistics_company VARCHAR(50),
+    brand VARCHAR(20) NOT NULL DEFAULT 'PHD',
+    express_company VARCHAR(50),
     tracking_number VARCHAR(100),
+    settlement_month VARCHAR(16),
+    special_car TINYINT(1) NOT NULL DEFAULT 0,
+    monthly_settlement TINYINT(1) NOT NULL DEFAULT 0,
     origin_city VARCHAR(50),
     destination_city VARCHAR(50),
     shipping_date DATE,
@@ -76,10 +87,11 @@ CREATE TABLE IF NOT EXISTS logistics (
     FOREIGN KEY (year_frame_id) REFERENCES year_frames(id)
 );
 
--- 5. 报销记录表
+-- 5. 报销记录表（含 legacy 分项字段 + V2：场次、费用明细 JSON、计入标记、发票）
 CREATE TABLE IF NOT EXISTS reimbursements (
     id INT PRIMARY KEY AUTO_INCREMENT,
     year_frame_id INT NOT NULL,
+    activity_id INT NULL COMMENT '关联活动ID',
     reimbursement_type VARCHAR(50),
     city VARCHAR(50),
     amount DECIMAL(10,2),
@@ -89,6 +101,10 @@ CREATE TABLE IF NOT EXISTS reimbursements (
     printing DECIMAL(10,2),
     express DECIMAL(10,2),
     other DECIMAL(10,2),
+    cost_details LONGTEXT NULL COMMENT '与场次成本同结构的JSON',
+    merged_into_activity TINYINT(1) NOT NULL DEFAULT 0 COMMENT '是否已计入活动成本（场次）',
+    has_invoice TINYINT(1) NOT NULL DEFAULT 0 COMMENT '是否有发票',
+    invoices LONGTEXT NULL COMMENT '发票JSON数组',
     remarks TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -122,6 +138,9 @@ CREATE TABLE IF NOT EXISTS users (
 CREATE TABLE IF NOT EXISTS prop_repairs (
     id INT PRIMARY KEY AUTO_INCREMENT,
     year_frame_id INT NOT NULL,
+    activity_id INT NULL COMMENT '关联活动ID',
+    merged_into_activity TINYINT(1) NOT NULL DEFAULT 0 COMMENT '是否已计入活动成本',
+    allocation_note VARCHAR(255) NULL COMMENT '计入说明',
     brand_id INT NOT NULL,
     repair_date DATE NOT NULL,
     region VARCHAR(32) NOT NULL,
@@ -134,6 +153,24 @@ CREATE TABLE IF NOT EXISTS prop_repairs (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     FOREIGN KEY (year_frame_id) REFERENCES year_frames(id),
     FOREIGN KEY (brand_id) REFERENCES brand_inventory(id)
+);
+
+-- 9. 物料采购表
+CREATE TABLE IF NOT EXISTS material_purchases (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    year_frame_id INT NOT NULL COMMENT '所属年框',
+    activity_id INT NULL COMMENT '关联活动ID',
+    merged_into_activity TINYINT(1) NOT NULL DEFAULT 0 COMMENT '是否已计入活动成本',
+    allocation_note VARCHAR(255) NULL COMMENT '计入说明',
+    brand_id INT NOT NULL COMMENT '品牌ID',
+    purchase_date DATE NOT NULL COMMENT '采购/报销日期',
+    items JSON NOT NULL COMMENT '费用明细 [{name, amount}, ...]',
+    total_amount DECIMAL(10,2) NOT NULL COMMENT '合计金额',
+    remarks TEXT NULL COMMENT '备注',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    CONSTRAINT fk_mp_year_frame FOREIGN KEY (year_frame_id) REFERENCES year_frames(id),
+    CONSTRAINT fk_mp_brand FOREIGN KEY (brand_id) REFERENCES brand_inventory(id)
 );
 
 -- 插入初始年框数据

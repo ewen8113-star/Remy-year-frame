@@ -51,7 +51,8 @@ router.get('/:id', async (req, res) => {
     // 统计报销金额
     const [reimbStats] = await db.query(`
       SELECT SUM(amount) as total_cost
-      FROM reimbursements WHERE year_frame_id = ?
+      FROM reimbursements
+      WHERE year_frame_id = ? AND COALESCE(merged_into_activity, 0) = 0
     `, [id]);
     
     res.json({

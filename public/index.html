@@ -72,6 +72,11 @@
         <span class="nav-text">道具维修</span>
         <span class="nav-badge" id="badge-prop-repair">—</span>
       </a>
+      <a class="nav-item" data-page="reimbursement" onclick="navigate('reimbursement')">
+        <span class="nav-icon"><i data-lucide="receipt" style="width:16px;height:16px"></i></span>
+        <span class="nav-text">报销登记</span>
+        <span class="nav-badge" id="badge-reimbursement">—</span>
+      </a>
 
       <div class="nav-section-label">仓库管理</div>
       <a class="nav-item" data-page="wine" onclick="navigate('wine')">
@@ -144,7 +149,7 @@
             <label class="form-label">年框编号 <span class="required">*</span>
               <button type="button" class="btn btn-xs btn-ghost" onclick="showLookupEditModal('activity_year_frame_code')" title="编辑年框编号选项" style="margin-left:6px;font-size:11px">编辑</button>
             </label>
-            <select class="form-control" id="actYearFrameCode" onchange="genProjectCode()"></select>
+            <select class="form-control" id="actYearFrameCode" onchange="syncActivityBrandFromYearFrameCode();genProjectCode()"></select>
           </div>
           <div class="form-group">
             <label class="form-label">活动类型 <span class="required">*</span>
@@ -157,11 +162,8 @@
             <input type="text" class="form-control" id="actCity" placeholder="如：上海" oninput="genProjectCode()" required>
           </div>
           <div class="form-group">
-            <label class="form-label">
-              品牌
-              <button type="button" class="btn btn-xs btn-ghost" onclick="showBrandModal()" title="编辑品牌" style="margin-left:6px;font-size:11px"><i data-lucide="pencil" style="width:12px;height:12px;vertical-align:-2px"></i> 编辑</button>
-            </label>
-            <select class="form-control" id="actBrandField" onchange="genProjectCode()"></select>
+            <label class="form-label">品牌（根据年框编号自动识别）</label>
+            <select class="form-control" id="actBrandField" disabled title="品牌由年框编号自动识别，无需手动选择"></select>
           </div>
           <div class="form-group">
             <label class="form-label">活动日期</label>
@@ -176,8 +178,7 @@
           </div>
           <div class="form-group">
             <label class="form-label">客户名称</label>
-            <input type="text" class="form-control" id="actClient" placeholder="如：XX 酒吧、经销商、酒店宴会厅等" title="酒吧、经销商、酒店/场地合作方">
-            <span class="form-hint">填写酒吧、经销商、酒店或宴会场地等合作方名称，便于执行与渠道识别。</span>
+            <input type="text" class="form-control" id="actClient" placeholder="酒吧/经销商等" title="酒吧/经销商等">
           </div>
           <div class="form-group">
             <label class="form-label">区域
@@ -314,6 +315,18 @@
     </div>
   </div>
 
+  <div class="modal" id="modalWineUsage" style="max-width:560px">
+    <div class="modal-header">
+      <span class="modal-title"><i data-lucide="rotate-ccw" style="width:14px;height:14px;vertical-align:-2px;margin-right:4px"></i>酒品归还</span>
+      <button type="button" class="modal-close" onclick="closeModal()">✕</button>
+    </div>
+    <div class="modal-body" id="wineUsageContent"></div>
+    <div class="modal-footer">
+      <button type="button" class="btn btn-secondary" onclick="closeModal()">取消</button>
+      <button type="button" class="btn btn-primary" onclick="confirmWineUsage()">确认归还</button>
+    </div>
+  </div>
+
   <div class="modal" id="modalBrand" style="max-width:500px">
     <div class="modal-header">
       <span class="modal-title"><i data-lucide="pencil" style="width:14px;height:14px;vertical-align:-2px;margin-right:4px"></i>编辑品牌</span>
@@ -340,7 +353,25 @@
         <input type="hidden" id="logId">
         <div class="form-group">
           <label class="form-label">物流公司</label>
-          <select class="form-control" id="logCompany">
+          <div style="display:flex;align-items:center;gap:12px">
+            <select class="form-control" id="logCompany">
+            <option value="东区仓库（叶老板）">东区仓库（叶老板）</option>
+            <option value="南区仓库（天空）">南区仓库（天空）</option>
+            <option value="北区仓库（叶老板）">北区仓库（叶老板）</option>
+            </select>
+            <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text-secondary);cursor:pointer;white-space:nowrap">
+              <input type="checkbox" id="logSpecialCar" onchange="toggleLogSpecialCar()">
+              <span>专车（包车）</span>
+            </label>
+            <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text-secondary);cursor:pointer;white-space:nowrap">
+              <input type="checkbox" id="logMonthlySettlement" onchange="toggleLogSpecialCar()">
+              <span>月结</span>
+            </label>
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">快递公司</label>
+          <select class="form-control" id="logExpress">
             <option value="顺丰">顺丰</option>
             <option value="京东">京东</option>
             <option value="中通">中通</option>
@@ -351,6 +382,23 @@
         <div class="form-group">
           <label class="form-label">单号</label>
           <input type="text" class="form-control" id="logTrack" placeholder="快递单号">
+        </div>
+        <div class="form-group">
+          <label class="form-label">月结年份</label>
+          <select class="form-control" id="logSettlementYear"></select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">月结月份</label>
+          <select class="form-control" id="logSettlementMonth"></select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">品牌</label>
+          <select class="form-control" id="logBrand">
+            <option value="PHD">PHD</option>
+            <option value="X.O">X.O</option>
+            <option value="CLUB">CLUB</option>
+            <option value="REMY">REMY</option>
+          </select>
         </div>
         <div class="form-group">
           <label class="form-label">发货城市</label>
@@ -374,6 +422,13 @@
             <input type="text" class="form-control" id="logProject" list="logProjectList" autocomplete="off" placeholder="输入搜索并从下拉选择（仅允许活动项目编号）">
           </div>
           <datalist id="logProjectList"></datalist>
+        </div>
+        <div class="form-group form-full">
+          <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text-secondary);cursor:pointer">
+            <input type="checkbox" id="logMergedIntoActivity">
+            <span>计入活动成本（勾选时需选择关联项目编号）</span>
+          </label>
+          <input type="text" class="form-control" id="logAllocationNote" placeholder="计入说明（选填）" style="margin-top:8px">
         </div>
         <div class="form-group form-full">
           <label class="form-label">备注</label>
@@ -441,6 +496,18 @@
           <label class="form-label">备注</label>
           <input type="text" class="form-control" id="warRemarks" placeholder="备注说明">
         </div>
+        <div class="form-group form-full">
+          <label class="form-label">关联项目编号（可选）</label>
+          <input type="text" class="form-control" id="warProject" list="warProjectList" autocomplete="off" placeholder="输入搜索并从下拉选择（仅允许活动项目编号）">
+          <datalist id="warProjectList"></datalist>
+        </div>
+        <div class="form-group form-full">
+          <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text-secondary);cursor:pointer">
+            <input type="checkbox" id="warMergedIntoActivity">
+            <span>计入活动成本（勾选时需选择关联项目编号）</span>
+          </label>
+          <input type="text" class="form-control" id="warAllocationNote" placeholder="计入说明（选填）" style="margin-top:8px">
+        </div>
       </div>
     </div>
     <div class="modal-footer">
@@ -498,6 +565,20 @@
     </div>
   </div>
 
+  <div class="modal wide" id="modalReimbursement" style="max-width:720px" onclick="event.stopPropagation()">
+    <div class="modal-header">
+      <span class="modal-title" id="modalReimbursementTitle">报销登记</span>
+      <button type="button" class="modal-close" onclick="closeModal()">✕</button>
+    </div>
+    <div class="modal-body" id="modalReimbursementBody" style="max-height:76vh;overflow-y:auto"></div>
+    <div class="modal-footer">
+      <button type="button" class="btn btn-secondary" onclick="closeModal()">取消</button>
+      <button type="button" class="btn btn-secondary" onclick="reimbursementPrintCurrentForm()">打印预览</button>
+      <button type="button" class="btn btn-secondary" onclick="reimbursementDownloadCsvFromForm()">下载 CSV</button>
+      <button type="button" class="btn btn-primary" onclick="saveReimbursementForm()">保存</button>
+    </div>
+  </div>
+
   <div class="modal" id="modalAdminResetPassword" style="max-width:440px" onclick="event.stopPropagation()">
     <div class="modal-header">
       <span class="modal-title">重置用户密码</span>
@@ -524,6 +605,6 @@
   <!-- 全局 Toast -->
   <div class="toast-container" id="toastContainer"></div>
 
-  <script src="app.js?v=20260415prop-repair"></script>
+  <script src="app.js?v=20260416cost-dual-track-merge-visual"></script>
 </body>
 </html>

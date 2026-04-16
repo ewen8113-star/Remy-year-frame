@@ -56,7 +56,7 @@ router.get('/summary', async (req, res) => {
              bi.brand_name,
              bi.brand_code,
              DATE_FORMAT(pr.repair_date, '%Y-%m') AS ym,
-             SUM(pr.total_amount) AS subtotal
+             SUM(CASE WHEN COALESCE(pr.merged_into_activity, 0) = 0 THEN pr.total_amount ELSE 0 END) AS subtotal
       FROM prop_repairs pr
       LEFT JOIN brand_inventory bi ON pr.brand_id = bi.id
       WHERE 1 = 1
@@ -71,7 +71,11 @@ router.get('/summary', async (req, res) => {
       "ORDER BY DATE_FORMAT(pr.repair_date, '%Y-%m') DESC, pr.brand_id ASC";
     const [byMonth] = await db.query(sql, params);
 
-    let totalSql = 'SELECT COALESCE(SUM(total_amount), 0) AS total FROM prop_repairs pr WHERE 1=1';
+    let totalSql = `SELECT
+      COALESCE(SUM(total_amount), 0) AS total,
+      COALESCE(SUM(CASE WHEN COALESCE(merged_into_activity, 0) = 0 THEN total_amount ELSE 0 END), 0) AS pooled_total,
+      COALESCE(SUM(CASE WHEN COALESCE(merged_into_activity, 0) = 1 THEN total_amount ELSE 0 END), 0) AS merged_total
+      FROM prop_repairs pr WHERE 1=1`;
     const totalParams = [];
     if (yearFrameId) {
       totalSql += ' AND pr.year_frame_id = ?';
@@ -81,6 +85,8 @@ router.get('/summary', async (req, res) => {
 
     res.json({
       grandTotal: Math.round((parseFloat(tot.total) || 0) * 100) / 100,
+      pooledTotal: Math.round((parseFloat(tot.pooled_total) || 0) * 100) / 100,
+      mergedTotal: Math.round((parseFloat(tot.merged_total) || 0) * 100) / 100,
       byMonth: byMonth || [],
     });
   } catch (e) {
@@ -143,7 +149,9 @@ router.get('/:id', async (req, res) => {
 
 router.post('/', async (req, res) => {
   try {
-    const { year_frame_id, brand_id, repair_date, region, items, quoted_price, remarks, no_cost } = req.body || {};
+    const { year_frame_id, activity_id, merged_into_activity, allocation_note, brand_id, repair_date, region, items, quoted_price, remarks, no_cost } = req.body || {};
+    const activityId = activity_id != null && String(activity_id).trim() !== '' ? parseInt(activity_id, 10) : null;
+    const mergedFlag = merged_into_activity === true || merged_into_activity === 1 || String(merged_into_activity) === '1' ? 1 : 0;
     const yf = parseInt(year_frame_id, 10);
     const bid = parseInt(brand_id, 10);
     const regionNorm = canonicalRegion(region);
@@ -158,9 +166,9 @@ router.post('/', async (req, res) => {
     if (!isNoCost && total <= 0) return res.status(400).json({ error: '合计金额须大于 0' });
 
     const [result] = await db.query(
-      `INSERT INTO prop_repairs (year_frame_id, brand_id, repair_date, region, items, quoted_price, total_amount, no_cost, remarks)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [yf, bid, repair_date, regionNorm, JSON.stringify(parsed), quotedPrice, total, isNoCost ? 1 : 0, remarks || null]
+      `INSERT INTO prop_repairs (year_frame_id, activity_id, merged_into_activity, allocation_note, brand_id, repair_date, region, items, quoted_price, total_amount, no_cost, remarks)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [yf, Number.isFinite(activityId) ? activityId : null, mergedFlag, allocation_note || null, bid, repair_date, regionNorm, JSON.stringify(parsed), quotedPrice, total, isNoCost ? 1 : 0, remarks || null]
     );
     const [rows] = await db.query(`${LIST_SQL} AND pr.id = ?`, [result.insertId]);
     const row = rows[0];
@@ -175,7 +183,9 @@ router.put('/:id', async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
     if (!id) return res.status(400).json({ error: '无效 ID' });
-    const { brand_id, repair_date, region, items, quoted_price, remarks, no_cost } = req.body || {};
+    const { activity_id, merged_into_activity, allocation_note, brand_id, repair_date, region, items, quoted_price, remarks, no_cost } = req.body || {};
+    const activityId = activity_id != null && String(activity_id).trim() !== '' ? parseInt(activity_id, 10) : null;
+    const mergedFlag = merged_into_activity === true || merged_into_activity === 1 || String(merged_into_activity) === '1' ? 1 : 0;
     const bid = parseInt(brand_id, 10);
     const regionNorm = canonicalRegion(region);
     const isNoCost = no_cost === true || no_cost === 1 || String(no_cost) === '1';
@@ -190,9 +200,9 @@ router.put('/:id', async (req, res) => {
 
     const [ret] = await db.query(
       `UPDATE prop_repairs
-       SET brand_id = ?, repair_date = ?, region = ?, items = ?, quoted_price = ?, total_amount = ?, no_cost = ?, remarks = ?
+       SET activity_id = ?, merged_into_activity = ?, allocation_note = ?, brand_id = ?, repair_date = ?, region = ?, items = ?, quoted_price = ?, total_amount = ?, no_cost = ?, remarks = ?
        WHERE id = ?`,
-      [bid, repair_date, regionNorm, JSON.stringify(parsed), quotedPrice, total, isNoCost ? 1 : 0, remarks || null, id]
+      [Number.isFinite(activityId) ? activityId : null, mergedFlag, allocation_note || null, bid, repair_date, regionNorm, JSON.stringify(parsed), quotedPrice, total, isNoCost ? 1 : 0, remarks || null, id]
     );
     if (!ret.affectedRows) return res.status(404).json({ error: '记录不存在' });
     const [rows] = await db.query(`${LIST_SQL} AND pr.id = ?`, [id]);
