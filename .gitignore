@@ -4,4 +4,5 @@ node_modules/
 version-history/
 .workbuddy/
 imports/
+public/uploads/
 ~$*.xlsx

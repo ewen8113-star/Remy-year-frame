@@ -40,6 +40,16 @@ let logisticsState = { data: [], selectedIds: new Set() };
 let warehouseState = { data: [], selectedIds: new Set() };
 let logisticsMergeFilter = 'all';
 let warehouseMergeFilter = 'all';
+/** 物资库存页：items | outbound | returns | orders */
+let inventoryPageState = {
+  tab: 'items',
+  warehouseId: null,
+  outboundLines: [],
+  returnDraft: [],
+  returnOrderId: null,
+  returnDetail: null,
+  linkMode: 'activity',
+};
 let charts = {};
 let costPendingYMFilter = localStorage.getItem('remy_costPendingYMFilter') || localStorage.getItem('remy_costNoCostYMFilter') || 'all';
 let costWithCostYMFilter = localStorage.getItem('remy_costWithCostYMFilter') || 'all';
@@ -61,6 +71,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   loadAppVersion();
   await loadYearFrames();
   await initBrands();
+  initSidebarNavGroups();
   navigate(currentPage);
   checkConnection();
   renderLucideIcons();
@@ -172,6 +183,19 @@ function applyRoleUiGuards() {
       '[onclick*="save"]',
       '[onclick*="confirmAddLookupOption"]',
       '[onclick*="toggleBrandActive"]',
+      '[onclick*="invSaveWarehouse"]',
+      '[onclick*="invDeleteWarehouse"]',
+      '[onclick*="invSaveItem"]',
+      '[onclick*="invDeleteItem"]',
+      '[onclick*="invSubmitOutbound"]',
+      '[onclick*="invSubmitReturn"]',
+      '[onclick*="invAddOutboundRow"]',
+      '[onclick*="invApplyProjectHint"]',
+      '[onclick*="invOpenReturn"]',
+      '[onclick*="invDownloadPdf"]',
+      '[onclick*="invPickUpload"]',
+      '[onclick*="invPromptNewWarehouse"]',
+      '[onclick*="invPromptNewItem"]',
     ];
     document.querySelectorAll(selectors.join(',')).forEach((el) => {
       el.style.display = 'none';
@@ -318,6 +342,7 @@ function navigate(page) {
     logistics: '物流成本',
     warehouse: '仓储成本',
     wine: '酒品管理',
+    inventory: '物资库存',
     material: '物料采购',
     'prop-repair': '道具维修',
     reimbursement: '报销登记',
@@ -341,6 +366,7 @@ function navigate(page) {
     logistics: renderLogistics,
     warehouse: renderWarehouse,
     wine: renderWine,
+    inventory: renderInventory,
     material: renderMaterialPurchases,
     'prop-repair': renderPropRepairs,
     reimbursement: renderReimbursements,
@@ -353,6 +379,64 @@ function navigate(page) {
       applyRoleUiGuards();
     });
   }
+  expandSidebarGroupForPage(page);
+}
+
+/** 侧边栏：当前页所在分组自动展开 */
+function expandSidebarGroupForPage(page) {
+  const map = {
+    dashboard: 'rec',
+    activities: 'rec',
+    calendar: 'rec',
+    cost: 'cost',
+    warehouse: 'cost',
+    logistics: 'cost',
+    material: 'cost',
+    'prop-repair': 'cost',
+    reimbursement: 'cost',
+    inventory: 'stock',
+    wine: 'stock',
+    users: 'sys',
+    backup: 'sys',
+  };
+  const g = map[page];
+  if (!g) return;
+  const el = document.querySelector(`[data-nav-group="${g}"]`);
+  if (!el) return;
+  el.classList.remove('collapsed');
+  const btn = el.querySelector('.nav-group-toggle');
+  if (btn) btn.setAttribute('aria-expanded', 'true');
+  try {
+    localStorage.removeItem(`remy_navGroup_${g}`);
+  } catch (_) { /* ignore */ }
+}
+
+function toggleNavGroup(groupId) {
+  const el = document.querySelector(`[data-nav-group="${groupId}"]`);
+  if (!el) return;
+  el.classList.toggle('collapsed');
+  const collapsed = el.classList.contains('collapsed');
+  const btn = el.querySelector('.nav-group-toggle');
+  if (btn) btn.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+  try {
+    if (collapsed) localStorage.setItem(`remy_navGroup_${groupId}`, '1');
+    else localStorage.removeItem(`remy_navGroup_${groupId}`);
+  } catch (_) { /* ignore */ }
+  renderLucideIcons();
+}
+
+function initSidebarNavGroups() {
+  document.querySelectorAll('.nav-group').forEach((el) => {
+    const id = el.dataset.navGroup;
+    if (!id) return;
+    try {
+      if (localStorage.getItem(`remy_navGroup_${id}`) === '1') {
+        el.classList.add('collapsed');
+        const btn = el.querySelector('.nav-group-toggle');
+        if (btn) btn.setAttribute('aria-expanded', 'false');
+      }
+    } catch (_) { /* ignore */ }
+  });
 }
 
 function toggleSidebar() {
@@ -576,6 +660,15 @@ async function updateBadges() {
       api('GET', `/reimbursements${qs}`),
       api('GET', '/wine'),
     ]);
+    let invOpen = 0;
+    try {
+      if (currentYearFrameId) {
+        const ob = await api('GET', '/inventory/outbound?status=open');
+        invOpen = Array.isArray(ob) ? ob.length : 0;
+      }
+    } catch (_) {
+      invOpen = 0;
+    }
     document.getElementById('badge-activities').textContent = acts.length || 0;
     document.getElementById('badge-logistics').textContent = logs.length || 0;
     document.getElementById('badge-warehouse').textContent = wars.length || 0;
@@ -604,6 +697,16 @@ async function updateBadges() {
           wineBadge.textContent = '有库存';
           wineBadge.style.color = 'var(--success)';
         }
+      }
+    }
+    const invBadge = document.getElementById('badge-inventory');
+    if (invBadge) {
+      if (invOpen > 0) {
+        invBadge.textContent = `${invOpen} 待归还`;
+        invBadge.style.color = 'var(--warning)';
+      } else {
+        invBadge.textContent = '—';
+        invBadge.style.color = 'var(--text-muted)';
       }
     }
   } catch (e) {}
@@ -7075,6 +7178,747 @@ async function toggleBrandActive(id, active) {
   } catch (err) {
     showToast(err.message || '操作失败', 'error');
   }
+}
+
+/* =============================================
+   页面：物资库存（库管一期）
+   ============================================= */
+const INV_REGION_OPTS = ['东区', '南区', '北区'];
+const INV_LOGISTICS_OPTS = ['顺丰', '京东', '中通', '圆通', '专车', '其他'];
+
+async function apiInventoryUpload(file) {
+  const fd = new FormData();
+  fd.append('file', file);
+  const res = await fetch(`${API}/inventory/upload`, { method: 'POST', credentials: 'include', body: fd });
+  let data = {};
+  try {
+    data = await res.json();
+  } catch (_) {
+    data = {};
+  }
+  if (!res.ok) throw new Error(data.error || data.message || '上传失败');
+  return data.url;
+}
+
+function invStockClass(item) {
+  const q = Number(item.quantity_on_hand || 0);
+  const a = item.alert_below != null ? Number(item.alert_below) : null;
+  if (q <= 0) return 'inv-stock-out';
+  if (a != null && Number.isFinite(a) && q <= a) return 'inv-stock-low';
+  return 'inv-stock-ok';
+}
+
+function invStockLabel(item) {
+  const q = Number(item.quantity_on_hand || 0);
+  const a = item.alert_below != null ? Number(item.alert_below) : null;
+  if (q <= 0) return '缺货';
+  if (a != null && Number.isFinite(a) && q <= a) return '低于预警';
+  return '正常';
+}
+
+function invItemIsCommon(it) {
+  return Number(it.is_common) === 1;
+}
+
+function invMergeOutboundLines(parts) {
+  const m = new Map();
+  for (const l of parts) {
+    const id = l.item_id;
+    if (!id || !Number.isFinite(id)) continue;
+    const qty = Math.max(0, parseInt(l.quantity, 10) || 0);
+    if (qty < 1) continue;
+    const note = String(l.line_note || '').trim();
+    const prev = m.get(id);
+    if (!prev) {
+      m.set(id, { item_id: id, quantity: qty, line_note: note || null });
+    } else {
+      prev.quantity += qty;
+      const merged = [prev.line_note, note].filter(Boolean).join('；');
+      prev.line_note = merged || null;
+    }
+  }
+  return [...m.values()];
+}
+
+function invCollectCommonOutboundLines() {
+  const lines = [];
+  const rows = document.querySelectorAll('[data-inv-common-row]');
+  rows.forEach((row) => {
+    const id = parseInt(row.getAttribute('data-item-id'), 10);
+    if (!Number.isFinite(id)) return;
+    const ck = document.getElementById(`invCommonCk_${id}`);
+    const qtyEl = document.getElementById(`invCommonQty_${id}`);
+    const noteEl = document.getElementById(`invCommonNote_${id}`);
+    if (!ck || !ck.checked) return;
+    const qty = Math.max(0, parseInt(qtyEl && qtyEl.value, 10) || 0);
+    if (qty < 1) return;
+    const note = noteEl && noteEl.value ? String(noteEl.value).trim() : '';
+    lines.push({ item_id: id, quantity: qty, line_note: note || null });
+  });
+  return lines;
+}
+
+async function renderInventory() {
+  const container = document.getElementById('pageContainer');
+  const yfId = currentYearFrameId;
+
+  let warehouses = [];
+  try {
+    warehouses = await api('GET', '/inventory/warehouses');
+  } catch (e) {
+    const msg = escapeHtml(e.message || '');
+    let extra = '若仍失败，请在本机执行 <code>npm run migrate:inventory</code> 并<strong>重启</strong> Node 进程。';
+    if (String(e.message || '').includes('404')) {
+      extra = '接口返回 404：当前运行的 node 进程<strong>未加载物资库存路由</strong>，请结束旧进程后重新执行 <code>npm run start</code>。';
+    } else if (String(e.message || '').toLowerCase().includes("doesn't exist") || String(e.message || '').includes('不存在')) {
+      extra = '数据库表可能未创建：执行 <code>npm run migrate:inventory</code> 后重启服务；或刷新页面重试（服务会在首次访问时尝试自动建表）。';
+    } else if (String(e.message || '').includes('year_frame_id')) {
+      extra = '库结构需升级：请执行 <code>npm run migrate:inventory-global-fiscal</code> 后重启服务。';
+    }
+    container.innerHTML = `<div class="empty-state" style="color:var(--danger)">加载失败：${msg}<p style="margin-top:12px;font-size:13px;color:var(--text-secondary)">${extra}</p></div>`;
+    return;
+  }
+
+  if (!inventoryPageState.warehouseId && warehouses.length) {
+    inventoryPageState.warehouseId = warehouses[0].id;
+  }
+  if (inventoryPageState.warehouseId && !warehouses.some((w) => w.id === inventoryPageState.warehouseId)) {
+    inventoryPageState.warehouseId = warehouses.length ? warehouses[0].id : null;
+  }
+
+  let items = [];
+  if (inventoryPageState.warehouseId) {
+    try {
+      items = await api('GET', `/inventory/items?inv_warehouse_id=${inventoryPageState.warehouseId}`);
+    } catch (_) {
+      items = [];
+    }
+  }
+
+  const wh = warehouses.find((w) => w.id === inventoryPageState.warehouseId);
+
+  const whSelect = `
+    <select class="form-control" id="invWarehouseSelect" style="min-width:200px" onchange="inventoryPageState.warehouseId=parseInt(this.value,10)||null;inventoryPageState.outboundLines=[];renderInventory();">
+      <option value="">请选择仓库</option>
+      ${warehouses.map((w) => `<option value="${w.id}" ${w.id === inventoryPageState.warehouseId ? 'selected' : ''}>${escapeHtml(w.brand_code)} · ${escapeHtml(w.region)}</option>`).join('')}
+    </select>`;
+
+  const tab = inventoryPageState.tab || 'items';
+  const tabs = [
+    { id: 'items', label: '物料卡片' },
+    { id: 'outbound', label: '新建出库' },
+    { id: 'returns', label: '归还入库' },
+    { id: 'orders', label: '出库记录' },
+  ];
+
+  let panelHtml = '';
+  if (tab === 'items') {
+    panelHtml = `
+      <div class="inv-card-grid">
+        ${items.length ? items.map((it) => {
+          const img = (it.image_urls && it.image_urls[0]) ? `<img src="${escapeHtml(it.image_urls[0])}" alt="">` : '<span style="color:var(--text-muted);font-size:12px">无图</span>';
+          const commonBadge = invItemIsCommon(it) ? '<span class="inv-badge-common">常用</span>' : '';
+          return `
+          <div class="inv-item-card">
+            <div class="inv-item-card-img">${img}</div>
+            <div style="padding:12px">
+              <div style="font-weight:700;font-size:14px;margin-bottom:6px;display:flex;align-items:center;gap:6px;flex-wrap:wrap">${escapeHtml(it.name)} ${commonBadge}</div>
+              <div style="font-size:12px;color:var(--text-muted);margin-bottom:8px">${escapeHtml(it.dimensions || '—')} ｜ ${escapeHtml((it.description || '').slice(0, 80))}${(it.description || '').length > 80 ? '…' : ''}</div>
+              <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
+                <span class="${invStockClass(it)}">库存 ${it.quantity_on_hand} <span style="font-size:11px;font-weight:500">(${invStockLabel(it)})</span></span>
+                <span style="display:flex;gap:4px">
+                  <button type="button" class="btn btn-xs btn-ghost" onclick="invToggleItemCommon(${it.id}, ${invItemIsCommon(it) ? 0 : 1})" title="常用物料会在新建出库时优先列出">${invItemIsCommon(it) ? '取消常用' : '设为常用'}</button>
+                  <button type="button" class="btn btn-xs btn-ghost" onclick="invDeleteItem(${it.id})">删除</button>
+                </span>
+              </div>
+            </div>
+          </div>`;
+        }).join('') : '<div class="empty-state" style="grid-column:1/-1">暂无物料，请先添加或切换仓库</div>'}
+      </div>`;
+  } else if (tab === 'outbound') {
+    const lines = inventoryPageState.outboundLines || [];
+    const commonItems = items.filter(invItemIsCommon);
+    const itemOpts = (selId) =>
+      `<option value="">选物料</option>${items.map((it) => `<option value="${it.id}" ${String(selId) === String(it.id) ? 'selected' : ''}>${escapeHtml(it.name)} (余${it.quantity_on_hand})</option>`).join('')}`;
+    const lineRows = lines.map((ln, idx) => `
+      <tr>
+        <td>
+          <select class="form-control form-control-sm" data-idx="${idx}" onchange="invPatchOutboundLine(${idx},'item_id',this.value)">
+            ${itemOpts(ln.item_id)}
+          </select>
+        </td>
+        <td style="width:88px"><input type="number" class="form-control form-control-sm" min="1" step="1" value="${ln.quantity || 1}" onchange="invPatchOutboundLine(${idx},'quantity',this.value)"></td>
+        <td><input type="text" class="form-control form-control-sm" placeholder="说明" value="${escapeHtml(ln.line_note || '')}" onchange="invPatchOutboundLine(${idx},'line_note',this.value)"></td>
+        <td style="width:56px"><button type="button" class="btn btn-xs btn-ghost" onclick="invRemoveOutboundRow(${idx})">删</button></td>
+      </tr>`).join('');
+    const commonRows = commonItems.length
+      ? commonItems
+          .map((it) => {
+            const id = it.id;
+            return `
+        <tr data-inv-common-row data-item-id="${id}">
+          <td style="width:36px;text-align:center">
+            <input type="checkbox" id="invCommonCk_${id}" class="inv-outbound-common-ck" onchange="invOnOutboundCommonCk(${id})">
+          </td>
+          <td>
+            <div style="font-weight:600;font-size:13px">${escapeHtml(it.name)}</div>
+            <div style="font-size:11px;color:var(--text-muted)">${escapeHtml((it.dimensions || '—').slice(0, 40))}</div>
+          </td>
+          <td style="width:64px;font-size:13px" class="${invStockClass(it)}">${it.quantity_on_hand}</td>
+          <td style="width:88px">
+            <input type="number" class="form-control form-control-sm" id="invCommonQty_${id}" min="0" step="1" value="0" placeholder="0" onchange="invOnOutboundCommonQty(${id})">
+          </td>
+          <td><input type="text" class="form-control form-control-sm" id="invCommonNote_${id}" placeholder="行备注"></td>
+        </tr>`;
+          })
+          .join('')
+      : '';
+    panelHtml = `
+      <div class="card inv-outbound-card">
+        <div class="inv-outbound-grid">
+          <div class="form-group">
+            <label class="form-label">关联方式</label>
+            <select class="form-control form-control-sm" id="invLinkMode" onchange="inventoryPageState.linkMode=this.value;invToggleLinkMode()">
+              <option value="activity">关联项目编号</option>
+              <option value="standalone">不关联（填用途）</option>
+            </select>
+          </div>
+          <div class="form-group inv-outbound-span2" id="invProjectWrap">
+            <label class="form-label">项目编号</label>
+            <div class="inv-outbound-inline">
+              <input type="text" class="form-control form-control-sm" id="invProjectCode" placeholder="与场次一致" list="invProjectList">
+              <button type="button" class="btn btn-secondary btn-sm" onclick="invApplyProjectHint()">匹配仓库</button>
+            </div>
+            <span class="form-hint" id="invHintMsg" style="display:block;margin-top:2px"></span>
+          </div>
+          <div class="form-group inv-outbound-span2" id="invPurposeWrap" style="display:none">
+            <label class="form-label">用途说明 <span class="required">*</span></label>
+            <input type="text" class="form-control form-control-sm" id="invPurpose" placeholder="如：内部调拨、补发">
+          </div>
+          <div class="form-group">
+            <label class="form-label">收件城市</label>
+            <input type="text" class="form-control form-control-sm" id="invRecvCity">
+          </div>
+          <div class="form-group">
+            <label class="form-label">联系人</label>
+            <input type="text" class="form-control form-control-sm" id="invContactName">
+          </div>
+          <div class="form-group">
+            <label class="form-label">联系电话</label>
+            <input type="text" class="form-control form-control-sm" id="invContactPhone">
+          </div>
+          <div class="form-group">
+            <label class="form-label">物流方式</label>
+            <select class="form-control form-control-sm" id="invLogistics">${INV_LOGISTICS_OPTS.map((x) => `<option value="${x}">${x}</option>`).join('')}</select>
+          </div>
+          <div class="form-group inv-outbound-full">
+            <label class="form-label">收件地址</label>
+            <input type="text" class="form-control form-control-sm" id="invRecvAddr">
+          </div>
+          <div class="form-group inv-outbound-full">
+            <label class="form-label">备注</label>
+            <input type="text" class="form-control form-control-sm" id="invObRemarks">
+          </div>
+        </div>
+        <input type="hidden" id="invActivityId" value="">
+        <h4 class="inv-outbound-section-title">常用物料 <span style="font-weight:400;color:var(--text-muted);font-size:12px">（勾选并填数量）</span></h4>
+        <div class="table-wrapper inv-outbound-table-wrap">
+          <table class="data-table inv-outbound-table">
+            <thead><tr><th style="width:36px">选</th><th>物料</th><th style="width:56px">库存</th><th style="width:88px">数量</th><th>行备注</th></tr></thead>
+            <tbody>${commonRows || '<tr><td colspan="5" style="color:var(--text-muted);font-size:13px">暂无常用物料。在「物料卡片」点「设为常用」，或添加物料时勾选「常用物料」。</td></tr>'}</tbody>
+          </table>
+        </div>
+        <h4 class="inv-outbound-section-title">其他物料 <span style="font-weight:400;color:var(--text-muted);font-size:12px">（非常用或额外数量）</span></h4>
+        <div class="table-wrapper inv-outbound-table-wrap">
+          <table class="data-table inv-outbound-table">
+            <thead><tr><th>物料</th><th style="width:88px">数量</th><th>说明</th><th style="width:56px"></th></tr></thead>
+            <tbody>${lineRows || '<tr><td colspan="4" style="color:var(--text-muted);font-size:13px">点击下方添加一行</td></tr>'}</tbody>
+          </table>
+        </div>
+        <div class="inv-outbound-actions">
+          <button type="button" class="btn btn-secondary btn-sm" onclick="invAddOutboundRow()">+ 添加其他物料</button>
+          <button type="button" class="btn btn-primary" onclick="invSubmitOutbound()">确认出库</button>
+        </div>
+      </div>`;
+  } else if (tab === 'returns') {
+    let openOrders = [];
+    try {
+      openOrders = await api('GET', '/inventory/outbound?status=open');
+    } catch (_) {
+      openOrders = [];
+    }
+    const rd = inventoryPageState.returnDetail;
+    const oid = inventoryPageState.returnOrderId;
+    let returnFormHtml = '';
+    if (rd && oid && Array.isArray(rd.lines)) {
+      const rows = rd.lines.map((ln) => {
+        const shipped = Number(ln.quantity);
+        return `
+        <tr>
+          <td>${escapeHtml(ln.item_name)}</td>
+          <td>${shipped}</td>
+          <td><input type="number" class="form-control" min="0" id="ret_ok_${ln.id}" value="0"></td>
+          <td><input type="number" class="form-control" min="0" id="ret_lost_${ln.id}" value="0"></td>
+          <td><input type="number" class="form-control" min="0" id="ret_dmg_${ln.id}" value="0"></td>
+        </tr>`;
+      }).join('');
+      returnFormHtml = `
+      <div class="card" style="padding:16px;margin-top:16px">
+        <div style="font-weight:700;margin-bottom:8px">出库单 #${oid} — 归还登记 <button type="button" class="btn btn-xs btn-ghost" onclick="invCancelReturnForm()">取消</button></div>
+        <div class="table-wrapper">
+          <table class="data-table">
+            <thead><tr><th>物料</th><th>出库数</th><th>归还</th><th>丢失</th><th>损坏</th></tr></thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>
+        <div class="form-group" style="margin-top:12px">
+          <label class="form-label">归还日期</label>
+          <input type="date" class="form-control" id="invReturnDate" value="${new Date().toISOString().slice(0, 10)}">
+        </div>
+        <div class="form-group">
+          <label class="form-label">备注</label>
+          <input type="text" class="form-control" id="invReturnRemarks">
+        </div>
+        <button type="button" class="btn btn-primary" onclick="invSubmitReturn()">提交归还</button>
+      </div>`;
+    }
+    panelHtml = `
+      <div class="table-wrapper">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>单号</th><th>品牌/区</th><th>项目/用途</th><th>出库时间</th><th></th>
+            </tr>
+          </thead>
+          <tbody>
+            ${openOrders.length ? openOrders.map((o) => `
+              <tr>
+                <td>#${o.id}</td>
+                <td>${escapeHtml(o.brand_code)} ${escapeHtml(o.region)}</td>
+                <td>${o.link_mode === 'standalone' ? escapeHtml(o.purpose || '—') : escapeHtml(o.project_code || '—')}</td>
+                <td>${o.shipped_at ? String(o.shipped_at).slice(0, 16) : '—'}</td>
+                <td>
+                  <button type="button" class="btn btn-sm btn-primary" onclick="invOpenReturn(${o.id})">归还登记</button>
+                  <button type="button" class="btn btn-sm btn-secondary" onclick="invDownloadPdf(${o.id})">PDF</button>
+                </td>
+              </tr>`).join('') : '<tr><td colspan="5" style="color:var(--text-muted)">暂无待归还出库单</td></tr>'}
+          </tbody>
+        </table>
+      </div>
+      ${returnFormHtml}`;
+  } else if (tab === 'orders') {
+    let allOrders = [];
+    try {
+      allOrders = await api('GET', '/inventory/outbound');
+    } catch (_) {
+      allOrders = [];
+    }
+    panelHtml = `
+      <div class="table-wrapper">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>单号</th><th>状态</th><th>品牌/区</th><th>项目/用途</th><th>出库时间</th><th></th>
+            </tr>
+          </thead>
+          <tbody>
+            ${allOrders.length ? allOrders.map((o) => `
+              <tr>
+                <td>#${o.id}</td>
+                <td>${o.status === 'closed' ? '已结清' : '待归还'}</td>
+                <td>${escapeHtml(o.brand_code)} ${escapeHtml(o.region)}</td>
+                <td>${o.link_mode === 'standalone' ? escapeHtml(o.purpose || '—') : escapeHtml(o.project_code || '—')}</td>
+                <td>${o.shipped_at ? String(o.shipped_at).slice(0, 16) : '—'}</td>
+                <td>
+                  <button type="button" class="btn btn-sm btn-secondary" onclick="invDownloadPdf(${o.id})">PDF</button>
+                  ${o.status !== 'closed' ? `<button type="button" class="btn btn-sm btn-primary" onclick="invOpenReturn(${o.id})">归还</button>` : ''}
+                </td>
+              </tr>`).join('') : '<tr><td colspan="6" style="color:var(--text-muted)">暂无记录</td></tr>'}
+          </tbody>
+        </table>
+      </div>`;
+  }
+
+  container.innerHTML = `
+    <div class="inv-toolbar">
+      ${whSelect}
+      <button type="button" class="btn btn-secondary btn-sm" onclick="invPromptNewWarehouse()">新建仓库</button>
+      <button type="button" class="btn btn-primary btn-sm" onclick="invPromptNewItem()" ${inventoryPageState.warehouseId ? '' : 'disabled'}>添加物料</button>
+      ${wh ? `<button type="button" class="btn btn-ghost btn-sm" onclick="invDeleteWarehouse()" style="color:var(--danger)">删除当前仓库</button>` : ''}
+      <span class="form-hint" style="flex:1;min-width:200px;margin:0">仓库与物料为 <strong>25/26 财年共用</strong>；按项目编号匹配场次时请先选左侧年度。</span>
+    </div>
+    <div class="inv-tabs">
+      ${tabs.map((t) => `<button type="button" class="inv-tab ${tab === t.id ? 'active' : ''}" onclick="invSwitchTab('${t.id}')">${t.label}</button>`).join('')}
+    </div>
+    ${panelHtml}
+    <datalist id="invProjectList"></datalist>
+  `;
+
+    try {
+      if (yfId) {
+        const actList = await api('GET', `/activities?yearFrameId=${yfId}`);
+        const dl = document.getElementById('invProjectList');
+        if (dl && Array.isArray(actList)) {
+          dl.innerHTML = actList
+            .filter((a) => a.project_code && String(a.project_code).trim())
+            .map((a) => `<option value="${escapeHtml(String(a.project_code).trim())}"></option>`)
+            .join('');
+        }
+      }
+    } catch (_) { /* ignore */ }
+
+  const lmEl = document.getElementById('invLinkMode');
+  if (lmEl) {
+    lmEl.value = inventoryPageState.linkMode || 'activity';
+    invToggleLinkMode();
+  }
+}
+
+function invSwitchTab(t) {
+  inventoryPageState.tab = t;
+  if (t === 'outbound') inventoryPageState.outboundLines = Array.isArray(inventoryPageState.outboundLines) ? inventoryPageState.outboundLines : [];
+  renderInventory();
+}
+
+function invToggleLinkMode() {
+  const lm = document.getElementById('invLinkMode');
+  const m = lm && lm.value === 'standalone';
+  const pw = document.getElementById('invProjectWrap');
+  const pr = document.getElementById('invPurposeWrap');
+  if (pw) pw.style.display = m ? 'none' : 'block';
+  if (pr) pr.style.display = m ? 'block' : 'none';
+}
+
+async function invApplyProjectHint() {
+  const el = document.getElementById('invHintMsg');
+  const pc = document.getElementById('invProjectCode')?.value?.trim();
+  if (!pc) {
+    if (el) el.textContent = '请输入项目编号';
+    return;
+  }
+  if (!currentYearFrameId) {
+    if (el) el.textContent = '请先在左侧选择年度，以便在对应年框下匹配场次';
+    return;
+  }
+  try {
+    const h = await api('GET', `/inventory/hints/project?year_frame_id=${currentYearFrameId}&project_code=${encodeURIComponent(pc)}`);
+    if (h.activity_id) document.getElementById('invActivityId').value = h.activity_id;
+    if (h.suggested_warehouse_id) {
+      inventoryPageState.warehouseId = h.suggested_warehouse_id;
+      const sel = document.getElementById('invWarehouseSelect');
+      if (sel) sel.value = String(h.suggested_warehouse_id);
+      if (el) el.textContent = '已匹配仓库（来自场次品牌与区域建议）';
+      inventoryPageState.outboundLines = [];
+      await renderInventory();
+      inventoryPageState.linkMode = 'activity';
+      const lm = document.getElementById('invLinkMode');
+      if (lm) lm.value = 'activity';
+      invToggleLinkMode();
+      const pcEl = document.getElementById('invProjectCode');
+      if (pcEl) pcEl.value = pc;
+    } else {
+      if (el) el.textContent = h.message || '未找到建议仓库，请手动选择左侧仓库';
+    }
+  } catch (e) {
+    if (el) el.textContent = e.message || '匹配失败';
+  }
+}
+
+function invOnOutboundCommonCk(itemId) {
+  const ck = document.getElementById(`invCommonCk_${itemId}`);
+  const q = document.getElementById(`invCommonQty_${itemId}`);
+  if (!ck || !q) return;
+  if (ck.checked && (parseInt(q.value, 10) || 0) < 1) q.value = 1;
+  if (!ck.checked) q.value = 0;
+}
+
+function invOnOutboundCommonQty(itemId) {
+  const ck = document.getElementById(`invCommonCk_${itemId}`);
+  const q = document.getElementById(`invCommonQty_${itemId}`);
+  if (!q) return;
+  const n = Math.max(0, parseInt(q.value, 10) || 0);
+  q.value = n;
+  if (ck) ck.checked = n > 0;
+}
+
+function invPatchOutboundLine(idx, key, val) {
+  const lines = inventoryPageState.outboundLines || [];
+  if (!lines[idx]) return;
+  if (key === 'quantity') lines[idx].quantity = Math.max(1, parseInt(val, 10) || 1);
+  else if (key === 'item_id') lines[idx].item_id = val ? parseInt(val, 10) : '';
+  else lines[idx][key] = val;
+}
+
+async function invToggleItemCommon(id, asCommon) {
+  try {
+    await api('PUT', `/inventory/items/${id}`, { is_common: Boolean(asCommon) });
+    showToast(asCommon ? '已设为常用物料' : '已取消常用', 'success');
+    await renderInventory();
+  } catch (e) {
+    showToast(e.message || '更新失败', 'error');
+  }
+}
+
+function invAddOutboundRow() {
+  inventoryPageState.outboundLines = inventoryPageState.outboundLines || [];
+  inventoryPageState.outboundLines.push({ item_id: '', quantity: 1, line_note: '' });
+  renderInventory();
+}
+
+function invRemoveOutboundRow(idx) {
+  inventoryPageState.outboundLines.splice(idx, 1);
+  renderInventory();
+}
+
+async function invSubmitOutbound() {
+  const whId = inventoryPageState.warehouseId;
+  const lm = document.getElementById('invLinkMode')?.value === 'standalone' ? 'standalone' : 'activity';
+  const fromCommon = invCollectCommonOutboundLines();
+  const fromExtra = (inventoryPageState.outboundLines || [])
+    .filter((l) => l.item_id && l.quantity > 0)
+    .map((l) => ({
+      item_id: parseInt(l.item_id, 10),
+      quantity: parseInt(l.quantity, 10),
+      line_note: l.line_note || null,
+    }));
+  const lines = invMergeOutboundLines([...fromCommon, ...fromExtra]);
+  if (!whId || !lines.length) {
+    showToast('请选择仓库并填写出库明细（常用物料勾选并填数量，或添加其他物料）', 'warning');
+    return;
+  }
+  const body = {
+    inv_warehouse_id: whId,
+    link_mode: lm,
+    project_code: lm === 'activity' ? (document.getElementById('invProjectCode')?.value || '').trim() : null,
+    purpose: lm === 'standalone' ? (document.getElementById('invPurpose')?.value || '').trim() : null,
+    activity_id: document.getElementById('invActivityId')?.value || null,
+    recipient_city: document.getElementById('invRecvCity')?.value || null,
+    recipient_address: document.getElementById('invRecvAddr')?.value || null,
+    contact_name: document.getElementById('invContactName')?.value || null,
+    contact_phone: document.getElementById('invContactPhone')?.value || null,
+    logistics_method: document.getElementById('invLogistics')?.value || null,
+    remarks: document.getElementById('invObRemarks')?.value || null,
+    lines,
+  };
+  if (lm === 'activity' && !body.project_code) {
+    showToast('请填写项目编号', 'warning');
+    return;
+  }
+  if (lm === 'standalone' && !body.purpose) {
+    showToast('请填写用途说明', 'warning');
+    return;
+  }
+  try {
+    await api('POST', '/inventory/outbound', body);
+    showToast('出库成功', 'success');
+    inventoryPageState.outboundLines = [];
+    inventoryPageState.tab = 'orders';
+    updateBadges();
+    await renderInventory();
+  } catch (e) {
+    showToast(e.message || '出库失败', 'error');
+  }
+}
+
+function invPromptNewWarehouse() {
+  const opts = INV_REGION_OPTS.map((r) => `<option value="${r}">${r}</option>`).join('');
+  const brandOpts = (_brandCache || []).map((b) => `<option value="${b.id}">${escapeHtml(b.brand_code)}</option>`).join('');
+  const html = `
+    <div class="form-group"><label class="form-label">品牌</label><select class="form-control" id="invNewWhBrand">${brandOpts}</select></div>
+    <div class="form-group"><label class="form-label">区域</label><select class="form-control" id="invNewWhRegion">${opts}</select></div>
+    <div class="form-group"><label class="form-label">备注名（可选）</label><input class="form-control" id="invNewWhLabel" placeholder="如：PHD 东区主仓"></div>
+    <button type="button" class="btn btn-primary" onclick="invSaveWarehouse()">创建</button>`;
+  showToast('在下方表单填写并点击创建', 'info');
+  const container = document.getElementById('pageContainer');
+  const bar = document.createElement('div');
+  bar.className = 'card';
+  bar.style.cssText = 'padding:14px;margin-bottom:14px';
+  bar.id = 'invNewWarehouseBar';
+  bar.innerHTML = `<div style="font-weight:600;margin-bottom:8px">新建品牌区域仓库</div>${html}`;
+  const old = document.getElementById('invNewWarehouseBar');
+  if (old) old.remove();
+  container.insertBefore(bar, container.firstChild);
+}
+
+async function invSaveWarehouse() {
+  const brand_id = parseInt(document.getElementById('invNewWhBrand')?.value, 10);
+  const region = document.getElementById('invNewWhRegion')?.value;
+  const label = document.getElementById('invNewWhLabel')?.value;
+  try {
+    await api('POST', '/inventory/warehouses', {
+      brand_id,
+      region,
+      label: label || null,
+    });
+    showToast('仓库已创建', 'success');
+    document.getElementById('invNewWarehouseBar')?.remove();
+    await renderInventory();
+  } catch (e) {
+    showToast(e.message || '创建失败', 'error');
+  }
+}
+
+async function invDeleteWarehouse() {
+  if (!inventoryPageState.warehouseId) return;
+  if (!window.confirm('删除仓库将同时删除其下物料，确定？')) return;
+  try {
+    await api('DELETE', `/inventory/warehouses/${inventoryPageState.warehouseId}`);
+    showToast('已删除', 'success');
+    inventoryPageState.warehouseId = null;
+    await renderInventory();
+  } catch (e) {
+    showToast(e.message || '删除失败', 'error');
+  }
+}
+
+function invPickUpload() {
+  document.getElementById('invItemImageFile')?.click();
+}
+
+async function invOnPickUpload(e) {
+  const f = e.target?.files && e.target.files[0];
+  if (!f) return;
+  try {
+    const url = await apiInventoryUpload(f);
+    const ta = document.getElementById('invItemImages');
+    const cur = (ta.value || '').split('\n').map((s) => s.trim()).filter(Boolean);
+    cur.push(url);
+    ta.value = cur.join('\n');
+    showToast('图片已上传', 'success');
+  } catch (err) {
+    showToast(err.message || '上传失败', 'error');
+  }
+  e.target.value = '';
+}
+
+function invPromptNewItem() {
+  const container = document.getElementById('pageContainer');
+  const old = document.getElementById('invNewItemBar');
+  if (old) {
+    old.remove();
+    return;
+  }
+  const bar = document.createElement('div');
+  bar.className = 'card';
+  bar.style.cssText = 'padding:14px;margin-bottom:14px';
+  bar.id = 'invNewItemBar';
+  bar.innerHTML = `
+    <div style="font-weight:600;margin-bottom:8px">添加物料</div>
+    <div class="form-grid">
+      <div class="form-group"><label class="form-label">名称 <span class="required">*</span></label><input class="form-control" id="invItemName"></div>
+      <div class="form-group"><label class="form-label">原始数量</label><input type="number" class="form-control" id="invItemQty" min="0" step="1" value="0"></div>
+      <div class="form-group"><label class="form-label">尺寸</label><input class="form-control" id="invItemDim" placeholder="如 100×50×30 cm"></div>
+      <div class="form-group"><label class="form-label">预警阈值</label><input type="number" class="form-control" id="invItemAlert" min="0" step="1" placeholder="选填"></div>
+      <div class="form-group form-full" style="display:flex;align-items:center;gap:8px;padding-top:4px">
+        <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px;margin:0">
+          <input type="checkbox" id="invItemIsCommon"> 常用物料（新建出库时出现在快捷列表）
+        </label>
+      </div>
+      <div class="form-group form-full"><label class="form-label">详细说明</label><textarea class="form-control" id="invItemDesc" rows="2"></textarea></div>
+      <div class="form-group form-full">
+        <label class="form-label">图片 URL（每行一个，或上传追加）</label>
+        <textarea class="form-control" id="invItemImages" rows="2" placeholder="https://..."></textarea>
+        <input type="file" id="invItemImageFile" accept="image/*" style="display:none" onchange="invOnPickUpload(event)">
+        <button type="button" class="btn btn-secondary btn-sm" style="margin-top:6px" onclick="invPickUpload()">上传图片</button>
+      </div>
+    </div>
+    <button type="button" class="btn btn-primary" onclick="invSaveItem()">保存物料</button>
+  `;
+  container.insertBefore(bar, container.firstChild);
+}
+
+async function invSaveItem() {
+  const name = document.getElementById('invItemName')?.value?.trim();
+  const qty = parseInt(document.getElementById('invItemQty')?.value, 10);
+  const urls = (document.getElementById('invItemImages')?.value || '')
+    .split('\n')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (!name || !inventoryPageState.warehouseId) {
+    showToast('请填写名称并选择仓库', 'warning');
+    return;
+  }
+  try {
+    await api('POST', '/inventory/items', {
+      inv_warehouse_id: inventoryPageState.warehouseId,
+      name,
+      initial_quantity: Number.isFinite(qty) ? qty : 0,
+      dimensions: document.getElementById('invItemDim')?.value || null,
+      description: document.getElementById('invItemDesc')?.value || null,
+      alert_below: document.getElementById('invItemAlert')?.value || null,
+      image_urls: urls,
+      is_common: document.getElementById('invItemIsCommon')?.checked === true,
+    });
+    showToast('已保存', 'success');
+    document.getElementById('invNewItemBar')?.remove();
+    await renderInventory();
+  } catch (e) {
+    showToast(e.message || '保存失败', 'error');
+  }
+}
+
+async function invDeleteItem(id) {
+  if (!window.confirm('删除该物料？')) return;
+  try {
+    await api('DELETE', `/inventory/items/${id}`);
+    showToast('已删除', 'success');
+    await renderInventory();
+  } catch (e) {
+    showToast(e.message || '删除失败', 'error');
+  }
+}
+
+async function invOpenReturn(orderId) {
+  inventoryPageState.tab = 'returns';
+  try {
+    inventoryPageState.returnDetail = await api('GET', `/inventory/outbound/${orderId}`);
+    inventoryPageState.returnOrderId = orderId;
+  } catch (e) {
+    showToast(e.message || '加载失败', 'error');
+    return;
+  }
+  await renderInventory();
+}
+
+function invCancelReturnForm() {
+  inventoryPageState.returnDetail = null;
+  inventoryPageState.returnOrderId = null;
+  renderInventory();
+}
+
+async function invSubmitReturn() {
+  const oid = inventoryPageState.returnOrderId;
+  if (!oid) return;
+  const detail = inventoryPageState.returnDetail;
+  if (!detail || !Array.isArray(detail.lines)) {
+    showToast('数据已过期，请重新打开归还', 'warning');
+    return;
+  }
+  const lines = (detail.lines || []).map((ln) => ({
+    outbound_line_id: ln.id,
+    qty_return: parseInt(document.getElementById(`ret_ok_${ln.id}`)?.value, 10) || 0,
+    qty_lost: parseInt(document.getElementById(`ret_lost_${ln.id}`)?.value, 10) || 0,
+    qty_damaged: parseInt(document.getElementById(`ret_dmg_${ln.id}`)?.value, 10) || 0,
+  }));
+  const body = {
+    return_date: document.getElementById('invReturnDate')?.value || new Date().toISOString().slice(0, 10),
+    remarks: document.getElementById('invReturnRemarks')?.value || null,
+    lines,
+  };
+  try {
+    await api('POST', `/inventory/outbound/${oid}/returns`, body);
+    showToast('归还已登记', 'success');
+    inventoryPageState.returnOrderId = null;
+    inventoryPageState.returnDetail = null;
+    updateBadges();
+    await renderInventory();
+  } catch (e) {
+    showToast(e.message || '失败', 'error');
+  }
+}
+
+function invDownloadPdf(id) {
+  window.open(`${API}/inventory/outbound/${id}/pdf`, '_blank');
 }
 
 

@@ -683,6 +683,252 @@ input, select, textarea { font-family: inherit; }
   text-align: center;
 }
 
+/* 侧边栏：分组折叠（菜单多时收起不常用分组） */
+.nav-group {
+  margin-bottom: 2px;
+}
+
+.nav-group-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 10px 8px 6px;
+  margin: 0;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: background var(--transition), color var(--transition);
+}
+
+.nav-group-toggle:hover {
+  color: var(--text-secondary);
+  background: var(--bg-card);
+}
+
+.nav-group-title {
+  text-align: left;
+}
+
+.nav-group-chevron {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  transition: transform var(--transition);
+  flex-shrink: 0;
+}
+
+.nav-group.collapsed .nav-group-chevron {
+  transform: rotate(-90deg);
+}
+
+.nav-group-items {
+  padding-bottom: 4px;
+}
+
+.nav-group.collapsed .nav-group-items {
+  display: none;
+}
+
+.nav-group-toggle[aria-expanded="false"] {
+  opacity: 0.85;
+}
+
+/* 物资库存：卡片栅格 */
+.inv-card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 14px;
+  margin-top: 14px;
+}
+
+.inv-item-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  transition: border-color var(--transition), box-shadow var(--transition);
+}
+
+.inv-item-card:hover {
+  border-color: var(--border-hover);
+  box-shadow: var(--shadow-sm);
+}
+
+.inv-item-card-img {
+  aspect-ratio: 4/3;
+  background: var(--bg-secondary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.inv-item-card-img img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.inv-stock-ok { color: var(--success); font-weight: 600; }
+.inv-stock-low { color: var(--warning); font-weight: 600; }
+.inv-stock-out { color: var(--danger); font-weight: 600; }
+
+.inv-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 14px;
+}
+
+.inv-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.inv-tab {
+  padding: 8px 14px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  cursor: pointer;
+  transition: all var(--transition);
+}
+
+.inv-tab:hover {
+  color: var(--text-primary);
+  border-color: var(--border-hover);
+}
+
+.inv-tab.active {
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+
+.inv-badge-common {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  vertical-align: middle;
+}
+
+/* 新建出库：紧凑布局 */
+.inv-outbound-card {
+  padding: 12px 14px;
+}
+
+.inv-outbound-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px 10px;
+  align-items: end;
+  margin-bottom: 10px;
+}
+
+.inv-outbound-grid .form-group {
+  margin-bottom: 0;
+}
+
+.inv-outbound-grid .form-label {
+  font-size: 12px;
+  margin-bottom: 3px;
+}
+
+.inv-outbound-span2 {
+  grid-column: span 2;
+}
+
+.inv-outbound-full {
+  grid-column: 1 / -1;
+}
+
+.inv-outbound-inline {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.inv-outbound-inline .form-control {
+  flex: 1;
+  min-width: 0;
+}
+
+.inv-outbound-section-title {
+  margin: 12px 0 6px;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.inv-outbound-section-title:first-of-type {
+  margin-top: 4px;
+}
+
+.inv-outbound-table-wrap {
+  margin-bottom: 4px;
+}
+
+.inv-outbound-table {
+  font-size: 13px;
+}
+
+.inv-outbound-table th,
+.inv-outbound-table td {
+  padding: 6px 8px;
+  vertical-align: middle;
+}
+
+.inv-outbound-actions {
+  margin-top: 12px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+@media (max-width: 960px) {
+  .inv-outbound-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .inv-outbound-span2 {
+    grid-column: span 2;
+  }
+}
+
+@media (max-width: 520px) {
+  .inv-outbound-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .inv-outbound-span2 {
+    grid-column: span 1;
+  }
+}
+
+.form-control.form-control-sm {
+  font-size: 13px;
+  padding: 6px 8px;
+  min-height: 34px;
+}
+
 /* 侧边栏底部：版本号 + 主题图标（勿被压缩，始终贴在视口底部） */
 .sidebar-footer {
   flex-shrink: 0;

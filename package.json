@@ -32,6 +32,8 @@
     "migrate:prop-repairs-quoted-price": "node src/scripts/addPropRepairsQuotedPriceColumn.js",
     "migrate:reimbursement-v2": "node src/scripts/addReimbursementV2Columns.js",
     "migrate:reimbursement-brand": "node src/scripts/addReimbursementBrandColumn.js",
+    "migrate:inventory": "node src/scripts/addInventoryTables.js",
+    "migrate:inventory-global-fiscal": "node src/scripts/migrateInventoryGlobalFiscal.js",
     "migrate:cost-pool-merge": "node src/scripts/addCostPoolMergeColumns.js",
     "migrate:users-auth": "node src/scripts/addUsersAuthTable.js",
     "verify:warehouse-db": "node src/scripts/verifyWarehouseDb.js",
@@ -45,7 +47,10 @@
     "dotenv": "^16.3.1",
     "express": "^4.18.2",
     "express-session": "^1.18.2",
+    "multer": "^2.1.1",
     "mysql2": "^3.6.5",
+    "pdfmake": "^0.3.7",
+    "pdfmake-support-chinese-fonts": "^1.0.3",
     "xlsx": "^0.18.5"
   },
   "devDependencies": {

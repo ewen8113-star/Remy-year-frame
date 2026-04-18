@@ -173,6 +173,88 @@ CREATE TABLE IF NOT EXISTS material_purchases (
     CONSTRAINT fk_mp_brand FOREIGN KEY (brand_id) REFERENCES brand_inventory(id)
 );
 
+-- 10. 物资库存（库管）：物理仓 / 物料 / 出库 / 归还（全财年共用，不按 year_frame 隔离）
+CREATE TABLE IF NOT EXISTS inv_warehouses (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    brand_id INT NOT NULL,
+    region VARCHAR(32) NOT NULL,
+    label VARCHAR(128) NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uq_inv_wh_global (brand_id, region),
+    CONSTRAINT fk_inv_wh_brand FOREIGN KEY (brand_id) REFERENCES brand_inventory(id)
+);
+
+CREATE TABLE IF NOT EXISTS inv_items (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    inv_warehouse_id INT NOT NULL,
+    name VARCHAR(200) NOT NULL,
+    description TEXT,
+    dimensions VARCHAR(200),
+    initial_quantity INT NOT NULL DEFAULT 0,
+    quantity_on_hand INT NOT NULL DEFAULT 0,
+    alert_below INT NULL,
+    image_urls LONGTEXT NULL,
+    is_common TINYINT(1) NOT NULL DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    CONSTRAINT fk_inv_item_wh FOREIGN KEY (inv_warehouse_id) REFERENCES inv_warehouses(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS inv_outbound_orders (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    inv_warehouse_id INT NOT NULL,
+    activity_id INT NULL,
+    link_mode ENUM('activity','standalone') NOT NULL DEFAULT 'activity',
+    project_code VARCHAR(200) NULL,
+    purpose TEXT NULL,
+    recipient_city VARCHAR(100),
+    recipient_address VARCHAR(500),
+    contact_name VARCHAR(100),
+    contact_phone VARCHAR(50),
+    logistics_method VARCHAR(80),
+    status ENUM('shipped','closed') NOT NULL DEFAULT 'shipped',
+    shipped_at DATETIME NULL,
+    operator VARCHAR(100),
+    remarks TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    CONSTRAINT fk_inv_ob_wh FOREIGN KEY (inv_warehouse_id) REFERENCES inv_warehouses(id),
+    CONSTRAINT fk_inv_ob_act FOREIGN KEY (activity_id) REFERENCES activities(id) ON DELETE SET NULL
+);
+
+CREATE TABLE IF NOT EXISTS inv_outbound_lines (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    order_id INT NOT NULL,
+    item_id INT NOT NULL,
+    quantity INT NOT NULL,
+    line_note VARCHAR(500),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT fk_inv_ol_order FOREIGN KEY (order_id) REFERENCES inv_outbound_orders(id) ON DELETE CASCADE,
+    CONSTRAINT fk_inv_ol_item FOREIGN KEY (item_id) REFERENCES inv_items(id)
+);
+
+CREATE TABLE IF NOT EXISTS inv_return_batches (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    outbound_order_id INT NOT NULL,
+    return_date DATE NOT NULL,
+    operator VARCHAR(100),
+    remarks TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT fk_inv_rb_ob FOREIGN KEY (outbound_order_id) REFERENCES inv_outbound_orders(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS inv_return_lines (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    batch_id INT NOT NULL,
+    outbound_line_id INT NOT NULL,
+    qty_return INT NOT NULL DEFAULT 0,
+    qty_lost INT NOT NULL DEFAULT 0,
+    qty_damaged INT NOT NULL DEFAULT 0,
+    CONSTRAINT fk_inv_rl_batch FOREIGN KEY (batch_id) REFERENCES inv_return_batches(id) ON DELETE CASCADE,
+    CONSTRAINT fk_inv_rl_ol FOREIGN KEY (outbound_line_id) REFERENCES inv_outbound_lines(id) ON DELETE CASCADE
+);
+
 -- 插入初始年框数据
 INSERT INTO year_frames (year, name) VALUES
 ('25年度', '人头马25-26年度项目'),

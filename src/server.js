@@ -22,6 +22,7 @@ const wineRoutes = require('./routes/wine');
 const brandRoutes = require('./routes/brand');
 const materialPurchaseRoutes = require('./routes/materialPurchase');
 const propRepairRoutes = require('./routes/propRepair');
+const inventoryRoutes = require('./routes/inventory');
 const authRoutes = require('./routes/auth');
 const userRoutes = require('./routes/user');
 const { mountLookupRoutes } = require('./routes/lookup');
@@ -86,6 +87,8 @@ console.log('注册 material-purchases 路由');
 app.use('/api/material-purchases', materialPurchaseRoutes);
 console.log('注册 prop-repairs 路由');
 app.use('/api/prop-repairs', propRepairRoutes);
+console.log('注册 inventory 路由（物资库存）');
+app.use('/api/inventory', inventoryRoutes);
 console.log('注册 users 路由');
 app.use('/api/users', userRoutes);
 console.log('注册 lookups 路由（app 级 /api/lookups）');
@@ -119,6 +122,7 @@ app.get('/api/health', async (req, res) => {
     features: {
       /** 用于排查「物料采购 404」：若为 false/缺失，说明当前进程未加载含物料路由的代码或未重启 */
       materialPurchasesApi: true,
+      inventoryApi: true,
     },
   });
 });

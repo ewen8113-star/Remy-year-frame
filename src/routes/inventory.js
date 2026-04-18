@@ -1,0 +1,729 @@
+const express = require('express');
+const path = require('path');
+const fs = require('fs');
+const multer = require('multer');
+const PdfPrinter = require('pdfmake/js/Printer').default;
+const URLResolver = require('pdfmake/js/URLResolver').default;
+const pdfVirtualFs = require('pdfmake/js/virtual-fs').default;
+const robotoVfsMap = require('pdfmake/build/vfs_fonts.js');
+const cnVfsMap = require('pdfmake-support-chinese-fonts/vfs_fonts').pdfMake.vfs;
+
+let _inventoryPdfVfsMerged = false;
+function ensureInventoryPdfVfs() {
+  if (_inventoryPdfVfsMerged) return;
+  [robotoVfsMap, cnVfsMap].forEach((map) => {
+    Object.keys(map).forEach((name) => {
+      pdfVirtualFs.writeFileSync(name, Buffer.from(map[name], 'base64'));
+    });
+  });
+  _inventoryPdfVfsMerged = true;
+}
+
+const router = express.Router();
+const db = require('../config/database');
+const { ensureInventoryTables } = require('../inventory/ensureInventoryTables');
+
+router.use(async (req, res, next) => {
+  try {
+    await ensureInventoryTables(db);
+    next();
+  } catch (e) {
+    console.error('物资库存表初始化失败:', e);
+    res.status(500).json({ error: e.message || '物资库存表初始化失败' });
+  }
+});
+
+const INV_REGIONS = ['东区', '南区', '北区'];
+
+function canonicalRegion(r) {
+  if (r == null) return null;
+  let s = String(r).replace(/^\uFEFF/, '').trim().normalize('NFKC');
+  const trad = { 東區: '东区', 北區: '北区', 南區: '南区' };
+  if (trad[s]) s = trad[s];
+  return INV_REGIONS.includes(s) ? s : null;
+}
+
+/** 活动区域与物理仓三区的建议映射（无对应仓时仍可选手选） */
+function hintRegionFromActivityRegion(ar) {
+  const s = String(ar || '').trim();
+  if (!s) return null;
+  if (INV_REGIONS.includes(s)) return s;
+  if (s.includes('东') && !s.includes('南')) return '东区';
+  if (s.includes('南') || s.includes('东南') || s.includes('西南')) return '南区';
+  if (s.includes('北')) return '北区';
+  return '南区';
+}
+
+async function resolveBrandId(brandRaw) {
+  const s = String(brandRaw || '').trim();
+  if (!s) return null;
+  const up = s.toUpperCase().replace(/\s/g, '');
+  const tryCodes = [];
+  if (up.includes('CLUB')) tryCodes.push('CLUB');
+  else if (up.includes('PHD')) tryCodes.push('PHD');
+  else if (up.includes('XO') || up.includes('X.O')) tryCodes.push('X.O');
+  else if (up.includes('REMY')) tryCodes.push('REMY');
+  else if (up.includes('RC')) tryCodes.push('RC');
+  else tryCodes.push(s);
+  for (const c of tryCodes) {
+    const [rows] = await db.query('SELECT id FROM brand_inventory WHERE brand_code = ? LIMIT 1', [c]);
+    if (rows.length) return rows[0].id;
+  }
+  const [rows2] = await db.query('SELECT id FROM brand_inventory WHERE brand_name LIKE ? LIMIT 1', [`%${s}%`]);
+  return rows2.length ? rows2[0].id : null;
+}
+
+const uploadDir = path.join(__dirname, '../../public/uploads/inventory');
+if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
+
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => cb(null, uploadDir),
+  filename: (req, file, cb) => {
+    const ext = path.extname(file.originalname || '') || '.jpg';
+    const safe = `inv_${Date.now()}_${Math.random().toString(36).slice(2, 9)}${ext}`;
+    cb(null, safe);
+  },
+});
+const upload = multer({
+  storage,
+  limits: { fileSize: 8 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    const ok = /^image\/(jpeg|png|gif|webp)$/i.test(file.mimetype);
+    cb(ok ? null : new Error('仅支持 jpeg/png/gif/webp 图片'), ok);
+  },
+});
+
+const pdfFonts = {
+  fangzhen: {
+    normal: 'fzhei-jt.TTF',
+    bold: 'fzhei-jt.TTF',
+    italics: 'fzhei-jt.TTF',
+    bolditalics: 'fzhei-jt.TTF',
+  },
+};
+
+function parseImageUrls(row) {
+  if (!row || row.image_urls == null) return [];
+  try {
+    const j = typeof row.image_urls === 'string' ? JSON.parse(row.image_urls) : row.image_urls;
+    return Array.isArray(j) ? j : [];
+  } catch {
+    return [];
+  }
+}
+
+// ---------- 仓库 ----------
+router.get('/warehouses', async (req, res) => {
+  try {
+    const [rows] = await db.query(
+      `
+      SELECT w.id, w.brand_id, w.region, w.label, w.created_at,
+             bi.brand_code, bi.brand_name
+      FROM inv_warehouses w
+      JOIN brand_inventory bi ON bi.id = w.brand_id
+      ORDER BY bi.id, w.region
+    `
+    );
+    res.json(rows);
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: e.message || '加载失败' });
+  }
+});
+
+router.post('/warehouses', async (req, res) => {
+  try {
+    const { brand_id, label } = req.body;
+    const region = canonicalRegion(req.body.region);
+    const bid = parseInt(brand_id, 10);
+    if (!Number.isFinite(bid) || !region) {
+      return res.status(400).json({ error: '请填写品牌与区域（东区/南区/北区）' });
+    }
+    const [result] = await db.query(
+      'INSERT INTO inv_warehouses (brand_id, region, label) VALUES (?, ?, ?)',
+      [bid, region, label || null]
+    );
+    const [rows] = await db.query(
+      `
+      SELECT w.*, bi.brand_code, bi.brand_name FROM inv_warehouses w
+      JOIN brand_inventory bi ON bi.id = w.brand_id WHERE w.id = ?
+    `,
+      [result.insertId]
+    );
+    res.json(rows[0]);
+  } catch (e) {
+    if (e && e.code === 'ER_DUP_ENTRY') return res.status(400).json({ error: '已存在相同品牌与区域的仓库' });
+    console.error(e);
+    res.status(500).json({ error: e.message || '创建失败' });
+  }
+});
+
+router.delete('/warehouses/:id', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (!Number.isFinite(id)) return res.status(400).json({ error: '无效 ID' });
+    await db.query('DELETE FROM inv_warehouses WHERE id = ?', [id]);
+    res.json({ ok: true });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: e.message || '删除失败' });
+  }
+});
+
+// ---------- 物料 ----------
+router.get('/items', async (req, res) => {
+  try {
+    const whId = parseInt(req.query.inv_warehouse_id, 10);
+    if (!Number.isFinite(whId)) return res.status(400).json({ error: '缺少 inv_warehouse_id' });
+    const [rows] = await db.query(
+      'SELECT * FROM inv_items WHERE inv_warehouse_id = ? ORDER BY is_common DESC, name, id',
+      [whId]
+    );
+    res.json(rows.map((r) => ({ ...r, image_urls: parseImageUrls(r) })));
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: e.message || '加载失败' });
+  }
+});
+
+router.post('/items', async (req, res) => {
+  try {
+    const {
+      inv_warehouse_id,
+      name,
+      description,
+      dimensions,
+      initial_quantity,
+      alert_below,
+      image_urls,
+      is_common,
+    } = req.body;
+    const whId = parseInt(inv_warehouse_id, 10);
+    const initQ = Math.max(0, parseInt(initial_quantity, 10) || 0);
+    if (!Number.isFinite(whId) || !String(name || '').trim()) {
+      return res.status(400).json({ error: '请填写仓库与物品名称' });
+    }
+    let urls = image_urls;
+    if (urls != null && !Array.isArray(urls)) urls = [];
+    const common = Boolean(is_common);
+    const [result] = await db.query(
+      `INSERT INTO inv_items (inv_warehouse_id, name, description, dimensions, initial_quantity, quantity_on_hand, alert_below, image_urls, is_common)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        whId,
+        String(name).trim(),
+        description || null,
+        dimensions || null,
+        initQ,
+        initQ,
+        alert_below != null && alert_below !== '' ? parseInt(alert_below, 10) : null,
+        JSON.stringify(urls || []),
+        common ? 1 : 0,
+      ]
+    );
+    const [rows] = await db.query('SELECT * FROM inv_items WHERE id = ?', [result.insertId]);
+    const row = rows[0];
+    res.json({ ...row, image_urls: parseImageUrls(row) });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: e.message || '保存失败' });
+  }
+});
+
+router.put('/items/:id', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (!Number.isFinite(id)) return res.status(400).json({ error: '无效 ID' });
+    const { name, description, dimensions, alert_below, image_urls, is_common } = req.body;
+    const patches = [];
+    const vals = [];
+    if (name != null) {
+      patches.push('name = ?');
+      vals.push(String(name).trim());
+    }
+    if (description !== undefined) {
+      patches.push('description = ?');
+      vals.push(description || null);
+    }
+    if (dimensions !== undefined) {
+      patches.push('dimensions = ?');
+      vals.push(dimensions || null);
+    }
+    if (alert_below !== undefined) {
+      patches.push('alert_below = ?');
+      vals.push(alert_below != null && alert_below !== '' ? parseInt(alert_below, 10) : null);
+    }
+    if (image_urls !== undefined) {
+      patches.push('image_urls = ?');
+      vals.push(JSON.stringify(Array.isArray(image_urls) ? image_urls : []));
+    }
+    if (is_common !== undefined) {
+      patches.push('is_common = ?');
+      vals.push(Boolean(is_common) ? 1 : 0);
+    }
+    if (!patches.length) return res.status(400).json({ error: '无更新字段' });
+    vals.push(id);
+    await db.query(`UPDATE inv_items SET ${patches.join(', ')} WHERE id = ?`, vals);
+    const [rows] = await db.query('SELECT * FROM inv_items WHERE id = ?', [id]);
+    const row = rows[0];
+    res.json({ ...row, image_urls: parseImageUrls(row) });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: e.message || '更新失败' });
+  }
+});
+
+router.delete('/items/:id', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (!Number.isFinite(id)) return res.status(400).json({ error: '无效 ID' });
+    await db.query('DELETE FROM inv_items WHERE id = ?', [id]);
+    res.json({ ok: true });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: e.message || '删除失败' });
+  }
+});
+
+router.post('/upload', (req, res) => {
+  upload.single('file')(req, res, (err) => {
+    if (err) return res.status(400).json({ error: err.message || '上传失败' });
+    try {
+      if (!req.file) return res.status(400).json({ error: '未选择文件' });
+      const url = `/uploads/inventory/${req.file.filename}`;
+      res.json({ url, filename: req.file.filename });
+    } catch (e) {
+      console.error(e);
+      res.status(500).json({ error: e.message || '上传失败' });
+    }
+  });
+});
+
+// ---------- 项目编号 → 建议仓库 ----------
+router.get('/hints/project', async (req, res) => {
+  try {
+    const yfid = parseInt(req.query.year_frame_id, 10);
+    const project_code = String(req.query.project_code || '').trim();
+    if (!Number.isFinite(yfid) || !project_code) {
+      return res.json({ activity_id: null, brand_id: null, suggested_warehouse_id: null, activity_region: null });
+    }
+    const [acts] = await db.query(
+      'SELECT id, brand, region FROM activities WHERE year_frame_id = ? AND project_code = ? LIMIT 1',
+      [yfid, project_code]
+    );
+    if (!acts.length) {
+      return res.json({ activity_id: null, brand_id: null, suggested_warehouse_id: null, activity_region: null, message: '未找到匹配场次' });
+    }
+    const a = acts[0];
+    const brand_id = await resolveBrandId(a.brand);
+    const hr = hintRegionFromActivityRegion(a.region);
+    let suggested_warehouse_id = null;
+    if (brand_id && hr) {
+      const [wh] = await db.query(
+        'SELECT id FROM inv_warehouses WHERE brand_id = ? AND region = ? LIMIT 1',
+        [brand_id, hr]
+      );
+      if (wh.length) suggested_warehouse_id = wh[0].id;
+    }
+    res.json({
+      activity_id: a.id,
+      brand_id,
+      suggested_warehouse_id,
+      activity_region: a.region,
+      hint_region: hr,
+    });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: e.message || '解析失败' });
+  }
+});
+
+async function loadOrderDetail(orderId) {
+  const [orders] = await db.query(
+    `
+    SELECT o.*, wh.region, wh.brand_id, bi.brand_code, bi.brand_name,
+           ayf.year AS activity_year_label
+    FROM inv_outbound_orders o
+    JOIN inv_warehouses wh ON wh.id = o.inv_warehouse_id
+    JOIN brand_inventory bi ON bi.id = wh.brand_id
+    LEFT JOIN activities act ON act.id = o.activity_id
+    LEFT JOIN year_frames ayf ON ayf.id = act.year_frame_id
+    WHERE o.id = ?
+  `,
+    [orderId]
+  );
+  if (!orders.length) return null;
+  const o = orders[0];
+  const [lines] = await db.query(
+    `
+    SELECT ol.*, it.name AS item_name, it.dimensions AS item_dimensions
+    FROM inv_outbound_lines ol
+    JOIN inv_items it ON it.id = ol.item_id
+    WHERE ol.order_id = ?
+    ORDER BY ol.id
+  `,
+    [orderId]
+  );
+  const [batches] = await db.query(
+    'SELECT * FROM inv_return_batches WHERE outbound_order_id = ? ORDER BY id DESC',
+    [orderId]
+  );
+  const batchIds = batches.map((b) => b.id);
+  let returnLinesByBatch = {};
+  if (batchIds.length) {
+    const [rls] = await db.query(
+      `SELECT rl.* FROM inv_return_lines rl WHERE rl.batch_id IN (${batchIds.map(() => '?').join(',')})`,
+      batchIds
+    );
+    returnLinesByBatch = rls.reduce((acc, row) => {
+      if (!acc[row.batch_id]) acc[row.batch_id] = [];
+      acc[row.batch_id].push(row);
+      return acc;
+    }, {});
+  }
+  return { order: o, lines, batches: batches.map((b) => ({ ...b, lines: returnLinesByBatch[b.id] || [] })) };
+}
+
+// ---------- 出库（创建即出库） ----------
+router.post('/outbound', async (req, res) => {
+  const conn = await db.getConnection();
+  try {
+    const {
+      inv_warehouse_id,
+      link_mode,
+      project_code,
+      purpose,
+      activity_id,
+      recipient_city,
+      recipient_address,
+      contact_name,
+      contact_phone,
+      logistics_method,
+      remarks,
+      lines,
+    } = req.body;
+    const whId = parseInt(inv_warehouse_id, 10);
+    const lm = link_mode === 'standalone' ? 'standalone' : 'activity';
+    const op = (req.session && req.session.user && req.session.user.username) || '';
+
+    if (!Number.isFinite(whId) || !Array.isArray(lines) || !lines.length) {
+      return res.status(400).json({ error: '请填写仓库与出库明细' });
+    }
+    if (lm === 'activity' && !String(project_code || '').trim()) {
+      return res.status(400).json({ error: '关联场次出库请填写项目编号' });
+    }
+    if (lm === 'standalone' && !String(purpose || '').trim()) {
+      return res.status(400).json({ error: '非项目出库请填写用途说明' });
+    }
+
+    await conn.beginTransaction();
+
+    const [result] = await conn.query(
+      `
+      INSERT INTO inv_outbound_orders (
+        inv_warehouse_id, activity_id, link_mode, project_code, purpose,
+        recipient_city, recipient_address, contact_name, contact_phone, logistics_method,
+        status, shipped_at, operator, remarks
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'shipped', NOW(), ?, ?)
+    `,
+      [
+        whId,
+        activity_id != null && String(activity_id).trim() !== '' ? parseInt(activity_id, 10) : null,
+        lm,
+        lm === 'activity' ? String(project_code).trim() : null,
+        lm === 'standalone' ? String(purpose).trim() : null,
+        recipient_city || null,
+        recipient_address || null,
+        contact_name || null,
+        contact_phone || null,
+        logistics_method || null,
+        op,
+        remarks || null,
+      ]
+    );
+    const orderId = result.insertId;
+
+    for (const ln of lines) {
+      const itemId = parseInt(ln.item_id, 10);
+      const qty = parseInt(ln.quantity, 10);
+      const lineNote = ln.line_note || null;
+      if (!Number.isFinite(itemId) || !Number.isFinite(qty) || qty <= 0) {
+        throw new Error('明细行数量无效');
+      }
+      const [itRows] = await conn.query(
+        'SELECT id, inv_warehouse_id, quantity_on_hand FROM inv_items WHERE id = ? FOR UPDATE',
+        [itemId]
+      );
+      if (!itRows.length || itRows[0].inv_warehouse_id !== whId) {
+        throw new Error('物料不属于当前仓库');
+      }
+      const onHand = Number(itRows[0].quantity_on_hand);
+      if (onHand < qty) throw new Error(`「${itemId}」库存不足（当前 ${onHand}）`);
+      await conn.query('UPDATE inv_items SET quantity_on_hand = quantity_on_hand - ? WHERE id = ?', [qty, itemId]);
+      await conn.query(
+        'INSERT INTO inv_outbound_lines (order_id, item_id, quantity, line_note) VALUES (?, ?, ?, ?)',
+        [orderId, itemId, qty, lineNote]
+      );
+    }
+
+    await conn.commit();
+    const detail = await loadOrderDetail(orderId);
+    res.json(detail);
+  } catch (e) {
+    await conn.rollback();
+    console.error(e);
+    res.status(500).json({ error: e.message || '出库失败' });
+  } finally {
+    conn.release();
+  }
+});
+
+router.get('/outbound', async (req, res) => {
+  try {
+    const st = req.query.status;
+    let sql = `
+      SELECT o.id, o.project_code, o.purpose, o.link_mode, o.status, o.shipped_at, o.recipient_city,
+             o.contact_name, o.logistics_method, o.created_at,
+             wh.region, bi.brand_code
+      FROM inv_outbound_orders o
+      JOIN inv_warehouses wh ON wh.id = o.inv_warehouse_id
+      JOIN brand_inventory bi ON bi.id = wh.brand_id
+      WHERE 1=1
+    `;
+    const params = [];
+    if (st === 'open') {
+      sql += ' AND o.status = ?';
+      params.push('shipped');
+    } else if (st === 'closed') {
+      sql += ' AND o.status = ?';
+      params.push('closed');
+    }
+    sql += ' ORDER BY o.id DESC';
+    const [rows] = await db.query(sql, params);
+    res.json(rows);
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: e.message || '加载失败' });
+  }
+});
+
+router.get('/outbound/:id', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (!Number.isFinite(id)) return res.status(400).json({ error: '无效 ID' });
+    const detail = await loadOrderDetail(id);
+    if (!detail) return res.status(404).json({ error: '单据不存在' });
+    res.json(detail);
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: e.message || '加载失败' });
+  }
+});
+
+router.post('/outbound/:id/returns', async (req, res) => {
+  const conn = await db.getConnection();
+  try {
+    const orderId = parseInt(req.params.id, 10);
+    const { return_date, remarks, lines } = req.body;
+    const op = (req.session && req.session.user && req.session.user.username) || '';
+
+    if (!Number.isFinite(orderId) || !Array.isArray(lines) || !lines.length) {
+      return res.status(400).json({ error: '请填写归还明细' });
+    }
+    const rd = return_date || new Date().toISOString().slice(0, 10);
+
+    await conn.beginTransaction();
+
+    const [ords] = await conn.query('SELECT id, status, inv_warehouse_id FROM inv_outbound_orders WHERE id = ? FOR UPDATE', [orderId]);
+    if (!ords.length) throw new Error('单据不存在');
+    if (ords[0].status === 'closed') throw new Error('该单已结清');
+
+    const hasQty = lines.some(
+      (x) =>
+        (parseInt(x.qty_return, 10) || 0) + (parseInt(x.qty_lost, 10) || 0) + (parseInt(x.qty_damaged, 10) || 0) > 0
+    );
+    if (!hasQty) throw new Error('请至少在一行填写归还、丢失或损坏数量');
+
+    const [batchIns] = await conn.query(
+      'INSERT INTO inv_return_batches (outbound_order_id, return_date, operator, remarks) VALUES (?, ?, ?, ?)',
+      [orderId, rd, op, remarks || null]
+    );
+    const batchId = batchIns.insertId;
+
+    for (const ln of lines) {
+      const olId = parseInt(ln.outbound_line_id, 10);
+      const qr = Math.max(0, parseInt(ln.qty_return, 10) || 0);
+      const ql = Math.max(0, parseInt(ln.qty_lost, 10) || 0);
+      const qd = Math.max(0, parseInt(ln.qty_damaged, 10) || 0);
+      if (qr + ql + qd === 0) continue;
+
+      const [olRows] = await conn.query(
+        'SELECT id, order_id, item_id, quantity FROM inv_outbound_lines WHERE id = ? FOR UPDATE',
+        [olId]
+      );
+      if (!olRows.length || olRows[0].order_id !== orderId) throw new Error('无效出库明细行');
+      const shipped = Number(olRows[0].quantity);
+      const [prevRows] = await conn.query(
+        `
+        SELECT COALESCE(SUM(rl.qty_return + rl.qty_lost + rl.qty_damaged), 0) AS s
+        FROM inv_return_lines rl
+        JOIN inv_return_batches rb ON rb.id = rl.batch_id
+        WHERE rl.outbound_line_id = ? AND rb.id <> ?
+      `,
+        [olId, batchId]
+      );
+      const already = Number(prevRows[0].s);
+      if (qr + ql + qd + already > shipped) {
+        throw new Error(`明细行 #${olId} 归还+丢失+损坏 超过出库数量`);
+      }
+
+      await conn.query(
+        'INSERT INTO inv_return_lines (batch_id, outbound_line_id, qty_return, qty_lost, qty_damaged) VALUES (?, ?, ?, ?, ?)',
+        [batchId, olId, qr, ql, qd]
+      );
+
+      if (qr > 0) {
+        await conn.query('UPDATE inv_items SET quantity_on_hand = quantity_on_hand + ? WHERE id = ?', [qr, olRows[0].item_id]);
+      }
+    }
+
+    const [linesOrder] = await conn.query('SELECT id, quantity FROM inv_outbound_lines WHERE order_id = ?', [orderId]);
+    let allClosed = true;
+    for (const ol of linesOrder) {
+      const [sumRow] = await conn.query(
+        'SELECT COALESCE(SUM(qty_return + qty_lost + qty_damaged), 0) AS s FROM inv_return_lines WHERE outbound_line_id = ?',
+        [ol.id]
+      );
+      const t = Number(sumRow[0].s);
+      if (t < Number(ol.quantity)) allClosed = false;
+    }
+    if (allClosed) {
+      await conn.query("UPDATE inv_outbound_orders SET status = 'closed' WHERE id = ?", [orderId]);
+    }
+
+    await conn.commit();
+    const detail = await loadOrderDetail(orderId);
+    res.json(detail);
+  } catch (e) {
+    await conn.rollback();
+    console.error(e);
+    res.status(500).json({ error: e.message || '归还失败' });
+  } finally {
+    conn.release();
+  }
+});
+
+router.get('/outbound/:id/pdf', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (!Number.isFinite(id)) return res.status(400).json({ error: '无效 ID' });
+    const detail = await loadOrderDetail(id);
+    if (!detail) return res.status(404).json({ error: '单据不存在' });
+    const { order, lines } = detail;
+
+    const tableBody = [
+      [
+        { text: '物料', style: 'th' },
+        { text: '规格/尺寸', style: 'th' },
+        { text: '数量', style: 'th' },
+        { text: '明细说明', style: 'th' },
+      ],
+    ];
+    lines.forEach((ln) => {
+      tableBody.push([
+        String(ln.item_name || ''),
+        String(ln.item_dimensions || '—'),
+        String(ln.quantity),
+        String(ln.line_note || '—'),
+      ]);
+    });
+
+    const docDefinition = {
+      defaultStyle: { font: 'fangzhen', fontSize: 10 },
+      content: [
+        { text: '物资出库单', style: 'title', margin: [0, 0, 0, 12] },
+        {
+          columns: [
+            {
+              width: '*',
+              stack: [
+                { text: `单号：#${order.id}` },
+                {
+                  text: order.activity_year_label
+                    ? `关联场次年度：${order.activity_year_label}`
+                    : '物资库存：25/26 财年共用数据',
+                },
+              ],
+            },
+            {
+              width: '*',
+              stack: [
+                { text: `出库时间：${order.shipped_at ? String(order.shipped_at).slice(0, 19) : ''}` },
+                { text: `操作人：${order.operator || '—'}` },
+              ],
+            },
+          ],
+        },
+        { text: '\n' },
+        {
+          columns: [
+            {
+              width: '*',
+              stack: [
+                { text: `关联方式：${order.link_mode === 'standalone' ? '非项目' : '项目编号'}` },
+                ...(order.project_code ? [{ text: `项目编号：${order.project_code}` }] : []),
+                ...(order.purpose ? [{ text: `用途：${order.purpose}` }] : []),
+              ],
+            },
+            {
+              width: '*',
+              stack: [
+                { text: `品牌：${order.brand_code || ''} ｜ 区域：${order.region || ''}` },
+              ],
+            },
+          ],
+        },
+        { text: '\n收件信息', style: 'h2' },
+        {
+          stack: [
+            { text: `城市：${order.recipient_city || '—'}` },
+            { text: `地址：${order.recipient_address || '—'}` },
+            { text: `联系人：${order.contact_name || '—'}  ${order.contact_phone || ''}` },
+            { text: `物流：${order.logistics_method || '—'}` },
+          ],
+        },
+        { text: '\n明细', style: 'h2' },
+        {
+          table: {
+            widths: ['*', 'auto', 'auto', '*'],
+            headerRows: 1,
+            body: tableBody,
+          },
+          layout: {
+            fillColor: (i) => (i === 0 ? '#eeeeee' : null),
+          },
+        },
+        ...(order.remarks ? [{ text: `\n备注：${order.remarks}`, margin: [0, 12, 0, 0] }] : []),
+      ],
+      styles: {
+        title: { fontSize: 16, bold: true },
+        h2: { fontSize: 11, bold: true, margin: [0, 8, 0, 4] },
+        th: { bold: true },
+      },
+    };
+
+    ensureInventoryPdfVfs();
+    const urlResolver = new URLResolver(pdfVirtualFs);
+    const printer = new PdfPrinter(pdfFonts, pdfVirtualFs, urlResolver);
+    const pdfDoc = await printer.createPdfKitDocument(docDefinition);
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(`出库单_${order.id}.pdf`)}`);
+    pdfDoc.pipe(res);
+    pdfDoc.end();
+  } catch (e) {
+    console.error(e);
+    if (!res.headersSent) res.status(500).json({ error: e.message || 'PDF 失败' });
+  }
+});
+
+module.exports = router;

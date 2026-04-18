@@ -6,7 +6,7 @@
   <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate">
   <meta http-equiv="Pragma" content="no-cache">
   <title>人头马年框项目管理</title>
-  <link rel="stylesheet" href="style.css?v=20260415activity-form-deferred">
+  <link rel="stylesheet" href="style.css?v=20260418inventory-nav">
   <!-- Chart.js -->
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
   <script src="https://unpkg.com/lucide@latest"></script>
@@ -30,76 +30,109 @@
       <button class="year-btn" data-year="26" onclick="switchYear('26')">26年度</button>
     </div>
 
-    <!-- 导航菜单（结构见 20260414更新内容.md：活动记录 / 成本管理 / 仓库管理 / 系统） -->
-    <nav class="sidebar-nav">
-      <div class="nav-section-label">活动记录</div>
-      <a class="nav-item active" data-page="dashboard" onclick="navigate('dashboard')">
-        <span class="nav-icon"><i data-lucide="layout-dashboard" style="width:16px;height:16px"></i></span>
-        <span class="nav-text">数据看板</span>
-      </a>
-      <a class="nav-item" data-page="activities" onclick="navigate('activities')">
-        <span class="nav-icon"><i data-lucide="clipboard-list" style="width:16px;height:16px"></i></span>
-        <span class="nav-text">场次记录</span>
-        <span class="nav-badge" id="badge-activities">—</span>
-      </a>
-      <a class="nav-item" data-page="calendar" onclick="navigate('calendar')">
-        <span class="nav-icon"><i data-lucide="calendar-days" style="width:16px;height:16px"></i></span>
-        <span class="nav-text">排期日历</span>
-      </a>
+    <!-- 导航：分组可折叠，状态存 localStorage remy_navGroup_* -->
+    <nav class="sidebar-nav" id="sidebarNav">
+      <div class="nav-group" data-nav-group="rec">
+        <button type="button" class="nav-group-toggle" aria-expanded="true" onclick="toggleNavGroup('rec')">
+          <span class="nav-group-title">活动记录</span>
+          <span class="nav-group-chevron"><i data-lucide="chevron-down" style="width:14px;height:14px"></i></span>
+        </button>
+        <div class="nav-group-items">
+          <a class="nav-item active" data-page="dashboard" onclick="navigate('dashboard')">
+            <span class="nav-icon"><i data-lucide="layout-dashboard" style="width:16px;height:16px"></i></span>
+            <span class="nav-text">数据看板</span>
+          </a>
+          <a class="nav-item" data-page="activities" onclick="navigate('activities')">
+            <span class="nav-icon"><i data-lucide="clipboard-list" style="width:16px;height:16px"></i></span>
+            <span class="nav-text">场次记录</span>
+            <span class="nav-badge" id="badge-activities">—</span>
+          </a>
+          <a class="nav-item" data-page="calendar" onclick="navigate('calendar')">
+            <span class="nav-icon"><i data-lucide="calendar-days" style="width:16px;height:16px"></i></span>
+            <span class="nav-text">排期日历</span>
+          </a>
+        </div>
+      </div>
 
-      <div class="nav-section-label">成本管理</div>
-      <a class="nav-item" data-page="cost" onclick="navigate('cost')">
-        <span class="nav-icon"><i data-lucide="coins" style="width:16px;height:16px"></i></span>
-        <span class="nav-text">活动成本</span>
-      </a>
-      <a class="nav-item" data-page="warehouse" onclick="navigate('warehouse')">
-        <span class="nav-icon"><i data-lucide="warehouse" style="width:16px;height:16px"></i></span>
-        <span class="nav-text">仓储成本</span>
-        <span class="nav-badge" id="badge-warehouse">—</span>
-      </a>
-      <a class="nav-item" data-page="logistics" onclick="navigate('logistics')">
-        <span class="nav-icon"><i data-lucide="truck" style="width:16px;height:16px"></i></span>
-        <span class="nav-text">物流成本</span>
-        <span class="nav-badge" id="badge-logistics">—</span>
-      </a>
-      <a class="nav-item" data-page="material" onclick="navigate('material')">
-        <span class="nav-icon"><i data-lucide="shopping-cart" style="width:16px;height:16px"></i></span>
-        <span class="nav-text">物料采购</span>
-        <span class="nav-badge" id="badge-material">—</span>
-      </a>
-      <a class="nav-item" data-page="prop-repair" onclick="navigate('prop-repair')">
-        <span class="nav-icon"><i data-lucide="wrench" style="width:16px;height:16px"></i></span>
-        <span class="nav-text">道具维修</span>
-        <span class="nav-badge" id="badge-prop-repair">—</span>
-      </a>
-      <a class="nav-item" data-page="reimbursement" onclick="navigate('reimbursement')">
-        <span class="nav-icon"><i data-lucide="receipt" style="width:16px;height:16px"></i></span>
-        <span class="nav-text">报销登记</span>
-        <span class="nav-badge" id="badge-reimbursement">—</span>
-      </a>
+      <div class="nav-group" data-nav-group="cost">
+        <button type="button" class="nav-group-toggle" aria-expanded="true" onclick="toggleNavGroup('cost')">
+          <span class="nav-group-title">成本管理</span>
+          <span class="nav-group-chevron"><i data-lucide="chevron-down" style="width:14px;height:14px"></i></span>
+        </button>
+        <div class="nav-group-items">
+          <a class="nav-item" data-page="cost" onclick="navigate('cost')">
+            <span class="nav-icon"><i data-lucide="coins" style="width:16px;height:16px"></i></span>
+            <span class="nav-text">活动成本</span>
+          </a>
+          <a class="nav-item" data-page="warehouse" onclick="navigate('warehouse')">
+            <span class="nav-icon"><i data-lucide="warehouse" style="width:16px;height:16px"></i></span>
+            <span class="nav-text">仓储成本</span>
+            <span class="nav-badge" id="badge-warehouse">—</span>
+          </a>
+          <a class="nav-item" data-page="logistics" onclick="navigate('logistics')">
+            <span class="nav-icon"><i data-lucide="truck" style="width:16px;height:16px"></i></span>
+            <span class="nav-text">物流成本</span>
+            <span class="nav-badge" id="badge-logistics">—</span>
+          </a>
+          <a class="nav-item" data-page="material" onclick="navigate('material')">
+            <span class="nav-icon"><i data-lucide="shopping-cart" style="width:16px;height:16px"></i></span>
+            <span class="nav-text">物料采购</span>
+            <span class="nav-badge" id="badge-material">—</span>
+          </a>
+          <a class="nav-item" data-page="prop-repair" onclick="navigate('prop-repair')">
+            <span class="nav-icon"><i data-lucide="wrench" style="width:16px;height:16px"></i></span>
+            <span class="nav-text">道具维修</span>
+            <span class="nav-badge" id="badge-prop-repair">—</span>
+          </a>
+          <a class="nav-item" data-page="reimbursement" onclick="navigate('reimbursement')">
+            <span class="nav-icon"><i data-lucide="receipt" style="width:16px;height:16px"></i></span>
+            <span class="nav-text">报销登记</span>
+            <span class="nav-badge" id="badge-reimbursement">—</span>
+          </a>
+        </div>
+      </div>
 
-      <div class="nav-section-label">仓库管理</div>
-      <a class="nav-item" data-page="wine" onclick="navigate('wine')">
-        <span class="nav-icon"><i data-lucide="wine" style="width:16px;height:16px"></i></span>
-        <span class="nav-text">酒品管理</span>
-        <span class="nav-badge" id="badge-wine">—</span>
-      </a>
+      <div class="nav-group" data-nav-group="stock">
+        <button type="button" class="nav-group-toggle" aria-expanded="true" onclick="toggleNavGroup('stock')">
+          <span class="nav-group-title">仓库管理</span>
+          <span class="nav-group-chevron"><i data-lucide="chevron-down" style="width:14px;height:14px"></i></span>
+        </button>
+        <div class="nav-group-items">
+          <a class="nav-item" data-page="inventory" onclick="navigate('inventory')">
+            <span class="nav-icon"><i data-lucide="package" style="width:16px;height:16px"></i></span>
+            <span class="nav-text">物资库存</span>
+            <span class="nav-badge" id="badge-inventory">—</span>
+          </a>
+          <a class="nav-item" data-page="wine" onclick="navigate('wine')">
+            <span class="nav-icon"><i data-lucide="wine" style="width:16px;height:16px"></i></span>
+            <span class="nav-text">酒品管理</span>
+            <span class="nav-badge" id="badge-wine">—</span>
+          </a>
+        </div>
+      </div>
 
-      <div class="nav-section-label">系统</div>
-      <a class="nav-item" data-page="users" id="navUsers" onclick="navigate('users')">
-        <span class="nav-icon"><i data-lucide="users" style="width:16px;height:16px"></i></span>
-        <span class="nav-text">用户管理</span>
-      </a>
-      <a class="nav-item" data-page="backup" onclick="navigate('backup')">
-        <span class="nav-icon"><i data-lucide="database-backup" style="width:16px;height:16px"></i></span>
-        <span class="nav-text">数据备份</span>
-      </a>
+      <div class="nav-group" data-nav-group="sys">
+        <button type="button" class="nav-group-toggle" aria-expanded="true" onclick="toggleNavGroup('sys')">
+          <span class="nav-group-title">系统</span>
+          <span class="nav-group-chevron"><i data-lucide="chevron-down" style="width:14px;height:14px"></i></span>
+        </button>
+        <div class="nav-group-items">
+          <a class="nav-item" data-page="users" id="navUsers" onclick="navigate('users')">
+            <span class="nav-icon"><i data-lucide="users" style="width:16px;height:16px"></i></span>
+            <span class="nav-text">用户管理</span>
+          </a>
+          <a class="nav-item" data-page="backup" onclick="navigate('backup')">
+            <span class="nav-icon"><i data-lucide="database-backup" style="width:16px;height:16px"></i></span>
+            <span class="nav-text">数据备份</span>
+          </a>
+        </div>
+      </div>
     </nav>
 
     <!-- 底部：版本号 + 明暗主题图标 -->
     <div class="sidebar-footer">
       <div class="sidebar-footer-bar">
-        <span class="app-version" id="appVersion" title="应用版本">ver.2026.04.15</span>
+        <span class="app-version" id="appVersion" title="应用版本">ver.2026.04.18</span>
         <button type="button" class="theme-toggle-icon" id="themeToggleBtn" onclick="toggleTheme()" title="切换到亮色模式" aria-label="切换明暗主题"><svg xmlns="http://www.w3.org/2000/svg" width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg></button>
       </div>
     </div>
@@ -605,6 +638,6 @@
   <!-- 全局 Toast -->
   <div class="toast-container" id="toastContainer"></div>
 
-  <script src="app.js?v=20260416cost-dual-track-merge-visual"></script>
+  <script src="app.js?v=20260418inventory-load-fix"></script>
 </body>
 </html>
