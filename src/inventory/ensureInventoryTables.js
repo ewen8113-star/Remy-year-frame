@@ -14,7 +14,49 @@ async function columnExistsQuery(db, table, col) {
   return Number(r[0].c) > 0;
 }
 
+/** 旧库在进程内曾跑过 ensure 且 _ensured=true 后，大段 CREATE 不会再跑；故 is_common 必须在 _ensured 短路之前补列。表尚未创建时跳过（由下方 CREATE 带列）。 */
+let _invItemsCommonEnsured = false;
+async function ensureInvItemsCommonColumn(db) {
+  if (_invItemsCommonEnsured) return;
+  try {
+    const [tc] = await db.query(
+      `SELECT COUNT(*) AS c FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'inv_items'`
+    );
+    if (!Number(tc[0].c)) return;
+    if (!(await columnExistsQuery(db, 'inv_items', 'is_common'))) {
+      await db.query('ALTER TABLE inv_items ADD COLUMN is_common TINYINT(1) NOT NULL DEFAULT 0');
+    }
+    _invItemsCommonEnsured = true;
+  } catch (e) {
+    console.error('inv_items.is_common 补列失败:', e);
+    throw e;
+  }
+}
+
+let _invItemsStatsOverrideEnsured = false;
+async function ensureInvItemsStatsOverrideColumns(db) {
+  if (_invItemsStatsOverrideEnsured) return;
+  try {
+    const [tc] = await db.query(
+      `SELECT COUNT(*) AS c FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'inv_items'`
+    );
+    if (!Number(tc[0].c)) return;
+    if (!(await columnExistsQuery(db, 'inv_items', 'stats_damaged_override'))) {
+      await db.query('ALTER TABLE inv_items ADD COLUMN stats_damaged_override INT NULL');
+    }
+    if (!(await columnExistsQuery(db, 'inv_items', 'stats_lost_override'))) {
+      await db.query('ALTER TABLE inv_items ADD COLUMN stats_lost_override INT NULL');
+    }
+    _invItemsStatsOverrideEnsured = true;
+  } catch (e) {
+    console.error('inv_items 统计覆盖列补列失败:', e);
+    throw e;
+  }
+}
+
 async function ensureInventoryTables(db) {
+  await ensureInvItemsCommonColumn(db);
+  await ensureInvItemsStatsOverrideColumns(db);
   if (_ensured) return;
   if (_ensuring) return _ensuring;
   _ensuring = (async () => {
@@ -42,16 +84,13 @@ async function ensureInventoryTables(db) {
         alert_below INT NULL,
         image_urls LONGTEXT NULL,
         is_common TINYINT(1) NOT NULL DEFAULT 0,
+        stats_damaged_override INT NULL,
+        stats_lost_override INT NULL,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
         CONSTRAINT fk_inv_item_wh FOREIGN KEY (inv_warehouse_id) REFERENCES inv_warehouses(id) ON DELETE CASCADE
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
     `);
-    if (!(await columnExistsQuery(db, 'inv_items', 'is_common'))) {
-      await db.query(
-        'ALTER TABLE inv_items ADD COLUMN is_common TINYINT(1) NOT NULL DEFAULT 0'
-      );
-    }
     await db.query(`
       CREATE TABLE IF NOT EXISTS inv_outbound_orders (
         id INT PRIMARY KEY AUTO_INCREMENT,

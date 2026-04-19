@@ -26,9 +26,11 @@ const WAREHOUSE_ROW_SQL = `
     w.remarks,
     w.created_at,
     w.updated_at,
-    yf.year AS year_frame_name
+    yf.year AS year_frame_name,
+    act.project_code AS activity_project_code
   FROM warehouse w
   LEFT JOIN year_frames yf ON w.year_frame_id = yf.id
+  LEFT JOIN activities act ON act.id = w.activity_id
   WHERE w.id = ?
 `;
 
@@ -95,9 +97,11 @@ router.get('/', async (req, res) => {
         w.remarks,
         w.created_at,
         w.updated_at,
-        yf.year AS year_frame_name
+        yf.year AS year_frame_name,
+        act.project_code AS activity_project_code
       FROM warehouse w
       LEFT JOIN year_frames yf ON w.year_frame_id = yf.id
+      LEFT JOIN activities act ON act.id = w.activity_id
       WHERE 1=1
     `;
     const params = [];

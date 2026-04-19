@@ -196,6 +196,8 @@ CREATE TABLE IF NOT EXISTS inv_items (
     alert_below INT NULL,
     image_urls LONGTEXT NULL,
     is_common TINYINT(1) NOT NULL DEFAULT 0,
+    stats_damaged_override INT NULL,
+    stats_lost_override INT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     CONSTRAINT fk_inv_item_wh FOREIGN KEY (inv_warehouse_id) REFERENCES inv_warehouses(id) ON DELETE CASCADE

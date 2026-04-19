@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="zh-CN" data-theme="dark">
+<html lang="zh-CN">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -9,13 +9,13 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="style.css?v=20260414auth-register">
+  <link rel="stylesheet" href="style.css?v=20260419ui-spec">
 </head>
-<body>
-  <main style="width:100%;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px;">
-    <div class="card" style="width:min(420px,100%);padding:28px;">
-      <div class="card-title" style="font-size:24px;margin-bottom:6px;">创建账号</div>
-      <div class="card-sub" style="margin-bottom:18px;">新账号默认角色为 operator</div>
+<body class="auth-page-body">
+  <main class="auth-page-shell">
+    <div class="auth-glass-card">
+      <div class="card-title">创建账号</div>
+      <div class="card-sub">新账号默认角色为 operator</div>
       <form id="registerForm" onsubmit="submitRegister(event)">
         <div class="form-group" style="margin-bottom:12px;">
           <label class="form-label">用户名</label>
@@ -29,15 +29,15 @@
           <label class="form-label">确认密码</label>
           <input class="form-control" id="regConfirmPassword" type="password" autocomplete="new-password" required>
         </div>
-        <div id="registerError" style="display:none;margin-bottom:12px;color:var(--danger);font-size:13px;"></div>
+        <div id="registerError" style="display:none;margin-bottom:12px;color:#ef4444;font-size:13px;"></div>
         <button class="btn btn-primary" id="registerBtn" type="submit" style="width:100%;">注册</button>
-        <div style="margin-top:12px;text-align:center;font-size:13px;color:var(--text-secondary);">
+        <div style="margin-top:12px;text-align:center;font-size:13px;color:#64748b;">
           已有账号？
-          <a href="/login.html" style="color:var(--accent);text-decoration:none;">去登录</a>
+          <a href="/login.html">去登录</a>
         </div>
       </form>
     </div>
   </main>
-  <script src="register.js?v=20260414auth-register"></script>
+  <script src="register.js?v=20260419ui-spec"></script>
 </body>
 </html>

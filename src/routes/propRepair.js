@@ -38,9 +38,11 @@ function canonicalRegion(raw) {
 }
 
 const LIST_SQL = `
-  SELECT pr.*, bi.brand_name, bi.brand_code
+  SELECT pr.*, bi.brand_name, bi.brand_code,
+         act.project_code AS activity_project_code
   FROM prop_repairs pr
   LEFT JOIN brand_inventory bi ON pr.brand_id = bi.id
+  LEFT JOIN activities act ON act.id = pr.activity_id
   WHERE 1 = 1
 `;
 

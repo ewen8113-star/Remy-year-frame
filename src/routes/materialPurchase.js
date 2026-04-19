@@ -26,9 +26,11 @@ function sumItems(items) {
 }
 
 const LIST_SQL = `
-  SELECT mp.*, bi.brand_name, bi.brand_code
+  SELECT mp.*, bi.brand_name, bi.brand_code,
+         act.project_code AS activity_project_code
   FROM material_purchases mp
   LEFT JOIN brand_inventory bi ON mp.brand_id = bi.id
+  LEFT JOIN activities act ON act.id = mp.activity_id
   WHERE 1 = 1
 `;
 

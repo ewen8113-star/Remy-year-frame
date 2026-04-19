@@ -9,13 +9,13 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="style.css?v=20260414auth-login">
+  <link rel="stylesheet" href="style.css?v=20260419ui-spec">
 </head>
-<body>
-  <main style="width:100%;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px;">
-    <div class="card" style="width:min(420px,100%);padding:28px;">
-      <div class="card-title" style="font-size:24px;margin-bottom:6px;">欢迎登录</div>
-      <div class="card-sub" style="margin-bottom:18px;">人头马年框项目管理系统</div>
+<body class="auth-page-body">
+  <main class="auth-page-shell">
+    <div class="auth-glass-card">
+      <div class="card-title">欢迎登录</div>
+      <div class="card-sub">人头马年框项目管理系统</div>
       <form id="loginForm" onsubmit="submitLogin(event)">
         <div class="form-group" style="margin-bottom:12px;">
           <label class="form-label">用户名</label>
@@ -26,18 +26,18 @@
           <input class="form-control" id="password" type="password" autocomplete="current-password" required>
         </div>
         <div style="margin:-4px 0 12px;display:flex;align-items:center;gap:8px;">
-          <input type="checkbox" id="rememberUsername" style="width:14px;height:14px;accent-color:var(--accent)">
-          <label for="rememberUsername" style="font-size:13px;color:var(--text-secondary);cursor:pointer;">记住用户名</label>
+          <input type="checkbox" id="rememberUsername" style="width:14px;height:14px;accent-color:#1e40af">
+          <label for="rememberUsername" style="font-size:13px;color:#64748b;cursor:pointer;">记住用户名</label>
         </div>
-        <div id="loginError" style="display:none;margin-bottom:12px;color:var(--danger);font-size:13px;"></div>
+        <div id="loginError" style="display:none;margin-bottom:12px;color:#ef4444;font-size:13px;"></div>
         <button class="btn btn-primary" id="loginBtn" type="submit" style="width:100%;">登录</button>
-        <div style="margin-top:12px;text-align:center;font-size:13px;color:var(--text-secondary);">
+        <div style="margin-top:12px;text-align:center;font-size:13px;color:#64748b;">
           还没有账号？
-          <a href="/register.html" style="color:var(--accent);text-decoration:none;">去注册</a>
+          <a href="/register.html">去注册</a>
         </div>
       </form>
     </div>
   </main>
-  <script src="login.js?v=20260414auth-login"></script>
+  <script src="login.js?v=20260419ui-spec"></script>
 </body>
 </html>

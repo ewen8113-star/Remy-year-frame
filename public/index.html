@@ -6,7 +6,10 @@
   <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate">
   <meta http-equiv="Pragma" content="no-cache">
   <title>人头马年框项目管理</title>
-  <link rel="stylesheet" href="style.css?v=20260418inventory-nav">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css?v=20260419inv-stat">
   <!-- Chart.js -->
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
   <script src="https://unpkg.com/lucide@latest"></script>
@@ -98,15 +101,23 @@
           <span class="nav-group-chevron"><i data-lucide="chevron-down" style="width:14px;height:14px"></i></span>
         </button>
         <div class="nav-group-items">
-          <a class="nav-item" data-page="inventory" onclick="navigate('inventory')">
+          <a class="nav-item" data-page="inv-outbound" onclick="navigate('inv-outbound')">
             <span class="nav-icon"><i data-lucide="package" style="width:16px;height:16px"></i></span>
-            <span class="nav-text">物资库存</span>
-            <span class="nav-badge" id="badge-inventory">—</span>
+            <span class="nav-text">物品出库</span>
+          </a>
+          <a class="nav-item" data-page="inv-inbound" onclick="navigate('inv-inbound')">
+            <span class="nav-icon"><i data-lucide="inbox" style="width:16px;height:16px"></i></span>
+            <span class="nav-text">物品入库</span>
+            <span class="nav-badge" id="badge-inv-inbound">—</span>
           </a>
           <a class="nav-item" data-page="wine" onclick="navigate('wine')">
             <span class="nav-icon"><i data-lucide="wine" style="width:16px;height:16px"></i></span>
             <span class="nav-text">酒品管理</span>
             <span class="nav-badge" id="badge-wine">—</span>
+          </a>
+          <a class="nav-item" data-page="inventory" id="navInventoryMaster" onclick="navigate('inventory')">
+            <span class="nav-icon"><i data-lucide="database" style="width:16px;height:16px"></i></span>
+            <span class="nav-text">库存数据</span>
           </a>
         </div>
       </div>
@@ -635,9 +646,54 @@
     </div>
   </div>
 
+  <!-- 物品出库：新建出库（表单在 #invOutboundModalBody 内动态填充） -->
+  <div class="modal wide inv-modal-ob" id="modalInvOutbound" style="max-width:820px" onclick="event.stopPropagation()">
+    <div class="modal-header">
+      <span class="modal-title">新建物品出库</span>
+      <button type="button" class="modal-close" onclick="closeModal()">✕</button>
+    </div>
+    <div class="modal-body" id="invOutboundModalBody"></div>
+  </div>
+
+  <!-- 物品出库：按项目汇总 — 出库清单明细 -->
+  <div class="modal wide" id="modalInvOutboundGroup" style="max-width:800px" onclick="event.stopPropagation()">
+    <div class="modal-header">
+      <span class="modal-title" id="invOutboundGroupTitle">出库清单</span>
+      <button type="button" class="modal-close" onclick="closeModal()">✕</button>
+    </div>
+    <div class="modal-body" id="invOutboundGroupBody" style="max-height:70vh;overflow:auto"></div>
+  </div>
+
+  <!-- 物品出库：PDF 预览（iframe inline）+ 下载 -->
+  <div class="modal wide inv-modal-pdf" id="modalInvOutboundPdf" onclick="event.stopPropagation()">
+    <div class="modal-header">
+      <span class="modal-title" id="invOutboundPdfTitle">出库单预览</span>
+      <button type="button" class="modal-close" onclick="closeModal()">✕</button>
+    </div>
+    <div class="modal-body inv-outbound-pdf-body" id="invOutboundPdfBody">
+      <div id="invOutboundPdfLoading" class="inv-outbound-pdf-loading">加载中…</div>
+      <iframe id="invOutboundPdfFrame" title="出库单 PDF 预览"></iframe>
+    </div>
+    <div class="modal-footer">
+      <button type="button" class="btn btn-secondary" onclick="closeModal()">关闭</button>
+      <button type="button" class="btn btn-primary" id="invOutboundPdfDownloadBtn">下载 PDF</button>
+    </div>
+  </div>
+
+  <!-- 库存数据：编辑物品 -->
+  <div class="modal wide inv-modal-item-edit" id="modalInvItemEdit" style="max-width:520px" onclick="event.stopPropagation()">
+    <div class="modal-header">
+      <span class="modal-title" id="invItemModalTitle">编辑物品</span>
+      <button type="button" class="modal-close" onclick="invCancelEditItem()">✕</button>
+    </div>
+    <div class="modal-body" id="invItemEditModalBody"></div>
+  </div>
+
+  <datalist id="invProjectList"></datalist>
+
   <!-- 全局 Toast -->
   <div class="toast-container" id="toastContainer"></div>
 
-  <script src="app.js?v=20260418inventory-load-fix"></script>
+  <script src="app.js?v=20260419ob-purge"></script>
 </body>
 </html>
