@@ -22,6 +22,7 @@ function ensureInventoryPdfVfs() {
 const router = express.Router();
 const db = require('../config/database');
 const { ensureInventoryTables } = require('../inventory/ensureInventoryTables');
+const { ensureWineCatalog } = require('../wine/ensureWineCatalog');
 
 router.use(async (req, res, next) => {
   try {
@@ -113,6 +114,40 @@ function parseImageUrls(row) {
   } catch {
     return [];
   }
+}
+
+function buildEmptyBottleName(itemNameRaw) {
+  const base = String(itemNameRaw || '').trim();
+  if (!base) return '空瓶';
+  if (base.includes('空瓶')) return base;
+  return `${base} 空瓶`;
+}
+
+async function ensureEmptyBottleItem(conn, sourceItem) {
+  const whId = Number(sourceItem?.inv_warehouse_id);
+  const itemName = buildEmptyBottleName(sourceItem?.name);
+  if (!Number.isFinite(whId) || !itemName) throw new Error('空瓶库存识别失败');
+  const [ex] = await conn.query(
+    'SELECT id FROM inv_items WHERE inv_warehouse_id = ? AND name = ? LIMIT 1',
+    [whId, itemName]
+  );
+  if (ex.length) return Number(ex[0].id);
+  const [ret] = await conn.query(
+    `INSERT INTO inv_items (inv_warehouse_id, name, description, dimensions, initial_quantity, quantity_on_hand, alert_below, image_urls, is_common)
+     VALUES (?, ?, ?, ?, 0, 0, NULL, '[]', 0)`,
+    [
+      whId,
+      itemName,
+      '系统自动生成：空瓶回收库存',
+      sourceItem?.dimensions || null,
+    ]
+  );
+  return Number(ret.insertId);
+}
+
+function wineCatalogSpecLine(row) {
+  const parts = [row?.category, row?.volume_label].filter((x) => String(x || '').trim());
+  return parts.length ? parts.join(' · ') : '';
 }
 
 /** MySQL 聚合 / mysql2 可能返回 string、bigint；统一为安全数字 */
@@ -334,6 +369,54 @@ router.get('/items/:id', async (req, res) => {
   }
 });
 
+router.get('/empty-bottles/summary', async (req, res) => {
+  try {
+    const [rows] = await db.query(
+      `
+      SELECT
+        w.id AS inv_warehouse_id,
+        w.region,
+        bi.brand_code,
+        i.id AS item_id,
+        i.name,
+        i.quantity_on_hand,
+        i.updated_at
+      FROM inv_items i
+      JOIN inv_warehouses w ON w.id = i.inv_warehouse_id
+      JOIN brand_inventory bi ON bi.id = w.brand_id
+      WHERE i.name LIKE '%空瓶%'
+      ORDER BY bi.brand_code, w.region, i.name, i.id
+    `
+    );
+    const byWarehouse = new Map();
+    rows.forEach((r) => {
+      const key = `${r.inv_warehouse_id}`;
+      if (!byWarehouse.has(key)) {
+        byWarehouse.set(key, {
+          inv_warehouse_id: Number(r.inv_warehouse_id),
+          brand_code: r.brand_code,
+          region: r.region,
+          total_empty_bottles: 0,
+          rows: [],
+        });
+      }
+      const g = byWarehouse.get(key);
+      const q = Math.max(0, parseInt(r.quantity_on_hand, 10) || 0);
+      g.total_empty_bottles += q;
+      g.rows.push({
+        item_id: Number(r.item_id),
+        name: r.name,
+        quantity_on_hand: q,
+        updated_at: r.updated_at,
+      });
+    });
+    res.json(Array.from(byWarehouse.values()));
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: e.message || '加载空瓶回收汇总失败' });
+  }
+});
+
 router.post('/items', async (req, res) => {
   try {
     const {
@@ -375,6 +458,90 @@ router.post('/items', async (req, res) => {
   } catch (e) {
     console.error(e);
     res.status(500).json({ error: e.message || '保存失败' });
+  }
+});
+
+router.post('/items/from-catalog', async (req, res) => {
+  try {
+    await ensureWineCatalog(db);
+    const whId = parseInt(req.body?.inv_warehouse_id, 10);
+    const items = Array.isArray(req.body?.items) ? req.body.items : [];
+    if (!Number.isFinite(whId) || whId <= 0) {
+      return res.status(400).json({ error: '缺少 inv_warehouse_id' });
+    }
+    if (!items.length) {
+      return res.status(400).json({ error: '请选择至少一条酒品目录' });
+    }
+    const ids = [
+      ...new Set(
+        items
+          .map((it) => parseInt(it?.catalog_id, 10))
+          .filter((id) => Number.isFinite(id) && id > 0),
+      ),
+    ];
+    if (!ids.length) return res.status(400).json({ error: '目录项无效' });
+
+    const [whRows] = await db.query('SELECT id FROM inv_warehouses WHERE id = ? LIMIT 1', [whId]);
+    if (!whRows.length) return res.status(404).json({ error: '仓库不存在' });
+
+    const ph = ids.map(() => '?').join(', ');
+    const [catalogRows] = await db.query(
+      `SELECT id, brand, name, category, volume_label, image_urls
+       FROM wine_catalog
+       WHERE id IN (${ph})`,
+      ids,
+    );
+    const catalogById = new Map(catalogRows.map((r) => [Number(r.id), r]));
+
+    let inserted = 0;
+    let skippedExisting = 0;
+    for (const raw of items) {
+      const catalogId = parseInt(raw?.catalog_id, 10);
+      if (!Number.isFinite(catalogId) || catalogId <= 0) continue;
+      const c = catalogById.get(catalogId);
+      if (!c) continue;
+      const qRaw = parseInt(raw?.quantity, 10);
+      const qty = Number.isFinite(qRaw) && qRaw > 0 ? qRaw : 0;
+      const spec = wineCatalogSpecLine(c);
+      const [exist] = await db.query(
+        'SELECT id FROM inv_items WHERE inv_warehouse_id = ? AND name = ? AND COALESCE(dimensions, \'\') = COALESCE(?, \'\') LIMIT 1',
+        [whId, String(c.name || '').trim(), spec || null],
+      );
+      if (exist.length) {
+        skippedExisting += 1;
+        continue;
+      }
+      let urls = [];
+      try {
+        const parsed = typeof c.image_urls === 'string' ? JSON.parse(c.image_urls) : c.image_urls;
+        if (Array.isArray(parsed)) urls = parsed;
+      } catch (_) {
+        urls = [];
+      }
+      await db.query(
+        `INSERT INTO inv_items (inv_warehouse_id, name, description, dimensions, initial_quantity, quantity_on_hand, alert_below, image_urls, is_common)
+         VALUES (?, ?, ?, ?, ?, ?, NULL, ?, 0)`,
+        [
+          whId,
+          String(c.name || '').trim(),
+          null,
+          spec || null,
+          qty,
+          qty,
+          JSON.stringify(urls),
+        ],
+      );
+      inserted += 1;
+    }
+
+    res.json({
+      ok: true,
+      inserted,
+      skipped_existing: skippedExisting,
+    });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: e.message || '批量添加失败' });
   }
 });
 
@@ -534,8 +701,8 @@ async function loadOrderDetail(orderId) {
     SELECT o.*, wh.region, wh.brand_id, bi.brand_code, bi.brand_name,
            ayf.year AS activity_year_label
     FROM inv_outbound_orders o
-    JOIN inv_warehouses wh ON wh.id = o.inv_warehouse_id
-    JOIN brand_inventory bi ON bi.id = wh.brand_id
+    LEFT JOIN inv_warehouses wh ON wh.id = o.inv_warehouse_id
+    LEFT JOIN brand_inventory bi ON bi.id = wh.brand_id
     LEFT JOIN activities act ON act.id = o.activity_id
     LEFT JOIN year_frames ayf ON ayf.id = act.year_frame_id
     WHERE o.id = ?
@@ -546,9 +713,14 @@ async function loadOrderDetail(orderId) {
   const o = orders[0];
   const [lines] = await db.query(
     `
-    SELECT ol.*, it.name AS item_name, it.dimensions AS item_dimensions
+    SELECT ol.*, it.name AS item_name, it.dimensions AS item_dimensions,
+           it.inv_warehouse_id,
+           wh.region AS line_region,
+           bi.brand_code AS line_brand_code
     FROM inv_outbound_lines ol
     JOIN inv_items it ON it.id = ol.item_id
+    LEFT JOIN inv_warehouses wh ON wh.id = it.inv_warehouse_id
+    LEFT JOIN brand_inventory bi ON bi.id = wh.brand_id
     WHERE ol.order_id = ?
     ORDER BY ol.id
   `,
@@ -597,8 +769,8 @@ router.post('/outbound', async (req, res) => {
     const lm = link_mode === 'standalone' ? 'standalone' : 'activity';
     const op = (req.session && req.session.user && req.session.user.username) || '';
 
-    if (!Number.isFinite(whId) || !Array.isArray(lines) || !lines.length) {
-      return res.status(400).json({ error: '请填写仓库与出库明细' });
+    if (!Array.isArray(lines) || !lines.length) {
+      return res.status(400).json({ error: '请填写出库明细' });
     }
     if (lm === 'activity' && !String(project_code || '').trim()) {
       return res.status(400).json({ error: '关联场次出库请填写项目编号' });
@@ -619,6 +791,16 @@ router.post('/outbound', async (req, res) => {
       }
     }
 
+    let headerWhId = Number.isFinite(whId) ? whId : null;
+    if (!headerWhId) {
+      const firstItemId = parseInt(lines[0]?.item_id, 10);
+      if (Number.isFinite(firstItemId)) {
+        const [it0] = await conn.query('SELECT inv_warehouse_id FROM inv_items WHERE id = ? LIMIT 1', [firstItemId]);
+        if (it0.length) headerWhId = Number(it0[0].inv_warehouse_id);
+      }
+    }
+    if (!headerWhId) throw new Error('无法识别仓库，请检查出库明细');
+
     const [result] = await conn.query(
       `
       INSERT INTO inv_outbound_orders (
@@ -628,7 +810,7 @@ router.post('/outbound', async (req, res) => {
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'shipped', NOW(), ?, ?)
     `,
       [
-        whId,
+        headerWhId,
         resolvedActivityId,
         lm,
         lm === 'activity' ? String(project_code).trim() : null,
@@ -655,9 +837,7 @@ router.post('/outbound', async (req, res) => {
         'SELECT id, inv_warehouse_id, quantity_on_hand FROM inv_items WHERE id = ? FOR UPDATE',
         [itemId]
       );
-      if (!itRows.length || itRows[0].inv_warehouse_id !== whId) {
-        throw new Error('物料不属于当前仓库');
-      }
+      if (!itRows.length) throw new Error('物料不存在');
       const onHand = Number(itRows[0].quantity_on_hand);
       if (onHand < qty) throw new Error(`「${itemId}」库存不足（当前 ${onHand}）`);
       await conn.query('UPDATE inv_items SET quantity_on_hand = quantity_on_hand - ? WHERE id = ?', [qty, itemId]);
@@ -768,8 +948,8 @@ router.put('/outbound/:id', async (req, res) => {
     const lm = link_mode === 'standalone' ? 'standalone' : 'activity';
     const op = (req.session && req.session.user && req.session.user.username) || '';
 
-    if (!Number.isFinite(whId) || !Array.isArray(lines) || !lines.length) {
-      return res.status(400).json({ error: '请填写仓库与出库明细' });
+    if (!Array.isArray(lines) || !lines.length) {
+      return res.status(400).json({ error: '请填写出库明细' });
     }
     if (lm === 'activity' && !String(project_code || '').trim()) {
       return res.status(400).json({ error: '请填写项目编号' });
@@ -823,6 +1003,16 @@ router.put('/outbound/:id', async (req, res) => {
     }
     await conn.query('DELETE FROM inv_outbound_lines WHERE order_id = ?', [orderId]);
 
+    let headerWhId = Number.isFinite(whId) ? whId : null;
+    if (!headerWhId) {
+      const firstItemId = parseInt(lines[0]?.item_id, 10);
+      if (Number.isFinite(firstItemId)) {
+        const [it0] = await conn.query('SELECT inv_warehouse_id FROM inv_items WHERE id = ? LIMIT 1', [firstItemId]);
+        if (it0.length) headerWhId = Number(it0[0].inv_warehouse_id);
+      }
+    }
+    if (!headerWhId) throw new Error('无法识别仓库，请检查出库明细');
+
     await conn.query(
       `
       UPDATE inv_outbound_orders SET
@@ -832,7 +1022,7 @@ router.put('/outbound/:id', async (req, res) => {
       WHERE id = ?
     `,
       [
-        whId,
+        headerWhId,
         resolvedActivityIdPut,
         lm,
         lm === 'activity' ? String(project_code).trim() : null,
@@ -859,9 +1049,7 @@ router.put('/outbound/:id', async (req, res) => {
         'SELECT id, inv_warehouse_id, quantity_on_hand FROM inv_items WHERE id = ? FOR UPDATE',
         [itemId]
       );
-      if (!itRows.length || itRows[0].inv_warehouse_id !== whId) {
-        throw new Error('物料不属于当前仓库');
-      }
+      if (!itRows.length) throw new Error('物料不存在');
       const onHand = Number(itRows[0].quantity_on_hand);
       if (onHand < qty) throw new Error(`库存不足（当前 ${onHand}）`);
       await conn.query('UPDATE inv_items SET quantity_on_hand = quantity_on_hand - ? WHERE id = ?', [qty, itemId]);
@@ -885,7 +1073,7 @@ router.put('/outbound/:id', async (req, res) => {
 
 /**
  * 删除出库单（仅管理员，见 requireWriteAccess）：
- * 1）冲销归还：按每条 inv_return_lines.qty_return 从库存扣回（与登记归还时 +库存 相反）；
+ * 1）冲销空瓶回收：按 inv_return_lines.qty_empty_recovered 从空瓶库存扣回；
  * 2）删除归还批次（级联删除归还明细）；
  * 3）冲销出库：按出库明细把数量加回库存（与出库时 -库存 相反）；
  * 4）删除出库单头（级联删除出库明细）。
@@ -909,7 +1097,7 @@ router.delete('/outbound/:id', async (req, res) => {
 
     const [retRows] = await conn.query(
       `
-      SELECT rl.qty_return, ol.item_id
+      SELECT rl.qty_empty_recovered, ol.item_id
       FROM inv_return_lines rl
       INNER JOIN inv_return_batches rb ON rb.id = rl.batch_id
       INNER JOIN inv_outbound_lines ol ON ol.id = rl.outbound_line_id
@@ -917,20 +1105,31 @@ router.delete('/outbound/:id', async (req, res) => {
     `,
       [orderId]
     );
+    const itemCache = new Map();
     for (const row of retRows) {
-      const qr = Math.max(0, parseInt(row.qty_return, 10) || 0);
-      if (qr <= 0) continue;
       const itemId = parseInt(row.item_id, 10);
       if (!Number.isFinite(itemId)) continue;
-      const [itLock] = await conn.query('SELECT id, quantity_on_hand FROM inv_items WHERE id = ? FOR UPDATE', [itemId]);
-      if (!itLock.length) throw new Error(`物料 #${itemId} 不存在，无法冲销归还`);
-      const onHand = Number(itLock[0].quantity_on_hand);
-      if (onHand < qr) {
-        throw new Error(
-          `物料 #${itemId} 当前库存 ${onHand}，不足以冲销归还入库 ${qr}（可能库存已被手工改动，请先核对）`,
-        );
+      const qe = Math.max(0, parseInt(row.qty_empty_recovered, 10) || 0);
+      if (qe > 0) {
+        let src = itemCache.get(itemId);
+        if (!src) {
+          const [srcRows] = await conn.query(
+            'SELECT id, inv_warehouse_id, name, dimensions FROM inv_items WHERE id = ? LIMIT 1',
+            [itemId]
+          );
+          if (!srcRows.length) throw new Error(`物料 #${itemId} 不存在，无法冲销空瓶回收`);
+          src = srcRows[0];
+          itemCache.set(itemId, src);
+        }
+        const emptyItemId = await ensureEmptyBottleItem(conn, src);
+        const [emptyLock] = await conn.query('SELECT id, quantity_on_hand FROM inv_items WHERE id = ? FOR UPDATE', [emptyItemId]);
+        if (!emptyLock.length) throw new Error(`空瓶物料 #${emptyItemId} 不存在，无法冲销空瓶回收`);
+        const emptyOnHand = Number(emptyLock[0].quantity_on_hand);
+        if (emptyOnHand < qe) {
+          throw new Error(`空瓶物料 #${emptyItemId} 当前库存 ${emptyOnHand}，不足以冲销空瓶回收 ${qe}`);
+        }
+        await conn.query('UPDATE inv_items SET quantity_on_hand = quantity_on_hand - ? WHERE id = ?', [qe, emptyItemId]);
       }
-      await conn.query('UPDATE inv_items SET quantity_on_hand = quantity_on_hand - ? WHERE id = ?', [qr, itemId]);
     }
 
     await conn.query('DELETE FROM inv_return_batches WHERE outbound_order_id = ?', [orderId]);
@@ -977,9 +1176,14 @@ router.post('/outbound/:id/returns', async (req, res) => {
 
     const hasQty = lines.some(
       (x) =>
-        (parseInt(x.qty_return, 10) || 0) + (parseInt(x.qty_lost, 10) || 0) + (parseInt(x.qty_damaged, 10) || 0) > 0
+        (parseInt(x.qty_return, 10) || 0) +
+          (parseInt(x.qty_lost, 10) || 0) +
+          (parseInt(x.qty_damaged, 10) || 0) +
+          (parseInt(x.qty_customer_keep, 10) || 0) +
+          (parseInt(x.qty_empty_recovered, 10) || 0) >
+        0
     );
-    if (!hasQty) throw new Error('请至少在一行填写归还、丢失或损坏数量');
+    if (!hasQty) throw new Error('请至少在一行填写归还、丢失、损坏、空瓶回收或留给客户数量');
 
     const [batchIns] = await conn.query(
       'INSERT INTO inv_return_batches (outbound_order_id, return_date, operator, remarks) VALUES (?, ?, ?, ?)',
@@ -992,17 +1196,22 @@ router.post('/outbound/:id/returns', async (req, res) => {
       const qr = Math.max(0, parseInt(ln.qty_return, 10) || 0);
       const ql = Math.max(0, parseInt(ln.qty_lost, 10) || 0);
       const qd = Math.max(0, parseInt(ln.qty_damaged, 10) || 0);
-      if (qr + ql + qd === 0) continue;
+      const qk = Math.max(0, parseInt(ln.qty_customer_keep, 10) || 0);
+      const qe = Math.max(0, parseInt(ln.qty_empty_recovered, 10) || 0);
+      if (qr + ql + qd + qk + qe === 0) continue;
 
       const [olRows] = await conn.query(
-        'SELECT id, order_id, item_id, quantity FROM inv_outbound_lines WHERE id = ? FOR UPDATE',
+        `SELECT ol.id, ol.order_id, ol.item_id, ol.quantity, it.inv_warehouse_id, it.name, it.dimensions
+         FROM inv_outbound_lines ol
+         JOIN inv_items it ON it.id = ol.item_id
+         WHERE ol.id = ? FOR UPDATE`,
         [olId]
       );
       if (!olRows.length || olRows[0].order_id !== orderId) throw new Error('无效出库明细行');
       const shipped = Number(olRows[0].quantity);
       const [prevRows] = await conn.query(
         `
-        SELECT COALESCE(SUM(rl.qty_return + rl.qty_lost + rl.qty_damaged), 0) AS s
+        SELECT COALESCE(SUM(rl.qty_return + rl.qty_lost + rl.qty_damaged + rl.qty_customer_keep + rl.qty_empty_recovered), 0) AS s
         FROM inv_return_lines rl
         JOIN inv_return_batches rb ON rb.id = rl.batch_id
         WHERE rl.outbound_line_id = ? AND rb.id <> ?
@@ -1010,17 +1219,18 @@ router.post('/outbound/:id/returns', async (req, res) => {
         [olId, batchId]
       );
       const already = Number(prevRows[0].s);
-      if (qr + ql + qd + already > shipped) {
-        throw new Error(`明细行 #${olId} 归还+丢失+损坏 超过出库数量`);
+      if (qr + ql + qd + qk + qe + already > shipped) {
+        throw new Error(`明细行 #${olId} 归还+丢失+损坏+留客+空瓶回收 超过出库数量`);
       }
 
       await conn.query(
-        'INSERT INTO inv_return_lines (batch_id, outbound_line_id, qty_return, qty_lost, qty_damaged) VALUES (?, ?, ?, ?, ?)',
-        [batchId, olId, qr, ql, qd]
+        'INSERT INTO inv_return_lines (batch_id, outbound_line_id, qty_return, qty_lost, qty_damaged, qty_customer_keep, qty_empty_recovered) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        [batchId, olId, qr, ql, qd, qk, qe]
       );
 
-      if (qr > 0) {
-        await conn.query('UPDATE inv_items SET quantity_on_hand = quantity_on_hand + ? WHERE id = ?', [qr, olRows[0].item_id]);
+      if (qe > 0) {
+        const emptyItemId = await ensureEmptyBottleItem(conn, olRows[0]);
+        await conn.query('UPDATE inv_items SET quantity_on_hand = quantity_on_hand + ? WHERE id = ?', [qe, emptyItemId]);
       }
     }
 
@@ -1028,7 +1238,7 @@ router.post('/outbound/:id/returns', async (req, res) => {
     let allClosed = true;
     for (const ol of linesOrder) {
       const [sumRow] = await conn.query(
-        'SELECT COALESCE(SUM(qty_return + qty_lost + qty_damaged), 0) AS s FROM inv_return_lines WHERE outbound_line_id = ?',
+        'SELECT COALESCE(SUM(qty_return + qty_lost + qty_damaged + qty_customer_keep + qty_empty_recovered), 0) AS s FROM inv_return_lines WHERE outbound_line_id = ?',
         [ol.id]
       );
       const t = Number(sumRow[0].s);
@@ -1058,22 +1268,44 @@ router.get('/outbound/:id/pdf', async (req, res) => {
     if (!detail) return res.status(404).json({ error: '单据不存在' });
     const { order, lines } = detail;
 
-    const tableBody = [
-      [
-        { text: '物料', style: 'th' },
-        { text: '规格/尺寸', style: 'th' },
-        { text: '数量', style: 'th' },
-        { text: '明细说明', style: 'th' },
-      ],
-    ];
+    const lineWhMap = new Map();
     lines.forEach((ln) => {
-      tableBody.push([
-        String(ln.item_name || ''),
-        String(ln.item_dimensions || '—'),
-        String(ln.quantity),
-        String(ln.line_note || '—'),
-      ]);
+      const key = `${ln.line_brand_code || '—'}|${ln.line_region || '—'}`;
+      if (!lineWhMap.has(key)) lineWhMap.set(key, []);
+      lineWhMap.get(key).push(ln);
     });
+    const whCount = lineWhMap.size;
+    const detailBlocks = [];
+    for (const [whKey, group] of lineWhMap.entries()) {
+      const [b, r] = String(whKey).split('|');
+      const tableBody = [
+        [
+          { text: '物料', style: 'th' },
+          { text: '规格/尺寸', style: 'th' },
+          { text: '数量', style: 'th' },
+          { text: '明细说明', style: 'th' },
+        ],
+      ];
+      group.forEach((ln) => {
+        tableBody.push([
+          String(ln.item_name || ''),
+          String(ln.item_dimensions || '—'),
+          String(ln.quantity),
+          String(ln.line_note || '—'),
+        ]);
+      });
+      detailBlocks.push(
+        { text: `仓库：${b || '—'} ｜ ${r || '—'}`, style: 'h2', margin: [0, 8, 0, 4] },
+        {
+          table: {
+            widths: ['*', 'auto', 'auto', '*'],
+            headerRows: 1,
+            body: tableBody,
+          },
+          layout: { fillColor: (i) => (i === 0 ? '#eeeeee' : null) },
+        },
+      );
+    }
 
     const docDefinition = {
       defaultStyle: { font: 'fangzhen', fontSize: 10 },
@@ -1115,7 +1347,7 @@ router.get('/outbound/:id/pdf', async (req, res) => {
             {
               width: '*',
               stack: [
-                { text: `品牌：${order.brand_code || ''} ｜ 区域：${order.region || ''}` },
+                { text: whCount > 1 ? `仓库：多仓（${whCount}）` : `品牌：${order.brand_code || ''} ｜ 区域：${order.region || ''}` },
               ],
             },
           ],
@@ -1129,17 +1361,8 @@ router.get('/outbound/:id/pdf', async (req, res) => {
             { text: `物流：${order.logistics_method || '—'}` },
           ],
         },
-        { text: '\n明细', style: 'h2' },
-        {
-          table: {
-            widths: ['*', 'auto', 'auto', '*'],
-            headerRows: 1,
-            body: tableBody,
-          },
-          layout: {
-            fillColor: (i) => (i === 0 ? '#eeeeee' : null),
-          },
-        },
+        { text: '\n明细（按仓库）', style: 'h2' },
+        ...detailBlocks,
         ...(order.remarks ? [{ text: `\n备注：${order.remarks}`, margin: [0, 12, 0, 0] }] : []),
       ],
       styles: {

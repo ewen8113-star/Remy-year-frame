@@ -54,9 +54,59 @@ async function ensureInvItemsStatsOverrideColumns(db) {
   }
 }
 
+let _invReturnLinesCustomerKeepEnsured = false;
+async function ensureInvReturnLinesCustomerKeepColumn(db) {
+  if (_invReturnLinesCustomerKeepEnsured) return;
+  try {
+    const [tc] = await db.query(
+      `SELECT COUNT(*) AS c FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'inv_return_lines'`
+    );
+    if (!Number(tc[0].c)) return;
+    if (!(await columnExistsQuery(db, 'inv_return_lines', 'qty_customer_keep'))) {
+      try {
+        await db.query('ALTER TABLE inv_return_lines ADD COLUMN qty_customer_keep INT NOT NULL DEFAULT 0');
+      } catch (e) {
+        if (!(e && (e.code === 'ER_DUP_FIELDNAME' || /Duplicate column name/i.test(String(e.message || ''))))) {
+          throw e;
+        }
+      }
+    }
+    _invReturnLinesCustomerKeepEnsured = true;
+  } catch (e) {
+    console.error('inv_return_lines.qty_customer_keep 补列失败:', e);
+    throw e;
+  }
+}
+
+let _invReturnLinesEmptyRecoveredEnsured = false;
+async function ensureInvReturnLinesEmptyRecoveredColumn(db) {
+  if (_invReturnLinesEmptyRecoveredEnsured) return;
+  try {
+    const [tc] = await db.query(
+      `SELECT COUNT(*) AS c FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'inv_return_lines'`
+    );
+    if (!Number(tc[0].c)) return;
+    if (!(await columnExistsQuery(db, 'inv_return_lines', 'qty_empty_recovered'))) {
+      try {
+        await db.query('ALTER TABLE inv_return_lines ADD COLUMN qty_empty_recovered INT NOT NULL DEFAULT 0');
+      } catch (e) {
+        if (!(e && (e.code === 'ER_DUP_FIELDNAME' || /Duplicate column name/i.test(String(e.message || ''))))) {
+          throw e;
+        }
+      }
+    }
+    _invReturnLinesEmptyRecoveredEnsured = true;
+  } catch (e) {
+    console.error('inv_return_lines.qty_empty_recovered 补列失败:', e);
+    throw e;
+  }
+}
+
 async function ensureInventoryTables(db) {
   await ensureInvItemsCommonColumn(db);
   await ensureInvItemsStatsOverrideColumns(db);
+  await ensureInvReturnLinesCustomerKeepColumn(db);
+  await ensureInvReturnLinesEmptyRecoveredColumn(db);
   if (_ensured) return;
   if (_ensuring) return _ensuring;
   _ensuring = (async () => {
@@ -145,6 +195,8 @@ async function ensureInventoryTables(db) {
         qty_return INT NOT NULL DEFAULT 0,
         qty_lost INT NOT NULL DEFAULT 0,
         qty_damaged INT NOT NULL DEFAULT 0,
+        qty_customer_keep INT NOT NULL DEFAULT 0,
+        qty_empty_recovered INT NOT NULL DEFAULT 0,
         CONSTRAINT fk_inv_rl_batch FOREIGN KEY (batch_id) REFERENCES inv_return_batches(id) ON DELETE CASCADE,
         CONSTRAINT fk_inv_rl_ol FOREIGN KEY (outbound_line_id) REFERENCES inv_outbound_lines(id) ON DELETE CASCADE
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

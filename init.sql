@@ -257,6 +257,21 @@ CREATE TABLE IF NOT EXISTS inv_return_lines (
     CONSTRAINT fk_inv_rl_ol FOREIGN KEY (outbound_line_id) REFERENCES inv_outbound_lines(id) ON DELETE CASCADE
 );
 
+-- 酒品目录（主数据，无库存数量；分仓库存后续单独建模）
+CREATE TABLE IF NOT EXISTS wine_catalog (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    brand VARCHAR(64) NOT NULL DEFAULT '',
+    name VARCHAR(200) NOT NULL,
+    category VARCHAR(64) NULL,
+    volume_label VARCHAR(64) NULL,
+    image_urls LONGTEXT NULL,
+    sku_code VARCHAR(64) NULL,
+    sort_order INT NOT NULL DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uq_wine_catalog_sku (sku_code)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 -- 插入初始年框数据
 INSERT INTO year_frames (year, name) VALUES
 ('25年度', '人头马25-26年度项目'),

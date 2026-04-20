@@ -1,6 +1,10 @@
 const express = require('express');
+const path = require('path');
+const fs = require('fs');
+const multer = require('multer');
 const router = express.Router();
 const db = require('../config/database');
+const { ensureWineCatalog } = require('../wine/ensureWineCatalog');
 
 let wineReturnTableReady = null;
 function ensureWineReturnTable() {
@@ -25,7 +29,195 @@ function ensureWineReturnTable() {
   return wineReturnTableReady;
 }
 
-// 获取当前酒品库存列表
+function parseCatalogImageUrls(row) {
+  if (!row || row.image_urls == null) return [];
+  try {
+    const j = typeof row.image_urls === 'string' ? JSON.parse(row.image_urls) : row.image_urls;
+    return Array.isArray(j) ? j : [];
+  } catch {
+    return [];
+  }
+}
+
+router.use(async (req, res, next) => {
+  try {
+    await ensureWineCatalog(db);
+    next();
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: e.message || '酒品目录表初始化失败' });
+  }
+});
+
+/** 酒品目录图片：物理目录 public/uploads/wine-catalog；静态 /uploads；DB wine_catalog.image_urls 存 /uploads/wine-catalog/文件名 */
+const wineCatalogUploadDir = path.join(__dirname, '../../public/uploads/wine-catalog');
+if (!fs.existsSync(wineCatalogUploadDir)) fs.mkdirSync(wineCatalogUploadDir, { recursive: true });
+const wineCatalogStorage = multer.diskStorage({
+  destination: (req, file, cb) => cb(null, wineCatalogUploadDir),
+  filename: (req, file, cb) => {
+    const ext = path.extname(file.originalname || '') || '.jpg';
+    const safe = `wc_${Date.now()}_${Math.random().toString(36).slice(2, 9)}${ext}`;
+    cb(null, safe);
+  },
+});
+const wineCatalogUploadMulter = multer({
+  storage: wineCatalogStorage,
+  limits: { fileSize: 8 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    const ok = /^image\/(jpeg|png|gif|webp)$/i.test(file.mimetype);
+    cb(ok ? null : new Error('仅支持 jpeg/png/gif/webp 图片'), ok);
+  },
+});
+
+router.post('/catalog/upload', (req, res) => {
+  wineCatalogUploadMulter.single('file')(req, res, (err) => {
+    if (err) return res.status(400).json({ error: err.message || '上传失败' });
+    try {
+      if (!req.file) return res.status(400).json({ error: '未选择文件' });
+      const url = `/uploads/wine-catalog/${req.file.filename}`;
+      res.json({ url, filename: req.file.filename });
+    } catch (e) {
+      console.error(e);
+      res.status(500).json({ error: e.message || '上传失败' });
+    }
+  });
+});
+
+/** 酒品目录列表（无库存数量） */
+router.get('/catalog', async (req, res) => {
+  try {
+    const [rows] = await db.query(
+      'SELECT * FROM wine_catalog ORDER BY sort_order DESC, brand, name, id'
+    );
+    res.json(
+      rows.map((r) => ({
+        ...r,
+        image_urls: parseCatalogImageUrls(r),
+      }))
+    );
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message || '获取酒品目录失败' });
+  }
+});
+
+/** 单条目录 */
+router.get('/catalog/:id', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (!Number.isFinite(id)) return res.status(400).json({ error: '无效 ID' });
+    const [rows] = await db.query('SELECT * FROM wine_catalog WHERE id = ?', [id]);
+    if (!rows.length) return res.status(404).json({ error: '记录不存在' });
+    const r = rows[0];
+    res.json({ ...r, image_urls: parseCatalogImageUrls(r) });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message || '获取失败' });
+  }
+});
+
+router.post('/catalog', async (req, res) => {
+  try {
+    const { brand, name, category, volume_label, image_urls, sku_code, sort_order } = req.body;
+    const n = String(name || '').trim();
+    if (!n) return res.status(400).json({ error: '请填写酒品名称' });
+    let urls = image_urls;
+    if (urls != null && !Array.isArray(urls)) urls = [];
+    const sku = sku_code != null && String(sku_code).trim() !== '' ? String(sku_code).trim() : null;
+    const [ret] = await db.query(
+      `INSERT INTO wine_catalog (brand, name, category, volume_label, image_urls, sku_code, sort_order)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [
+        String(brand || '').trim(),
+        n,
+        category != null ? String(category).trim() || null : null,
+        volume_label != null ? String(volume_label).trim() || null : null,
+        JSON.stringify(Array.isArray(urls) ? urls : []),
+        sku,
+        Number.isFinite(parseInt(sort_order, 10)) ? parseInt(sort_order, 10) : 0,
+      ]
+    );
+    const [rows] = await db.query('SELECT * FROM wine_catalog WHERE id = ?', [ret.insertId]);
+    const r = rows[0];
+    res.json({ ...r, image_urls: parseCatalogImageUrls(r) });
+  } catch (err) {
+    if (err && err.code === 'ER_DUP_ENTRY') {
+      return res.status(400).json({ error: 'SKU 编码已存在' });
+    }
+    console.error(err);
+    res.status(500).json({ error: err.message || '保存失败' });
+  }
+});
+
+router.put('/catalog/:id', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (!Number.isFinite(id)) return res.status(400).json({ error: '无效 ID' });
+    const { brand, name, category, volume_label, image_urls, sku_code, sort_order } = req.body;
+    const n = name != null ? String(name).trim() : '';
+    if (name !== undefined && !n) return res.status(400).json({ error: '名称不能为空' });
+    const patches = [];
+    const vals = [];
+    if (brand !== undefined) {
+      patches.push('brand = ?');
+      vals.push(String(brand || '').trim());
+    }
+    if (name !== undefined) {
+      patches.push('name = ?');
+      vals.push(n);
+    }
+    if (category !== undefined) {
+      patches.push('category = ?');
+      vals.push(category != null ? String(category).trim() || null : null);
+    }
+    if (volume_label !== undefined) {
+      patches.push('volume_label = ?');
+      vals.push(volume_label != null ? String(volume_label).trim() || null : null);
+    }
+    if (image_urls !== undefined) {
+      let arr = image_urls;
+      if (arr != null && !Array.isArray(arr)) arr = [];
+      patches.push('image_urls = ?');
+      vals.push(JSON.stringify(Array.isArray(arr) ? arr : []));
+    }
+    if (sku_code !== undefined) {
+      patches.push('sku_code = ?');
+      vals.push(sku_code != null && String(sku_code).trim() !== '' ? String(sku_code).trim() : null);
+    }
+    if (sort_order !== undefined) {
+      patches.push('sort_order = ?');
+      vals.push(Number.isFinite(parseInt(sort_order, 10)) ? parseInt(sort_order, 10) : 0);
+    }
+    if (!patches.length) return res.status(400).json({ error: '无更新字段' });
+    vals.push(id);
+    await db.query(`UPDATE wine_catalog SET ${patches.join(', ')} WHERE id = ?`, vals);
+    const [rows] = await db.query('SELECT * FROM wine_catalog WHERE id = ?', [id]);
+    if (!rows.length) return res.status(404).json({ error: '记录不存在' });
+    const r = rows[0];
+    res.json({ ...r, image_urls: parseCatalogImageUrls(r) });
+  } catch (err) {
+    if (err && err.code === 'ER_DUP_ENTRY') {
+      return res.status(400).json({ error: 'SKU 编码已存在' });
+    }
+    console.error(err);
+    res.status(500).json({ error: err.message || '更新失败' });
+  }
+});
+
+router.delete('/catalog/:id', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (!Number.isFinite(id)) return res.status(400).json({ error: '无效 ID' });
+    const [r] = await db.query('DELETE FROM wine_catalog WHERE id = ?', [id]);
+    if (!r.affectedRows) return res.status(404).json({ error: '记录不存在' });
+    res.json({ ok: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message || '删除失败' });
+  }
+});
+
+// 获取当前酒品库存列表（旧全局库存；新流程以酒品目录 + 分仓为准）
 router.get('/', async (req, res) => {
   try {
     const [rows] = await db.query(`
