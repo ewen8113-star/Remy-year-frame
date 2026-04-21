@@ -48,10 +48,10 @@
 
 ## 当天未完成 / 进行中
 
-- **入库单台账（明早优先）**
-  - 现状「物品入库」页仅展示待归还单，不是标准入库单台账。
-  - 明早先落地最省改动方案：以 `inv_return_batches` 作为入库单头、`inv_return_lines` 作为明细，补「入库单列表 + 详情 + 备注可核对」。
-  - 二期再评估独立 `inv_inbound_orders / inv_inbound_lines`（用于采购/调拨/盘盈等统一入库来源）。
+- **入库单台账（2026-04-21）**
+  - 已落地：`GET /inventory/inbound-receipts`、`GET /inventory/inbound-receipts/:batchId`；数据来自 `inv_return_batches` / `inv_return_lines`。
+  - 「物品入库」页上方为台账列表（对用户展示项目编号/场次或非活动用途），详情中保留关联出库单号供核对。
+  - 若后续需要采购/调拨入库，再评估独立 `inv_inbound_*` 表。
 
 - **各模块录入/编辑**：新建/编辑弹窗侧此前已支持归集字段；若还需在列表加筛选/导出字段，可再开需求。
 - **物资库存**：生产/已有库需执行 `migrate:inventory-global-fiscal`（若尚未执行）并重启 Node；验收切换 25/26 年度列表一致、项目匹配先选年度。

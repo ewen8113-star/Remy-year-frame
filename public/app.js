@@ -30,6 +30,11 @@ function invOutboundListQuery(opts = {}) {
   const q = p.toString();
   return q ? `?${q}` : '';
 }
+
+/** 入库单台账列表 query：与出库列表相同，按当前财年 year_frame_id 筛选 */
+function invInboundReceiptListQuery() {
+  return invOutboundListQuery();
+}
 let currentPage = localStorage.getItem('remy_currentPage') || 'dashboard';
 let currentUser = null;
 let currentUserRole = 'operator';
@@ -8200,6 +8205,135 @@ function invRenderOutboundOrderTable(orders) {
     </div>`;
 }
 
+function invRenderInboundLedgerTable(rows) {
+  if (!rows.length) {
+    return '<div class="empty-state" style="margin-top:8px">当前年度下暂无入库单记录。完成归还登记后会在此生成一条台账。</div>';
+  }
+  return `
+    <div class="table-wrapper inv-inbound-ledger-wrap">
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>入库单号</th>
+            <th>入库日期</th>
+            <th>关联项目 / 用途</th>
+            <th>仓库</th>
+            <th>登记人</th>
+            <th>汇总</th>
+            <th>备注</th>
+            <th style="min-width:72px"></th>
+          </tr>
+        </thead>
+        <tbody>
+          ${rows
+            .map((r) => {
+              const main = escapeHtml(r.display_main || '—');
+              const sub = r.display_sub
+                ? `<div class="inv-inbound-ledger-sub">${escapeHtml(r.display_sub)}</div>`
+                : '';
+              const rem = r.batch_remarks != null ? String(r.batch_remarks) : '';
+              const remShort = rem.length > 40 ? `${rem.slice(0, 40)}…` : rem;
+              const sum = `归${r.sum_qty_return} 空${r.sum_qty_empty_recovered} 留${r.sum_qty_customer_keep} 丢${r.sum_qty_lost} 损${r.sum_qty_damaged}`;
+              return `<tr>
+              <td>#${r.batch_id}</td>
+              <td>${r.return_date ? String(r.return_date).slice(0, 10) : '—'}</td>
+              <td><div class="inv-inbound-ledger-main">${main}</div>${sub}</td>
+              <td>${escapeHtml(r.brand_code)} ${escapeHtml(r.region)}</td>
+              <td>${escapeHtml(r.operator || '—')}</td>
+              <td style="font-size:12px;color:var(--text-secondary);white-space:nowrap">${sum}</td>
+              <td style="max-width:160px;font-size:12px;color:var(--text-muted)" title="${escapeHtml(rem)}">${escapeHtml(remShort || '—')}</td>
+              <td><button type="button" class="btn btn-xs btn-secondary" onclick="invOpenInboundReceiptDetail(${r.batch_id})">详情</button></td>
+            </tr>`;
+            })
+            .join('')}
+        </tbody>
+      </table>
+    </div>`;
+}
+
+async function invOpenInboundReceiptDetail(batchId) {
+  const titleEl = document.getElementById('modalInvInboundTitle');
+  const body = document.getElementById('modalInvInboundBody');
+  if (titleEl) titleEl.textContent = `入库单 #${batchId}`;
+  if (!body) return;
+  body.innerHTML = '<div class="empty-state">加载中…</div>';
+  openModal('modalInvInboundReceipt');
+  try {
+    const det = await api('GET', `/inventory/inbound-receipts/${batchId}`);
+    const h = det.head;
+    const lines = det.lines || [];
+    const disp = det.display || {};
+    const obId = h.outbound_order_id;
+    const main = escapeHtml(disp.display_main || '—');
+    const sub = disp.display_sub
+      ? `<div class="inv-inbound-detail-sub">${escapeHtml(disp.display_sub)}</div>`
+      : '';
+    const lineRows = lines.length
+      ? lines
+          .map(
+            (ln) => `<tr>
+          <td>${escapeHtml(ln.item_name)}</td>
+          <td>${escapeHtml(ln.item_dimensions || '—')}</td>
+          <td>${ln.outbound_qty}</td>
+          <td>${ln.qty_return}</td>
+          <td>${ln.qty_empty_recovered}</td>
+          <td>${ln.qty_customer_keep}</td>
+          <td>${ln.qty_lost}</td>
+          <td>${ln.qty_damaged}</td>
+        </tr>`,
+          )
+          .join('')
+      : '<tr><td colspan="8" style="color:var(--text-muted)">无明细</td></tr>';
+    const remHtml = h.batch_remarks != null && String(h.batch_remarks).trim()
+      ? escapeHtml(String(h.batch_remarks))
+      : '—';
+    body.innerHTML = `
+      <div class="modal-activity-form">
+        <p class="modal-activity-lead">归还登记生成的入库凭证明细。下方「关联出库单」仅供系统内核对，日常请以项目编号 / 用途为准。</p>
+        <div class="form-grid">
+          <div class="form-group">
+            <label class="form-label">入库日期</label>
+            <input class="form-control" value="${h.return_date ? String(h.return_date).slice(0, 10) : '—'}" readonly>
+          </div>
+          <div class="form-group">
+            <label class="form-label">登记人</label>
+            <input class="form-control" value="${escapeHtml(h.operator || '—')}" readonly>
+          </div>
+          <div class="form-group form-full">
+            <label class="form-label">关联项目 / 用途</label>
+            <input class="form-control" value="${main}" readonly>
+            ${sub}
+          </div>
+          <div class="form-group">
+            <label class="form-label">发货仓</label>
+            <input class="form-control" value="${escapeHtml(h.brand_code)} ${escapeHtml(h.region)}" readonly>
+          </div>
+          <div class="form-group">
+            <label class="form-label">关联出库单（系统）</label>
+            <input class="form-control" value="#${obId}" readonly>
+          </div>
+          <div class="form-group form-full">
+            <label class="form-label">归还备注</label>
+            <div class="inv-inbound-remark-box">${remHtml}</div>
+          </div>
+        </div>
+        <div class="table-wrapper" style="margin-top:14px;overflow-x:auto">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>物料</th><th>规格</th><th>出库数</th><th>归还</th><th>空瓶回收</th><th>留给客户</th><th>丢失</th><th>损坏</th>
+              </tr>
+            </thead>
+            <tbody>${lineRows}</tbody>
+          </table>
+        </div>
+      </div>`;
+    renderLucideIcons();
+  } catch (e) {
+    body.innerHTML = `<div class="empty-state" style="color:var(--danger)">${escapeHtml(e.message || '加载失败')}</div>`;
+  }
+}
+
 async function invOpenOutboundOrderDetail(orderId) {
   const titleEl = document.getElementById('invOutboundGroupTitle');
   const body = document.getElementById('invOutboundGroupBody');
@@ -8524,19 +8658,36 @@ async function renderInventory() {
     } catch (_) {
       openOrders = [];
     }
+    let inboundLedger = [];
+    try {
+      inboundLedger = await api('GET', `/inventory/inbound-receipts${invInboundReceiptListQuery()}`);
+    } catch (_) {
+      inboundLedger = [];
+    }
+    const ledgerArr = Array.isArray(inboundLedger) ? inboundLedger : [];
     panelHtml = `
-      <div class="inv-inbound-hint form-hint" style="margin:0 0 12px;line-height:1.5">
-        本页仅列出<strong>已出库、尚未结清</strong>的单据（待登记归还）。已全部归还并结清的单据不会出现在此列表，可在<strong>物品出库</strong>中查看。
+      <div class="inv-inbound-section">
+        <h4 class="inv-inbound-section-title">入库单台账</h4>
+        <p class="form-hint" style="margin:0 0 12px;line-height:1.5;max-width:920px">
+          每条记录对应一次<strong>归还登记</strong>。列表以<strong>项目编号 / 场次信息</strong>或<strong>非活动用途</strong>标识来源，便于核对；关联出库单号仅在详情中供系统对账。
+        </p>
+        ${invRenderInboundLedgerTable(ledgerArr)}
       </div>
-      <div class="table-wrapper">
-        <table class="data-table">
-          <thead>
-            <tr>
-              <th>单号</th><th>品牌/区</th><th>项目编号 / 场次</th><th>出库时间</th><th></th>
-            </tr>
-          </thead>
-          <tbody>
-            ${openOrders.length ? openOrders.map((o) => {
+      <div class="inv-inbound-divider" role="separator" aria-hidden="true"></div>
+      <div class="inv-inbound-section">
+        <h4 class="inv-inbound-section-title">待归还登记</h4>
+        <p class="inv-inbound-hint form-hint" style="margin:0 0 12px;line-height:1.5">
+          以下列出<strong>已出库、尚未结清</strong>的单据。已全部归还并结清的单据不会出现在此列表，可在<strong>物品出库</strong>或上方<strong>入库单台账</strong>中查看。
+        </p>
+        <div class="table-wrapper">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>单号</th><th>品牌/区</th><th>项目编号 / 场次</th><th>出库时间</th><th></th>
+              </tr>
+            </thead>
+            <tbody>
+              ${openOrders.length ? openOrders.map((o) => {
               const city = o.activity_city ? String(o.activity_city).trim() : '';
               const projLine =
                 o.link_mode === 'standalone'
@@ -8556,8 +8707,9 @@ async function renderInventory() {
                 </td>
               </tr>`;
             }).join('') : '<tr><td colspan="5" style="color:var(--text-muted)">暂无待归还出库单（当前年度下没有「待归还」状态的物品出库）</td></tr>'}
-          </tbody>
-        </table>
+            </tbody>
+          </table>
+        </div>
       </div>`;
   }
 
@@ -8579,7 +8731,7 @@ async function renderInventory() {
 
   const inboundOpsToolbar = `
     <div class="inv-toolbar">
-      <span class="form-hint" style="margin:0">仅<strong>待归还</strong>（已出库、未结清）的物品出库单会出现在下方；已做完归还登记并结清的单据请见「物品出库」。与「酒品管理」中的酒品入库无关。</span>
+      <span class="form-hint" style="margin:0">上方为<strong>入库单台账</strong>（每次归还登记一条）；下方为<strong>待归还</strong>出库单。列表按左侧年度财年筛选。与「酒品管理」中的酒品入库无关。</span>
     </div>`;
 
   const tabsBarMaster = `

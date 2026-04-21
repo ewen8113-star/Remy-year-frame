@@ -1005,6 +1005,54 @@ input, select, textarea { font-family: inherit; }
   gap: 6px;
 }
 
+/* 物品入库：入库单台账 + 待归还分块 */
+.inv-inbound-section {
+  margin-bottom: 8px;
+}
+.inv-inbound-section-title {
+  margin: 0 0 10px;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+.inv-inbound-ledger-main {
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--text-primary);
+}
+.inv-inbound-ledger-sub {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.4;
+}
+.inv-inbound-divider {
+  margin: 22px 0;
+  border: none;
+  border-top: 1px solid var(--border);
+}
+.inv-inbound-ledger-wrap {
+  overflow-x: auto;
+}
+.inv-inbound-detail-sub {
+  margin-top: 6px;
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.45;
+}
+.inv-inbound-remark-box {
+  padding: 10px 12px;
+  min-height: 44px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .inv-tabs {
   display: flex;
   flex-wrap: wrap;

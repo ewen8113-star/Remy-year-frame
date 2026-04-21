@@ -722,11 +722,23 @@
     </div>
   </div>
 
+  <!-- 物品入库：入库单台账详情 -->
+  <div class="modal wide" id="modalInvInboundReceipt" style="max-width:920px" onclick="event.stopPropagation()">
+    <div class="modal-header">
+      <span class="modal-title" id="modalInvInboundTitle">入库单</span>
+      <button type="button" class="modal-close" onclick="closeModal()">✕</button>
+    </div>
+    <div class="modal-body" id="modalInvInboundBody" style="max-height:72vh;overflow:auto"></div>
+    <div class="modal-footer">
+      <button type="button" class="btn btn-secondary" onclick="closeModal()">关闭</button>
+    </div>
+  </div>
+
   <datalist id="invProjectList"></datalist>
 
   <!-- 全局 Toast -->
   <div class="toast-container" id="toastContainer"></div>
 
-  <script src="app.js?v=20260420-outbound-detail-usage-and-remarks"></script>
+  <script src="app.js?v=20260421-inbound-receipt-ledger"></script>
 </body>
 </html>
