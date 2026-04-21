@@ -22,16 +22,21 @@ const API = resolveApiBase();
 // 25年度：2025-04-01 → 2026-03-31，所有历史数据均属于25年度
 let currentYear = localStorage.getItem('remy_activeYear') || '25';
 let currentYearFrameId = null;
-/** 物品出库列表 query：按当前财年筛选（关联场次的 year_frame_id）；库存主数据不按财年切 */
+/** 物品出库列表 query：按当前财年筛选（关联场次的 year_frame_id）；可选 month=YYYY-MM；待归还 open 单不按月份过滤（角标统计） */
 function invOutboundListQuery(opts = {}) {
   const p = new URLSearchParams();
   if (opts.status) p.set('status', opts.status);
   if (currentYearFrameId) p.set('yearFrameId', String(currentYearFrameId));
+  if (opts.status !== 'open') {
+    const lm =
+      typeof inventoryPageState !== 'undefined' ? String(inventoryPageState.invLedgerMonth || '').trim() : '';
+    if (/^\d{4}-\d{2}$/.test(lm)) p.set('month', lm);
+  }
   const q = p.toString();
   return q ? `?${q}` : '';
 }
 
-/** 入库单台账列表 query：与出库列表相同，按当前财年 year_frame_id 筛选 */
+/** 入库单台账列表 query：财年与月份（月份与出库列表共用） */
 function invInboundReceiptListQuery() {
   return invOutboundListQuery();
 }
@@ -53,7 +58,7 @@ let logisticsState = { data: [], selectedIds: new Set() };
 let warehouseState = { data: [], selectedIds: new Set() };
 let logisticsMergeFilter = 'all';
 let warehouseMergeFilter = 'all';
-/** 物资模块：库存数据=主数据；出库页为逐单列表；入库页 tab=returns */
+/** 物资模块：库存统计=主数据；出库页为逐单列表；入库页 tab=returns */
 let inventoryPageState = {
   tab: 'items',
   warehouseId: null,
@@ -85,6 +90,32 @@ let inventoryPageState = {
     } catch (_) { /* ignore */ }
     return 'cards';
   })(),
+  /** 库存统计页：仓库物料 / 酒品目录 / 空瓶回收（与仓库卡片同排） */
+  stockMasterView: (() => {
+    try {
+      const v = localStorage.getItem('remy_stockMasterView');
+      if (v === 'wine' || v === 'warehouse' || v === 'empty') return v;
+    } catch (_) { /* ignore */ }
+    return 'warehouse';
+  })(),
+  /** 库存统计·各仓库物料清单筛选（酒品目录 / 空瓶回收不使用） */
+  itemsListFilter: (() => {
+    try {
+      const v = localStorage.getItem('remy_invItemsListFilter');
+      if (v === 'all' || v === 'common' || v === 'uncommon' || v === 'wine') return v;
+    } catch (_) { /* ignore */ }
+    return 'all';
+  })(),
+  /** 物品出/入库台账、空瓶追溯共用：YYYY-MM 或 ''=全部 */
+  invLedgerMonth: (() => {
+    try {
+      const v = String(localStorage.getItem('remy_invLedgerMonth') || '').trim();
+      if (!v || v === 'all') return '';
+      return /^\d{4}-\d{2}$/.test(v) ? v : '';
+    } catch (_) {
+      return '';
+    }
+  })(),
   /** 编辑出库：单 ID；常用行预填（换仓刷新表格时与 DOM 快照合并） */
   editOutboundOrderId: null,
   outboundEditCommonPreset: null,
@@ -93,6 +124,62 @@ let inventoryPageState = {
   outboundCommonByWarehouse: {},
   outboundWarehousesCache: [],
 };
+
+function invSetInvLedgerMonth(val) {
+  const raw = val == null ? '' : String(val).trim();
+  const next = raw === '' || raw === 'all' ? '' : raw;
+  inventoryPageState.invLedgerMonth = /^\d{4}-\d{2}$/.test(next) ? next : '';
+  try {
+    localStorage.setItem('remy_invLedgerMonth', inventoryPageState.invLedgerMonth || 'all');
+  } catch (_) { /* ignore */ }
+  renderInventory();
+}
+
+/** minYm/maxYm 为 YYYY-MM，返回自新到旧排列的月份列表 */
+function invEnumerateMonthsDesc(minYm, maxYm) {
+  if (!minYm || !maxYm || !/^\d{4}-\d{2}$/.test(minYm) || !/^\d{4}-\d{2}$/.test(maxYm)) return [];
+  let y = parseInt(minYm.slice(0, 4), 10);
+  let m = parseInt(minYm.slice(5, 7), 10);
+  const endY = parseInt(maxYm.slice(0, 4), 10);
+  const endM = parseInt(maxYm.slice(5, 7), 10);
+  const asc = [];
+  while (y < endY || (y === endY && m <= endM)) {
+    asc.push(`${y}-${String(m).padStart(2, '0')}`);
+    m += 1;
+    if (m > 12) {
+      m = 1;
+      y += 1;
+    }
+  }
+  return asc.slice().reverse();
+}
+
+/** range: GET /inventory/ledger-month-range 的 { min_month, max_month }；无数据时前端回退为近 24 个月 */
+function invRenderLedgerMonthSelectHtml(selectedYm, range) {
+  const cur = String(selectedYm || '').trim();
+  const r = range && typeof range === 'object' ? range : {};
+  const rmin = r.min_month;
+  const rmax = r.max_month;
+  let months = [];
+  if (rmin && rmax && /^\d{4}-\d{2}$/.test(String(rmin)) && /^\d{4}-\d{2}$/.test(String(rmax))) {
+    months = invEnumerateMonthsDesc(String(rmin), String(rmax));
+  } else {
+    const now = new Date();
+    for (let i = 0; i < 24; i++) {
+      const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+      months.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`);
+    }
+  }
+  if (cur && /^\d{4}-\d{2}$/.test(cur) && !months.includes(cur)) {
+    months = [cur, ...months].sort((a, b) => b.localeCompare(a));
+  }
+  const opts = ['<option value="">全部月份</option>'];
+  for (const v of months) {
+    opts.push(`<option value="${v}"${v === cur ? ' selected' : ''}>${v}</option>`);
+  }
+  return `<select class="form-control inv-ledger-month-select" title="按月份筛选台账" aria-label="按月份筛选" onchange="invSetInvLedgerMonth(this.value)">${opts.join('')}</select>`;
+}
+
 let invAddWineModalState = {
   catalog: [],
   warehouses: [],
@@ -376,8 +463,22 @@ function navigate(page) {
     showToast('仅管理员可访问用户管理', 'warning');
     return;
   }
+  if (page === 'wine') {
+    inventoryPageState.stockMasterView = 'wine';
+    try {
+      localStorage.setItem('remy_stockMasterView', 'wine');
+    } catch (_) { /* ignore */ }
+    page = 'inventory';
+  }
+  if (page === 'inv-empty') {
+    inventoryPageState.stockMasterView = 'empty';
+    try {
+      localStorage.setItem('remy_stockMasterView', 'empty');
+    } catch (_) { /* ignore */ }
+    page = 'inventory';
+  }
   if (page === 'inventory' && !hasWriteAccess()) {
-    showToast('仅管理员可维护库存数据（仓库与物料主数据）', 'warning');
+    showToast('仅管理员可维护库存统计（仓库与物料主数据）', 'warning');
     page = 'inv-outbound';
   }
   currentPage = page;
@@ -394,9 +495,7 @@ function navigate(page) {
     cost: '活动成本',
     logistics: '物流成本',
     warehouse: '仓储成本',
-    wine: '酒品目录',
-    inventory: '库存数据',
-    'inv-empty': '空瓶回收',
+    inventory: '库存统计',
     'inv-outbound': '物品出库',
     'inv-inbound': '物品入库',
     material: '物料采购',
@@ -421,9 +520,7 @@ function navigate(page) {
     cost: renderCost,
     logistics: renderLogistics,
     warehouse: renderWarehouse,
-    wine: renderWine,
     inventory: renderInventory,
-    'inv-empty': renderEmptyBottleRecovery,
     'inv-outbound': renderInventory,
     'inv-inbound': renderInventory,
     material: renderMaterialPurchases,
@@ -454,10 +551,8 @@ function expandSidebarGroupForPage(page) {
     'prop-repair': 'cost',
     reimbursement: 'cost',
     inventory: 'stock',
-    'inv-empty': 'stock',
     'inv-outbound': 'stock',
     'inv-inbound': 'stock',
-    wine: 'stock',
     users: 'sys',
     backup: 'sys',
   };
@@ -754,13 +849,13 @@ async function updateBadges() {
     if (propRepairBadge) propRepairBadge.textContent = propRepairs.length || 0;
     const reimbBadge = document.getElementById('badge-reimbursement');
     if (reimbBadge) reimbBadge.textContent = reimbs.length || 0;
-    const wineBadge = document.getElementById('badge-wine');
-    if (wineBadge) {
-      const rows = Array.isArray(wines) ? wines : [];
-      const n = rows.length;
-      wineBadge.textContent = n ? `${n}` : '—';
-      wineBadge.style.color = n ? 'var(--text-secondary)' : 'var(--text-muted)';
-      wineBadge.title = n ? `酒品目录 ${n} 条（主数据，不含分仓库存）` : '暂无目录项';
+    const rows = Array.isArray(wines) ? wines : [];
+    const n = rows.length;
+    const wineBadgeCatalog = document.getElementById('badge-wine-catalog');
+    if (wineBadgeCatalog) {
+      wineBadgeCatalog.textContent = n ? `${n} 条` : '—';
+      wineBadgeCatalog.style.color = n ? 'var(--text-secondary)' : 'var(--text-muted)';
+      wineBadgeCatalog.title = n ? `酒品目录 ${n} 条（主数据，不含分仓库存）` : '暂无目录项';
     }
     const invInBadge = document.getElementById('badge-inv-inbound');
     if (invInBadge) {
@@ -6570,30 +6665,9 @@ async function wcWineCatalogImageUpload() {
   }
 }
 
+/** 兼容旧入口：酒品目录已并入「库存统计」与仓库同排卡片 */
 async function renderWine() {
-  const container = document.getElementById('pageContainer');
-
-  container.innerHTML = `
-    <div class="page-header" style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:16px;flex-wrap:wrap;gap:12px">
-      <p class="form-hint" style="margin:0;max-width:760px;line-height:1.5">
-        此处为酒品<strong>目录</strong>：品牌、名称、类别、容量、图片等，<strong>不含库存数量</strong>。分仓库存与按项目出库将后续与仓库联动。你可先录入或导入完整目录数据。
-      </p>
-      <button type="button" class="btn btn-primary btn-sm" onclick="openWineCatalogModal(null)">
-        <i data-lucide="plus" style="width:14px;height:14px"></i> 添加酒品
-      </button>
-    </div>
-    <div class="stats-row" id="wineCatalogStats" style="margin-bottom:16px"></div>
-    <div class="card">
-      <div class="card-header">
-        <h3><i data-lucide="book-open" style="width:14px;height:14px;vertical-align:-2px;margin-right:6px"></i>目录列表</h3>
-      </div>
-      <div class="card-body" id="wineCatalogListHost">
-        <div style="color:var(--text-muted);padding:20px;text-align:center">加载中...</div>
-      </div>
-    </div>
-  `;
-
-  await loadWineCatalogPage();
+  navigate('wine');
 }
 
 async function loadWineCatalogPage() {
@@ -6755,7 +6829,7 @@ async function submitWineCatalogForm() {
       showToast('已添加', 'success');
     }
     closeModal();
-    if (currentPage === 'wine') await loadWineCatalogPage();
+    if (document.getElementById('wineCatalogListHost')) await loadWineCatalogPage();
     updateBadges();
   } catch (e) {
     showToast(e.message || '保存失败', 'error');
@@ -6971,7 +7045,8 @@ async function confirmWineStockIn() {
     await api('POST', '/wine/stock-in', body);
     closeModal();
     showToast('入库成功', 'success');
-    renderWine();
+    if (document.getElementById('wineCatalogListHost')) await loadWineCatalogPage();
+    updateBadges();
   } catch (err) {
     showToast('入库失败: ' + err.message, 'error');
   }
@@ -7434,6 +7509,42 @@ function invItemIsCommon(it) {
   return Number(it.is_common) === 1;
 }
 
+/** 与目录、入库行一致：名称 + 规格行，用于判断「酒」类库存行 */
+function invItemWineCatalogKey(it) {
+  const n = String(it.name || '').trim();
+  const d = it.dimensions;
+  const ds = d == null ? '' : String(d).trim();
+  return `${n}\0${ds}`;
+}
+
+function invCatalogRowWineKey(c) {
+  const spec = wineCatalogSpecLine(c);
+  const n = String(c.name || '').trim();
+  const ds = spec == null ? '' : String(spec).trim();
+  return `${n}\0${ds}`;
+}
+
+function invSetItemsListFilter(mode) {
+  if (mode !== 'all' && mode !== 'common' && mode !== 'uncommon' && mode !== 'wine') return;
+  inventoryPageState.itemsListFilter = mode;
+  try {
+    localStorage.setItem('remy_invItemsListFilter', mode);
+  } catch (_) { /* ignore */ }
+  renderInventory();
+}
+
+function invRenderItemsListFilterBar(current) {
+  const cur = current || 'all';
+  const mk = (id, label) =>
+    `<button type="button" class="btn btn-xs inv-items-filter-btn ${cur === id ? 'btn-primary' : 'btn-secondary'}" onclick="invSetItemsListFilter('${id}')" aria-pressed="${cur === id ? 'true' : 'false'}">${escapeHtml(label)}</button>`;
+  return `<div class="inv-items-filter-bar" role="group" aria-label="物料范围">
+    ${mk('all', '全部')}
+    ${mk('common', '常用')}
+    ${mk('uncommon', '非常用')}
+    ${mk('wine', '酒')}
+  </div>`;
+}
+
 const INV_ITEMS_VIEW_MODES = [
   { id: 'cards', label: '卡片' },
   { id: 'list', label: '列表' },
@@ -7514,15 +7625,73 @@ function invRenderWarehouseCardsHtml(warehouses, selectedId) {
     </div>`;
 }
 
+/** 库存统计页：四仓 + 酒品目录 + 空瓶回收（与仓库同排） */
+function invRenderStockMasterCardsHtml(warehouses, selectedWarehouseId, stockMasterView) {
+  const smv =
+    stockMasterView === 'wine' ? 'wine' : stockMasterView === 'empty' ? 'empty' : 'warehouse';
+  const sid = selectedWarehouseId != null ? Number(selectedWarehouseId) : null;
+  const whButtons =
+    warehouses.length === 0
+      ? ''
+      : warehouses
+          .map((w) => {
+            const active = smv === 'warehouse' && sid != null && Number(w.id) === sid;
+            const label = w.label ? `<div class="inv-wh-card-label">${escapeHtml(w.label)}</div>` : '';
+            return `
+        <button type="button" class="inv-wh-card ${active ? 'active' : ''}" data-wh-id="${w.id}" onclick="invSelectWarehouse(${w.id})" role="listitem">
+          <div class="inv-wh-card-brand">${escapeHtml(w.brand_code)}</div>
+          <div class="inv-wh-card-region">${escapeHtml(w.region)}</div>
+          ${label}
+        </button>`;
+          })
+          .join('');
+  const wineActive = smv === 'wine';
+  const wineCard = `
+        <button type="button" class="inv-wh-card inv-wh-card-wine ${wineActive ? 'active' : ''}" onclick="invSelectStockMasterView('wine')" role="listitem" title="酒品目录（全局主数据）">
+          <div class="inv-wh-card-brand">酒品目录</div>
+          <div class="inv-wh-card-region">品牌 · 规格 · 图片</div>
+          <div class="inv-wh-card-label" id="badge-wine-catalog">—</div>
+        </button>`;
+  const emptyActive = smv === 'empty';
+  const emptyCard = `
+        <button type="button" class="inv-wh-card inv-wh-card-empty ${emptyActive ? 'active' : ''}" onclick="invSelectStockMasterView('empty')" role="listitem" title="各仓库空瓶回收库存">
+          <div class="inv-wh-card-brand">空瓶回收</div>
+          <div class="inv-wh-card-region">按仓查看 · 结算</div>
+          <div class="inv-wh-card-label" aria-hidden="true">&nbsp;</div>
+        </button>`;
+  if (!warehouses.length) {
+    return `
+    <div class="inv-warehouse-cards" role="list" aria-label="选择酒品目录或空瓶回收">
+      ${wineCard}
+      ${emptyCard}
+    </div>`;
+  }
+  return `
+    <div class="inv-warehouse-cards" role="list" aria-label="选择仓库、酒品目录或空瓶回收">
+      ${whButtons}
+      ${wineCard}
+      ${emptyCard}
+    </div>`;
+}
+
+function invSelectStockMasterView(mode) {
+  if (mode !== 'wine' && mode !== 'empty') return;
+  inventoryPageState.stockMasterView = mode;
+  try {
+    localStorage.setItem('remy_stockMasterView', mode);
+  } catch (_) { /* ignore */ }
+  renderInventory();
+}
+
 function invSelectWarehouse(warehouseId) {
   const id = parseInt(warehouseId, 10);
   if (!Number.isFinite(id)) return;
+  inventoryPageState.stockMasterView = 'warehouse';
+  try {
+    localStorage.setItem('remy_stockMasterView', 'warehouse');
+  } catch (_) { /* ignore */ }
   inventoryPageState.warehouseId = id;
   inventoryPageState.outboundLines = [];
-  if (currentPage === 'inv-empty') {
-    renderEmptyBottleRecovery();
-    return;
-  }
   renderInventory();
 }
 
@@ -7625,98 +7794,104 @@ function invRenderItemsPanel(items, viewMode) {
     </div>`;
 }
 
-function invRenderEmptyBottleSummaryPanel(groups) {
+/** 空瓶回收：按仓库分区，仅展示名称与库存；点击名称查看追溯（不做物料卡片/编辑） */
+function invRenderEmptyBottleWarehouseSections(groups) {
   const arr = Array.isArray(groups) ? groups : [];
   if (!arr.length) {
-    return `
-      <div class="card" style="margin-top:14px">
-        <div class="card-header"><h3>空瓶回收</h3></div>
-        <div class="card-body"><div class="empty-state">暂无空瓶回收数据</div></div>
-      </div>`;
+    return '<div class="inv-empty-bottle-root"><div class="empty-state">暂无空瓶回收数据</div></div>';
   }
   const total = arr.reduce((s, g) => s + (parseInt(g.total_empty_bottles, 10) || 0), 0);
   return `
-    <div class="card" style="margin-top:14px">
-      <div class="card-header">
-        <h3>空瓶回收</h3>
-        <span class="form-hint" style="margin:0">当前各仓库空瓶库存合计：<strong>${total}</strong></span>
-      </div>
-      <div class="card-body">
-        <div class="table-wrapper">
-          <table class="data-table">
-            <thead><tr><th>仓库</th><th>空瓶物料</th><th>库存</th></tr></thead>
-            <tbody>
-              ${arr
-                .map((g) => {
-                  const rows = Array.isArray(g.rows) ? g.rows : [];
-                  if (!rows.length) {
-                    return `<tr><td>${escapeHtml(`${g.brand_code || ''} · ${g.region || ''}`)}</td><td>—</td><td>0</td></tr>`;
-                  }
-                  return rows
-                    .map(
-                      (r, idx) => `<tr>
-                        <td>${idx === 0 ? `${escapeHtml(`${g.brand_code || ''} · ${g.region || ''}`)}<div style="font-size:12px;color:var(--text-muted)">小计：${parseInt(g.total_empty_bottles, 10) || 0}</div>` : ''}</td>
-                        <td>${escapeHtml(r.name || '')}</td>
-                        <td>${parseInt(r.quantity_on_hand, 10) || 0}</td>
-                      </tr>`,
-                    )
-                    .join('');
-                })
-                .join('')}
-            </tbody>
-          </table>
-        </div>
-      </div>
+    <div class="inv-empty-bottle-root">
+      <p class="form-hint inv-empty-bottle-lead">按仓库查看空瓶名称与当前库存；点击名称可查看<strong>项目编号、回收时间（入库登记时间）、数量</strong>追溯明细（受上方「显示月份」筛选）。各仓合计：<strong>${total}</strong></p>
+      ${arr
+        .map((g) => {
+          const whLabel = `${g.brand_code || ''} · ${g.region || ''}`;
+          const rows = Array.isArray(g.rows) ? g.rows : [];
+          const sub = parseInt(g.total_empty_bottles, 10) || 0;
+          const rowsHtml = rows.length
+            ? rows
+                .map(
+                  (r) => `
+            <button type="button" class="inv-empty-bottle-name-row" onclick="invOpenEmptyBottleTraceModal(${Number(r.item_id)})">
+              <span class="inv-empty-bottle-name">${escapeHtml(r.name || '')}</span>
+              <span class="inv-empty-bottle-qty">库存 <strong>${parseInt(r.quantity_on_hand, 10) || 0}</strong></span>
+              <span class="inv-empty-bottle-go" aria-hidden="true">追溯 →</span>
+            </button>`,
+                )
+                .join('')
+            : '<div class="empty-state inv-empty-bottle-wh-empty">该仓库暂无空瓶物料</div>';
+          return `
+        <section class="inv-empty-bottle-wh-section">
+          <div class="inv-empty-bottle-wh-head">
+            <h3 class="inv-empty-bottle-wh-title">${escapeHtml(whLabel)}</h3>
+            <span class="form-hint" style="margin:0">小计 ${sub}</span>
+          </div>
+          <div class="inv-empty-bottle-wh-body">${rowsHtml}</div>
+        </section>`;
+        })
+        .join('')}
     </div>`;
 }
 
-async function renderEmptyBottleRecovery() {
-  const container = document.getElementById('pageContainer');
-  let warehouses = [];
+async function invOpenEmptyBottleTraceModal(itemId) {
+  const id = parseInt(itemId, 10);
+  if (!Number.isFinite(id) || id <= 0) return;
+  const body = document.getElementById('modalInvEmptyBottleBody');
+  const title = document.getElementById('modalInvEmptyBottleTitle');
+  if (!body) return;
+  if (title) title.textContent = '空瓶回收追溯';
+  body.innerHTML = '<div class="empty-state">加载中...</div>';
+  openModal('modalInvEmptyBottleTrace');
   try {
-    warehouses = await api('GET', '/inventory/warehouses');
-  } catch (e) {
-    container.innerHTML = `<div class="empty-state" style="color:var(--danger)">加载仓库失败：${escapeHtml(e.message || '')}</div>`;
-    return;
-  }
-  if (!inventoryPageState.warehouseId || !warehouses.some((w) => Number(w.id) === Number(inventoryPageState.warehouseId))) {
-    inventoryPageState.warehouseId = warehouses[0] ? warehouses[0].id : null;
-  }
-  let items = [];
-  if (inventoryPageState.warehouseId) {
-    try {
-      items = await api('GET', `/inventory/items?inv_warehouse_id=${inventoryPageState.warehouseId}`);
-    } catch (_) {
-      items = [];
-    }
-  }
-  const emptyItems = (items || []).filter((it) => String(it.name || '').includes('空瓶'));
-  let itemsViewMode = inventoryPageState.itemsViewMode || 'cards';
-  if (!INV_ITEMS_VIEW_MODES.some((m) => m.id === itemsViewMode)) itemsViewMode = 'cards';
-  inventoryPageState.itemsViewMode = itemsViewMode;
-  const listActive = itemsViewMode === 'list';
-  const gridActive = itemsViewMode === 'cards' || itemsViewMode === 'thumbnails';
-  const gridToggleTitle = invGridViewToggleTitle(itemsViewMode);
-  const viewToggleHtml = `<div class="inv-view-toggle" role="toolbar" aria-label="空瓶展示方式">
-      <div class="inv-view-toggle-inner">
-        <button type="button" class="inv-view-opt ${listActive ? 'active' : ''}" onclick="invSetItemsViewMode('list');renderEmptyBottleRecovery()" title="列表" aria-label="列表">${INV_VIEW_LIST_ICON}</button>
-        <button type="button" class="inv-view-opt ${gridActive ? 'active' : ''}" onclick="invCycleGridItemsView();renderEmptyBottleRecovery()" title="${escapeHtml(gridToggleTitle)}" aria-label="${escapeHtml(gridToggleTitle)}">${INV_VIEW_GRID_ICON}</button>
+    const lm = String(inventoryPageState.invLedgerMonth || '').trim();
+    const mq = /^\d{4}-\d{2}$/.test(lm) ? `?month=${encodeURIComponent(lm)}` : '';
+    const data = await api('GET', `/inventory/empty-bottles/items/${id}/trace${mq}`);
+    const it = data.item || {};
+    if (title) title.textContent = it.name ? `空瓶追溯 · ${it.name}` : '空瓶回收追溯';
+    const lines = Array.isArray(data.lines) ? data.lines : [];
+    const tableRows = lines
+      .map((ln) => {
+        const time = ln.inbound_recorded_at
+          ? String(ln.inbound_recorded_at).slice(0, 19).replace('T', ' ')
+          : '—';
+        const proj = escapeHtml(ln.display_main || '—');
+        const sub = ln.display_sub
+          ? `<div class="form-hint" style="margin-top:4px">${escapeHtml(ln.display_sub)}</div>`
+          : '';
+        const src =
+          ln.source_material_name && String(ln.source_material_name).trim()
+            ? `<div class="form-hint" style="margin-top:4px">来源出库物料：${escapeHtml(String(ln.source_material_name).trim())}</div>`
+            : '';
+        return `<tr>
+        <td>${proj}${sub}${src}</td>
+        <td>${time}</td>
+        <td>${ln.qty_empty_recovered != null ? escapeHtml(String(ln.qty_empty_recovered)) : '0'}</td>
+      </tr>`;
+      })
+      .join('');
+    body.innerHTML = `
+      <p class="form-hint" style="margin-top:0;margin-bottom:12px">回收时间为<strong>提交入库登记</strong>时的系统时间（与「物品入库」台账一致）。${lm && /^\d{4}-\d{2}$/.test(lm) ? `当前仅显示 <strong>${escapeHtml(lm)}</strong> 月份内的登记。` : ''}</p>
+      <div class="table-wrapper">
+        <table class="data-table">
+          <thead><tr><th>项目编号 / 关联</th><th>回收时间（入库登记）</th><th>空瓶数量</th></tr></thead>
+          <tbody>${
+            lines.length
+              ? tableRows
+              : '<tr><td colspan="3" style="color:var(--text-muted);padding:16px;text-align:center">暂无回收登记明细（历史数据可能仅能通过物料名称关联）</td></tr>'
+          }</tbody>
+        </table>
       </div>
-    </div>`;
-  const whBlock = invRenderWarehouseCardsHtml(warehouses, inventoryPageState.warehouseId);
-  const panel = emptyItems.length
-    ? invRenderItemsPanel(emptyItems, itemsViewMode)
-    : '<div class="empty-state" style="margin-top:14px">当前仓库暂无空瓶库存</div>';
-  container.innerHTML = `
-    <div class="inv-master-warehouse-block">
-      ${whBlock}
-    </div>
-    <div class="inv-toolbar inv-toolbar-master">
-      <span class="form-hint" style="flex:1;min-width:220px;margin:0">空瓶回收库存：按仓库查看归还时回收入库的空瓶数量，用于客户回收费用结算。</span>
-      ${viewToggleHtml}
-    </div>
-    ${panel}
-  `;
+    `;
+  } catch (e) {
+    body.innerHTML = `<div class="empty-state" style="color:var(--danger)">加载失败：${escapeHtml(e.message || '')}</div>`;
+  }
+  renderLucideIcons();
+}
+
+/** 兼容旧入口：空瓶回收已并入「库存统计」与仓库同排卡片 */
+async function renderEmptyBottleRecovery() {
+  navigate('inv-empty');
 }
 
 async function invOpenItemDetail(itemId) {
@@ -7850,7 +8025,7 @@ function invBuildCommonRowsHtml(items, preset) {
   const P = preset || {};
   const commonItems = items.filter(invItemIsCommon);
   if (!commonItems.length) {
-    return '<tr><td colspan="5" style="color:var(--text-muted);font-size:13px">暂无常用物料。请在「库存数据」中设为常用，或添加物料时勾选「常用物料」。</td></tr>';
+    return '<tr><td colspan="5" style="color:var(--text-muted);font-size:13px">暂无常用物料。请在「库存统计」中设为常用，或添加物料时勾选「常用物料」。</td></tr>';
   }
   return commonItems
     .map((it) => {
@@ -8127,7 +8302,7 @@ async function invOpenOutboundModal() {
     return;
   }
   if (!warehouses.length) {
-    showToast('暂无仓库，请先在库存数据中新建仓库', 'warning');
+    showToast('暂无仓库，请先在库存统计中新建仓库', 'warning');
     return;
   }
   if (!inventoryPageState.warehouseId || !warehouses.some((w) => w.id === inventoryPageState.warehouseId)) {
@@ -8161,13 +8336,14 @@ async function invOpenOutboundModal() {
 
 function invRenderOutboundOrderTable(orders) {
   if (!orders.length) {
-    return '<div class="empty-state" style="margin-top:8px">暂无物品出库记录。点击右上角「新建出库」创建。</div>';
+    return '<div class="empty-state" style="margin-top:8px">当前筛选条件下暂无物品出库记录。可切换「显示月份」或点击「新建出库」创建。</div>';
   }
   return `
     <div class="table-wrapper">
       <table class="data-table inv-ob-order-table">
         <thead>
           <tr>
+            <th>出库日期</th>
             <th>项目编号</th>
             <th>物流方式</th>
             <th>发货仓</th>
@@ -8181,12 +8357,17 @@ function invRenderOutboundOrderTable(orders) {
             .map((o) => {
               const proj =
                 o.link_mode === 'standalone' ? escapeHtml(o.purpose || '—') : escapeHtml(o.project_code || '—');
+              const shipDate =
+                o.shipped_at != null && String(o.shipped_at).trim()
+                  ? String(o.shipped_at).slice(0, 10)
+                  : '—';
               const st = String(o.status || '').toLowerCase();
               const statusHtml =
                 st === 'closed'
                   ? '<span class="badge badge-success">已归还</span>'
                   : '<span class="badge badge-warning">出库中</span>';
               return `<tr>
+            <td>${shipDate}</td>
             <td>${proj}</td>
             <td>${escapeHtml(o.logistics_method || '—')}</td>
             <td>${escapeHtml(o.brand_code)} ${escapeHtml(o.region)}</td>
@@ -8207,14 +8388,13 @@ function invRenderOutboundOrderTable(orders) {
 
 function invRenderInboundLedgerTable(rows) {
   if (!rows.length) {
-    return '<div class="empty-state" style="margin-top:8px">当前年度下暂无入库单记录。完成归还登记后会在此生成一条台账。</div>';
+    return '<div class="empty-state" style="margin-top:8px">当前筛选条件下暂无已入库记录。可切换「显示月份」或调整左侧年度。</div>';
   }
   return `
     <div class="table-wrapper inv-inbound-ledger-wrap">
       <table class="data-table">
         <thead>
           <tr>
-            <th>入库单号</th>
             <th>入库日期</th>
             <th>关联项目 / 用途</th>
             <th>仓库</th>
@@ -8235,7 +8415,6 @@ function invRenderInboundLedgerTable(rows) {
               const remShort = rem.length > 40 ? `${rem.slice(0, 40)}…` : rem;
               const sum = `归${r.sum_qty_return} 空${r.sum_qty_empty_recovered} 留${r.sum_qty_customer_keep} 丢${r.sum_qty_lost} 损${r.sum_qty_damaged}`;
               return `<tr>
-              <td>#${r.batch_id}</td>
               <td>${r.return_date ? String(r.return_date).slice(0, 10) : '—'}</td>
               <td><div class="inv-inbound-ledger-main">${main}</div>${sub}</td>
               <td>${escapeHtml(r.brand_code)} ${escapeHtml(r.region)}</td>
@@ -8478,7 +8657,7 @@ async function invOpenOutboundEditModal(orderId) {
     return;
   }
   if (!warehouses.length) {
-    showToast('暂无仓库，请先在库存数据中新建仓库', 'warning');
+    showToast('暂无仓库，请先在库存统计中新建仓库', 'warning');
     return;
   }
   inventoryPageState.warehouseId = o.inv_warehouse_id;
@@ -8613,7 +8792,12 @@ async function renderInventory() {
   }
 
   let items = [];
-  if (inventoryPageState.warehouseId && invPage === 'master') {
+  if (
+    invPage === 'master' &&
+    inventoryPageState.stockMasterView !== 'wine' &&
+    inventoryPageState.stockMasterView !== 'empty' &&
+    inventoryPageState.warehouseId
+  ) {
     try {
       items = await api('GET', `/inventory/items?inv_warehouse_id=${inventoryPageState.warehouseId}`);
     } catch (_) {
@@ -8630,8 +8814,42 @@ async function renderInventory() {
   const listActive = itemsViewMode === 'list';
   const gridActive = itemsViewMode === 'cards' || itemsViewMode === 'thumbnails';
   const gridToggleTitle = invGridViewToggleTitle(itemsViewMode);
+  const masterIsWine = invPage === 'master' && inventoryPageState.stockMasterView === 'wine';
+  const masterIsEmpty = invPage === 'master' && inventoryPageState.stockMasterView === 'empty';
+  const masterIsWarehouse = invPage === 'master' && !masterIsWine && !masterIsEmpty;
+
+  let ledgerMonthRange = { min_month: null, max_month: null };
+  if (invPage === 'outbound' || invPage === 'inbound' || (invPage === 'master' && inventoryPageState.stockMasterView === 'empty')) {
+    try {
+      const qs = yfId ? `?yearFrameId=${yfId}` : '';
+      const r = await api('GET', `/inventory/ledger-month-range${qs}`);
+      ledgerMonthRange = r && typeof r === 'object' ? r : { min_month: null, max_month: null };
+    } catch (_) {
+      ledgerMonthRange = { min_month: null, max_month: null };
+    }
+  }
+
+  let displayItems = items;
+  if (masterIsWarehouse) {
+    const f = inventoryPageState.itemsListFilter || 'all';
+    if (f === 'common') {
+      displayItems = items.filter((it) => invItemIsCommon(it));
+    } else if (f === 'uncommon') {
+      displayItems = items.filter((it) => !invItemIsCommon(it));
+    } else if (f === 'wine') {
+      let cat = [];
+      try {
+        cat = await api('GET', '/wine/catalog');
+      } catch (_) {
+        cat = [];
+      }
+      const set = new Set((Array.isArray(cat) ? cat : []).map((c) => invCatalogRowWineKey(c)));
+      displayItems = items.filter((it) => set.has(invItemWineCatalogKey(it)));
+    }
+  }
+
   const viewToggleHtml =
-    invPage === 'master'
+    invPage === 'master' && !masterIsWine && !masterIsEmpty
       ? `<div class="inv-view-toggle" role="toolbar" aria-label="物料展示方式">
       <div class="inv-view-toggle-inner">
         <button type="button" class="inv-view-opt ${listActive ? 'active' : ''}" onclick="invSetItemsViewMode('list')" title="列表" aria-label="列表">${INV_VIEW_LIST_ICON}</button>
@@ -8640,9 +8858,34 @@ async function renderInventory() {
     </div>`
       : '';
 
+  const itemsFilterHtml = masterIsWarehouse
+    ? invRenderItemsListFilterBar(inventoryPageState.itemsListFilter || 'all')
+    : '';
+
   let panelHtml = '';
   if (invPage === 'master') {
-    panelHtml = invRenderItemsPanel(items, itemsViewMode);
+    if (masterIsWine) {
+      panelHtml = `
+      <div class="stats-row" id="wineCatalogStats" style="margin-bottom:16px"></div>
+      <div class="card">
+        <div class="card-header">
+          <h3><i data-lucide="book-open" style="width:14px;height:14px;vertical-align:-2px;margin-right:6px"></i>目录列表</h3>
+        </div>
+        <div class="card-body" id="wineCatalogListHost">
+          <div style="color:var(--text-muted);padding:20px;text-align:center">加载中...</div>
+        </div>
+      </div>`;
+    } else if (masterIsEmpty) {
+      let emptyGroups = [];
+      try {
+        emptyGroups = await api('GET', '/inventory/empty-bottles/summary');
+      } catch (_) {
+        emptyGroups = [];
+      }
+      panelHtml = invRenderEmptyBottleWarehouseSections(emptyGroups);
+    } else {
+      panelHtml = invRenderItemsPanel(displayItems, itemsViewMode);
+    }
   } else if (invPage === 'outbound') {
     let allOrders = [];
     try {
@@ -8667,18 +8910,11 @@ async function renderInventory() {
     const ledgerArr = Array.isArray(inboundLedger) ? inboundLedger : [];
     panelHtml = `
       <div class="inv-inbound-section">
-        <h4 class="inv-inbound-section-title">入库单台账</h4>
-        <p class="form-hint" style="margin:0 0 12px;line-height:1.5;max-width:920px">
-          每条记录对应一次<strong>归还登记</strong>。列表以<strong>项目编号 / 场次信息</strong>或<strong>非活动用途</strong>标识来源，便于核对；关联出库单号仅在详情中供系统对账。
-        </p>
         ${invRenderInboundLedgerTable(ledgerArr)}
       </div>
       <div class="inv-inbound-divider" role="separator" aria-hidden="true"></div>
       <div class="inv-inbound-section">
-        <h4 class="inv-inbound-section-title">待归还登记</h4>
-        <p class="inv-inbound-hint form-hint" style="margin:0 0 12px;line-height:1.5">
-          以下列出<strong>已出库、尚未结清</strong>的单据。已全部归还并结清的单据不会出现在此列表，可在<strong>物品出库</strong>或上方<strong>入库单台账</strong>中查看。
-        </p>
+        <h4 class="inv-inbound-section-title">待入库</h4>
         <div class="table-wrapper">
           <table class="data-table">
             <thead>
@@ -8706,43 +8942,69 @@ async function renderInventory() {
                   <button type="button" class="btn btn-sm btn-secondary" onclick="invDownloadPdf(${o.id})">PDF</button>
                 </td>
               </tr>`;
-            }).join('') : '<tr><td colspan="5" style="color:var(--text-muted)">暂无待归还出库单（当前年度下没有「待归还」状态的物品出库）</td></tr>'}
+            }).join('') : '<tr><td colspan="5" style="color:var(--text-muted)">暂无待入库单据</td></tr>'}
             </tbody>
           </table>
         </div>
       </div>`;
   }
 
-  const masterToolbar = `
+  const masterToolbarWh = `
     <div class="inv-master-warehouse-block">
-      ${invRenderWarehouseCardsHtml(warehouses, inventoryPageState.warehouseId)}
+      ${invRenderStockMasterCardsHtml(warehouses, inventoryPageState.warehouseId, inventoryPageState.stockMasterView)}
     </div>
     <div class="inv-toolbar inv-toolbar-master">
       <button type="button" class="btn btn-primary btn-sm inv-admin-only" onclick="invOpenNewItemModal()" ${inventoryPageState.warehouseId ? '' : 'disabled'}>添加物料</button>
       <button type="button" class="btn btn-secondary btn-sm inv-admin-only" onclick="invOpenAddWineModal()" ${inventoryPageState.warehouseId ? '' : 'disabled'}>添加酒品</button>
       <span class="form-hint" style="flex:1;min-width:200px;margin:0">仓库与物料为 <strong>25/26 财年共用</strong>；仓库增删请由管理员在库表或脚本中维护。按项目编号匹配场次时请先选左侧年度。</span>
     </div>`;
+  const masterToolbarWine = `
+    <div class="inv-master-warehouse-block">
+      ${invRenderStockMasterCardsHtml(warehouses, inventoryPageState.warehouseId, inventoryPageState.stockMasterView)}
+    </div>
+    <div class="inv-toolbar inv-toolbar-master">
+      <button type="button" class="btn btn-primary btn-sm inv-admin-only" onclick="openWineCatalogModal(null)">添加酒品</button>
+      <span class="form-hint" style="flex:1;min-width:200px;margin:0">酒品<strong>目录</strong>为全局主数据（品牌、名称、规格、图片），<strong>不含分仓库存</strong>；向某仓库加酒请在对应仓库下使用「添加酒品」。</span>
+    </div>`;
+  const masterToolbarEmpty = `
+    <div class="inv-master-warehouse-block">
+      ${invRenderStockMasterCardsHtml(warehouses, inventoryPageState.warehouseId, inventoryPageState.stockMasterView)}
+    </div>
+    <div class="inv-toolbar inv-toolbar-master inv-toolbar-empty-ledger">
+      ${invRenderLedgerMonthSelectHtml(inventoryPageState.invLedgerMonth, ledgerMonthRange)}
+      <span class="form-hint" style="flex:1;min-width:200px;margin:0">空瓶回收仅作查看与追溯：上方月份作用于<strong>追溯明细</strong>；列表仍为各仓当前库存。</span>
+    </div>`;
+  const masterToolbar =
+    invPage === 'master' && inventoryPageState.stockMasterView === 'wine'
+      ? masterToolbarWine
+      : invPage === 'master' && inventoryPageState.stockMasterView === 'empty'
+        ? masterToolbarEmpty
+        : masterToolbarWh;
 
   const outboundPageHeader = `
     <div class="inv-out-page-head">
-      <span class="form-hint" style="margin:0">按项目编号汇总已出库记录。主数据请在 <strong>库存数据</strong> 维护。</span>
+      <div class="inv-out-page-head-main">
+        <span class="form-hint" style="margin:0">按项目编号汇总已出库记录；<strong>出库日期</strong>按发货时间，无则按创建时间落入所选月份。主数据请在 <strong>库存统计</strong> 维护。</span>
+        ${invRenderLedgerMonthSelectHtml(inventoryPageState.invLedgerMonth, ledgerMonthRange)}
+      </div>
       <button type="button" class="btn btn-primary btn-sm" onclick="invOpenOutboundModal()">新建出库</button>
     </div>`;
 
-  const inboundOpsToolbar = `
-    <div class="inv-toolbar">
-      <span class="form-hint" style="margin:0">上方为<strong>入库单台账</strong>（每次归还登记一条）；下方为<strong>待归还</strong>出库单。列表按左侧年度财年筛选。与「酒品管理」中的酒品入库无关。</span>
-    </div>`;
+  const inboundOpsToolbar = `<div class="inv-toolbar"></div>`;
 
+  const tabsMasterTools = [itemsFilterHtml, viewToggleHtml].filter(Boolean).join('');
   const tabsBarMaster = `
     <div class="inv-tabs-bar">
-      <span class="inv-page-lead">物料清单</span>
-      ${viewToggleHtml}
+      <span class="inv-page-lead">${masterIsWine ? '酒品目录' : masterIsEmpty ? '空瓶回收' : '物料清单'}</span>
+      ${tabsMasterTools ? `<div class="inv-tabs-bar-tools">${tabsMasterTools}</div>` : ''}
     </div>`;
 
   const tabsBarInbound = `
-    <div class="inv-tabs-bar inv-tabs-bar-single">
-      <span class="inv-page-lead">物品入库</span>
+    <div class="inv-tabs-bar">
+      <span class="inv-page-lead">已入库</span>
+      <div class="inv-tabs-bar-tools">
+        ${invRenderLedgerMonthSelectHtml(inventoryPageState.invLedgerMonth, ledgerMonthRange)}
+      </div>
     </div>`;
 
   const toolbarHtml =
@@ -8754,6 +9016,13 @@ async function renderInventory() {
     ${tabsBarHtml}
     ${panelHtml}
   `;
+
+  if (invPage === 'master' && inventoryPageState.stockMasterView === 'wine') {
+    try {
+      await loadWineCatalogPage();
+      updateBadges();
+    } catch (_) { /* ignore */ }
+  }
 
     try {
       if (yfId) {

@@ -853,6 +853,31 @@ input, select, textarea { font-family: inherit; }
   color: var(--text-primary);
 }
 
+.inv-tabs-bar-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 14px;
+  margin-left: auto;
+}
+
+.inv-items-filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.inv-items-filter-btn {
+  display: inline-flex;
+  justify-content: center;
+  align-items: center;
+  text-align: center;
+  min-width: 48px;
+  box-sizing: border-box;
+  line-height: 1.2;
+}
+
 /* 物品出库：页顶说明 + 右上新建出库 */
 .inv-out-page-head {
   display: flex;
@@ -861,6 +886,31 @@ input, select, textarea { font-family: inherit; }
   justify-content: space-between;
   gap: 12px;
   margin-bottom: 14px;
+}
+
+.inv-out-page-head-main {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px 20px;
+  flex: 1;
+  min-width: 0;
+}
+
+.inv-ledger-month-select {
+  width: auto;
+  min-width: 0;
+  max-width: 11rem;
+  padding: 4px 26px 4px 8px;
+  font-size: 13px;
+  line-height: 1.35;
+  box-sizing: border-box;
+}
+
+.inv-toolbar-empty-ledger {
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 14px;
 }
 
 /* 新建出库弹窗：规格化布局 */
@@ -1419,6 +1469,94 @@ input, select, textarea { font-family: inherit; }
   color: var(--text-muted);
   margin-top: 6px;
   line-height: 1.35;
+}
+
+.inv-wh-card-wine {
+  border-style: dashed;
+}
+.inv-wh-card-wine.active {
+  border-style: solid;
+}
+
+.inv-wh-card-empty {
+  border-style: dashed;
+}
+.inv-wh-card-empty.active {
+  border-style: solid;
+}
+
+/* 空瓶回收：按仓分区列表（非物料卡片） */
+.inv-empty-bottle-root {
+  margin-top: 4px;
+}
+.inv-empty-bottle-lead {
+  margin-bottom: 14px;
+  line-height: 1.5;
+}
+.inv-empty-bottle-wh-section {
+  margin-bottom: 18px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-secondary);
+  overflow: hidden;
+}
+.inv-empty-bottle-wh-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-card-hover);
+}
+.inv-empty-bottle-wh-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 700;
+}
+.inv-empty-bottle-wh-body {
+  padding: 6px 8px 10px;
+}
+.inv-empty-bottle-name-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  text-align: left;
+  padding: 10px 12px;
+  margin: 4px 0;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  cursor: pointer;
+  transition: background var(--transition), border-color var(--transition);
+}
+.inv-empty-bottle-name-row:hover {
+  background: var(--bg-card-hover);
+  border-color: var(--text-muted);
+}
+.inv-empty-bottle-name {
+  flex: 1;
+  min-width: 0;
+  font-weight: 600;
+  font-size: 14px;
+}
+.inv-empty-bottle-qty {
+  font-size: 13px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+.inv-empty-bottle-go {
+  font-size: 12px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+.inv-empty-bottle-wh-empty {
+  padding: 12px 8px;
+  font-size: 13px;
 }
 
 .inv-wh-cards-empty {

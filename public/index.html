@@ -9,7 +9,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="style.css?v=20260419inv-stat">
+  <link rel="stylesheet" href="style.css?v=20260421ledger-month-ui">
   <!-- Chart.js -->
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
   <script src="https://unpkg.com/lucide@latest"></script>
@@ -110,18 +110,9 @@
             <span class="nav-text">物品入库</span>
             <span class="nav-badge" id="badge-inv-inbound">—</span>
           </a>
-          <a class="nav-item" data-page="wine" onclick="navigate('wine')">
-            <span class="nav-icon"><i data-lucide="wine" style="width:16px;height:16px"></i></span>
-            <span class="nav-text">酒品目录</span>
-            <span class="nav-badge" id="badge-wine">—</span>
-          </a>
           <a class="nav-item" data-page="inventory" id="navInventoryMaster" onclick="navigate('inventory')">
             <span class="nav-icon"><i data-lucide="database" style="width:16px;height:16px"></i></span>
-            <span class="nav-text">库存数据</span>
-          </a>
-          <a class="nav-item" data-page="inv-empty" onclick="navigate('inv-empty')">
-            <span class="nav-icon"><i data-lucide="recycle" style="width:16px;height:16px"></i></span>
-            <span class="nav-text">空瓶回收</span>
+            <span class="nav-text">库存统计</span>
           </a>
         </div>
       </div>
@@ -698,6 +689,17 @@
     </div>
   </div>
 
+  <div class="modal wide" id="modalInvEmptyBottleTrace" style="max-width:720px" onclick="event.stopPropagation()">
+    <div class="modal-header">
+      <span class="modal-title" id="modalInvEmptyBottleTitle">空瓶回收追溯</span>
+      <button type="button" class="modal-close" onclick="closeModal()">✕</button>
+    </div>
+    <div class="modal-body" id="modalInvEmptyBottleBody" style="max-height:72vh;overflow:auto"></div>
+    <div class="modal-footer">
+      <button type="button" class="btn btn-secondary" onclick="closeModal()">关闭</button>
+    </div>
+  </div>
+
   <div class="modal wide" id="modalInvAddWine" style="max-width:920px" onclick="event.stopPropagation()">
     <div class="modal-header">
       <span class="modal-title">添加酒品到仓库</span>
@@ -739,6 +741,6 @@
   <!-- 全局 Toast -->
   <div class="toast-container" id="toastContainer"></div>
 
-  <script src="app.js?v=20260421-inbound-receipt-ledger"></script>
+  <script src="app.js?v=20260421ledger-month-ui"></script>
 </body>
 </html>

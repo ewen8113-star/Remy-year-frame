@@ -253,6 +253,9 @@ CREATE TABLE IF NOT EXISTS inv_return_lines (
     qty_return INT NOT NULL DEFAULT 0,
     qty_lost INT NOT NULL DEFAULT 0,
     qty_damaged INT NOT NULL DEFAULT 0,
+    qty_empty_recovered INT NOT NULL DEFAULT 0,
+    qty_customer_keep INT NOT NULL DEFAULT 0,
+    empty_bottle_item_id INT NULL,
     CONSTRAINT fk_inv_rl_batch FOREIGN KEY (batch_id) REFERENCES inv_return_batches(id) ON DELETE CASCADE,
     CONSTRAINT fk_inv_rl_ol FOREIGN KEY (outbound_line_id) REFERENCES inv_outbound_lines(id) ON DELETE CASCADE
 );

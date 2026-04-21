@@ -123,6 +123,19 @@ function buildEmptyBottleName(itemNameRaw) {
   return `${base} 空瓶`;
 }
 
+/** query month=YYYY-MM → [startInclusive, endExclusive) 用于 DATETIME 区间筛选 */
+function parseMonthRangeForSql(monthRaw) {
+  const s = String(monthRaw || '').trim();
+  if (!/^\d{4}-\d{2}$/.test(s)) return null;
+  const y = parseInt(s.slice(0, 4), 10);
+  const mo = parseInt(s.slice(5, 7), 10);
+  if (!Number.isFinite(y) || mo < 1 || mo > 12) return null;
+  const pad = (n) => String(n).padStart(2, '0');
+  const ny = mo === 12 ? y + 1 : y;
+  const nm = mo === 12 ? 1 : mo + 1;
+  return [`${y}-${pad(mo)}-01 00:00:00`, `${ny}-${pad(nm)}-01 00:00:00`];
+}
+
 async function ensureEmptyBottleItem(conn, sourceItem) {
   const whId = Number(sourceItem?.inv_warehouse_id);
   const itemName = buildEmptyBottleName(sourceItem?.name);
@@ -432,6 +445,110 @@ router.get('/empty-bottles/summary', async (req, res) => {
   } catch (e) {
     console.error(e);
     res.status(500).json({ error: e.message || '加载空瓶回收汇总失败' });
+  }
+});
+
+/**
+ * 空瓶回收追溯：按 inv_items（空瓶物料）汇总归还登记行，回收时间 = 入库批次 created_at（填写登记时间）
+ */
+router.get('/empty-bottles/items/:itemId/trace', async (req, res) => {
+  try {
+    const monthRange = parseMonthRangeForSql(req.query.month);
+    const itemId = parseInt(req.params.itemId, 10);
+    if (!Number.isFinite(itemId) || itemId <= 0) return res.status(400).json({ error: '无效物品' });
+    const [items] = await db.query(
+      `SELECT i.id, i.name, i.description, i.quantity_on_hand, i.inv_warehouse_id,
+              w.region, bi.brand_code
+       FROM inv_items i
+       JOIN inv_warehouses w ON w.id = i.inv_warehouse_id
+       JOIN brand_inventory bi ON bi.id = w.brand_id
+       WHERE i.id = ?`,
+      [itemId]
+    );
+    if (!items.length) return res.status(404).json({ error: '物品不存在' });
+    const emptyItem = items[0];
+    const nm = String(emptyItem.name || '');
+    const desc = String(emptyItem.description || '');
+    if (!nm.includes('空瓶') && !desc.includes('空瓶')) {
+      return res.status(400).json({ error: '仅支持空瓶类物料的回收追溯' });
+    }
+    const whId = Number(emptyItem.inv_warehouse_id);
+    const targetName = nm;
+
+    const [rawRows] = await db.query(
+      `
+      SELECT
+        rl.id AS return_line_id,
+        rl.qty_empty_recovered,
+        rl.empty_bottle_item_id,
+        rb.id AS batch_id,
+        rb.created_at AS inbound_recorded_at,
+        rb.return_date,
+        o.id AS outbound_order_id,
+        o.link_mode,
+        o.purpose,
+        COALESCE(NULLIF(TRIM(act.project_code), ''), NULLIF(TRIM(o.project_code), '')) AS project_code,
+        act.city AS activity_city,
+        act.activity_type AS activity_type,
+        act.client_name AS client_name,
+        it_src.name AS source_material_name
+      FROM inv_return_lines rl
+      INNER JOIN inv_return_batches rb ON rb.id = rl.batch_id
+      INNER JOIN inv_outbound_orders o ON o.id = rb.outbound_order_id
+      INNER JOIN inv_outbound_lines ol ON ol.id = rl.outbound_line_id
+      INNER JOIN inv_items it_src ON it_src.id = ol.item_id
+      LEFT JOIN activities act ON act.id = o.activity_id
+      WHERE rl.qty_empty_recovered > 0
+        AND o.inv_warehouse_id = ?
+        ${monthRange ? 'AND rb.created_at >= ? AND rb.created_at < ?' : ''}
+      ORDER BY rb.created_at DESC, rl.id DESC
+    `,
+      monthRange ? [whId, monthRange[0], monthRange[1]] : [whId]
+    );
+
+    const filtered = rawRows.filter((row) => {
+      const eid = row.empty_bottle_item_id != null ? Number(row.empty_bottle_item_id) : null;
+      if (Number.isFinite(eid) && eid > 0) return eid === itemId;
+      return buildEmptyBottleName(row.source_material_name) === targetName;
+    });
+
+    const lines = filtered.map((r) => {
+      const labels = inboundReceiptDisplayLabels({
+        link_mode: r.link_mode,
+        purpose: r.purpose,
+        project_code: r.project_code,
+        activity_city: r.activity_city,
+        activity_type: r.activity_type,
+        client_name: r.client_name,
+      });
+      return {
+        return_line_id: Number(r.return_line_id),
+        qty_empty_recovered: Math.max(0, parseInt(r.qty_empty_recovered, 10) || 0),
+        inbound_recorded_at: r.inbound_recorded_at,
+        return_date: r.return_date,
+        batch_id: Number(r.batch_id),
+        outbound_order_id: Number(r.outbound_order_id),
+        /** 对应出库明细中的原物料名称（非空瓶库存名） */
+        source_material_name: r.source_material_name,
+        display_main: labels.display_main,
+        display_sub: labels.display_sub,
+      };
+    });
+
+    res.json({
+      item: {
+        id: Number(emptyItem.id),
+        name: emptyItem.name,
+        quantity_on_hand: Math.max(0, parseInt(emptyItem.quantity_on_hand, 10) || 0),
+        inv_warehouse_id: whId,
+        brand_code: emptyItem.brand_code,
+        region: emptyItem.region,
+      },
+      lines,
+    });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: e.message || '加载空瓶追溯失败' });
   }
 });
 
@@ -877,9 +994,89 @@ router.post('/outbound', async (req, res) => {
   }
 });
 
+/**
+ * 台账月份下界/上界（与出库、入库单、空瓶追溯同一财年规则），用于下拉从「最早有记录」月份开始
+ */
+router.get('/ledger-month-range', async (req, res) => {
+  try {
+    const yfRaw = req.query.yearFrameId ?? req.query.year_frame_id;
+    const yfId = parseInt(yfRaw, 10);
+    const fiscalClause = Number.isFinite(yfId)
+      ? ` AND (
+        (o.activity_id IS NOT NULL AND act.year_frame_id = ?)
+        OR (o.link_mode = 'standalone' AND o.activity_id IS NULL)
+        OR (
+          o.activity_id IS NULL
+          AND o.link_mode = 'activity'
+          AND TRIM(COALESCE(o.project_code, '')) <> ''
+          AND EXISTS (
+            SELECT 1 FROM activities act_yf
+            WHERE act_yf.project_code = o.project_code AND act_yf.year_frame_id = ?
+          )
+        )
+      )`
+      : '';
+    const fiscalParams = Number.isFinite(yfId) ? [yfId, yfId] : [];
+
+    const sqlOb = `
+      SELECT
+        MIN(COALESCE(o.shipped_at, o.created_at)) AS tmin,
+        MAX(COALESCE(o.shipped_at, o.created_at)) AS tmax
+      FROM inv_outbound_orders o
+      LEFT JOIN activities act ON act.id = o.activity_id
+      WHERE COALESCE(o.shipped_at, o.created_at) IS NOT NULL
+      ${fiscalClause}
+    `;
+    const sqlRb = `
+      SELECT
+        MIN(rb.created_at) AS tmin,
+        MAX(rb.created_at) AS tmax
+      FROM inv_return_batches rb
+      INNER JOIN inv_outbound_orders o ON o.id = rb.outbound_order_id
+      LEFT JOIN activities act ON act.id = o.activity_id
+      WHERE rb.created_at IS NOT NULL
+      ${fiscalClause}
+    `;
+
+    const [[obRow]] = await db.query(sqlOb, fiscalParams);
+    const [[rbRow]] = await db.query(sqlRb, fiscalParams);
+
+    const toDate = (v) => {
+      if (v == null) return null;
+      const d = v instanceof Date ? v : new Date(v);
+      return Number.isNaN(d.getTime()) ? null : d;
+    };
+
+    const candidates = [toDate(obRow?.tmin), toDate(obRow?.tmax), toDate(rbRow?.tmin), toDate(rbRow?.tmax)].filter(Boolean);
+    if (!candidates.length) {
+      return res.json({ min_month: null, max_month: null });
+    }
+
+    const tmin = new Date(Math.min(...candidates.map((d) => d.getTime())));
+    const tmax = new Date(Math.max(...candidates.map((d) => d.getTime())));
+
+    const toYm = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+    let minMonth = toYm(tmin);
+    let maxMonth = toYm(tmax);
+
+    const now = new Date();
+    const capYm = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+    if (maxMonth > capYm) maxMonth = capYm;
+    if (minMonth > maxMonth) {
+      minMonth = maxMonth;
+    }
+
+    res.json({ min_month: minMonth, max_month: maxMonth });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: e.message || '加载月份范围失败' });
+  }
+});
+
 router.get('/outbound', async (req, res) => {
   try {
     const st = req.query.status;
+    const monthRange = parseMonthRangeForSql(req.query.month);
     const yfRaw = req.query.yearFrameId ?? req.query.year_frame_id;
     const yfId = parseInt(yfRaw, 10);
     let sql = `
@@ -919,6 +1116,10 @@ router.get('/outbound', async (req, res) => {
       )`;
       params.push(yfId, yfId);
     }
+    if (monthRange) {
+      sql += ' AND COALESCE(o.shipped_at, o.created_at) >= ? AND COALESCE(o.shipped_at, o.created_at) < ?';
+      params.push(monthRange[0], monthRange[1]);
+    }
     sql += ' ORDER BY o.id DESC';
     const [rows] = await db.query(sql, params);
     res.json(rows);
@@ -944,6 +1145,7 @@ router.get('/outbound/:id', async (req, res) => {
 /** 入库单台账：归还登记批次列表（inv_return_batches），按财年筛选规则与物品出库列表一致 */
 router.get('/inbound-receipts', async (req, res) => {
   try {
+    const monthRange = parseMonthRangeForSql(req.query.month);
     const yfRaw = req.query.yearFrameId ?? req.query.year_frame_id;
     const yfId = parseInt(yfRaw, 10);
     let sql = `
@@ -1003,6 +1205,10 @@ router.get('/inbound-receipts', async (req, res) => {
         )
       )`;
       params.push(yfId, yfId);
+    }
+    if (monthRange) {
+      sql += ' AND rb.created_at >= ? AND rb.created_at < ?';
+      params.push(monthRange[0], monthRange[1]);
     }
     sql += ' ORDER BY rb.return_date DESC, rb.id DESC';
     const [rows] = await db.query(sql, params);
@@ -1382,14 +1588,18 @@ router.post('/outbound/:id/returns', async (req, res) => {
         throw new Error(`明细行 #${olId} 归还+丢失+损坏+留客+空瓶回收 超过出库数量`);
       }
 
+      let emptyBottleItemId = null;
+      if (qe > 0) {
+        emptyBottleItemId = await ensureEmptyBottleItem(conn, olRows[0]);
+      }
+
       await conn.query(
-        'INSERT INTO inv_return_lines (batch_id, outbound_line_id, qty_return, qty_lost, qty_damaged, qty_customer_keep, qty_empty_recovered) VALUES (?, ?, ?, ?, ?, ?, ?)',
-        [batchId, olId, qr, ql, qd, qk, qe]
+        'INSERT INTO inv_return_lines (batch_id, outbound_line_id, qty_return, qty_lost, qty_damaged, qty_customer_keep, qty_empty_recovered, empty_bottle_item_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+        [batchId, olId, qr, ql, qd, qk, qe, emptyBottleItemId]
       );
 
-      if (qe > 0) {
-        const emptyItemId = await ensureEmptyBottleItem(conn, olRows[0]);
-        await conn.query('UPDATE inv_items SET quantity_on_hand = quantity_on_hand + ? WHERE id = ?', [qe, emptyItemId]);
+      if (qe > 0 && emptyBottleItemId) {
+        await conn.query('UPDATE inv_items SET quantity_on_hand = quantity_on_hand + ? WHERE id = ?', [qe, emptyBottleItemId]);
       }
     }
 
