@@ -20,23 +20,19 @@ function resolveApiBase() {
 
 const API = resolveApiBase();
 // 25年度：2025-04-01 → 2026-03-31，所有历史数据均属于25年度
-let currentYear = localStorage.getItem('remy_activeYear') || '25';
+const savedActiveYearRaw = localStorage.getItem('remy_activeYear') || '25';
+let currentYear = (String(savedActiveYearRaw).match(/\d{2}/) || ['25'])[0];
 let currentYearFrameId = null;
-/** 物品出库列表 query：按当前财年筛选（关联场次的 year_frame_id）；可选 month=YYYY-MM；待归还 open 单不按月份过滤（角标统计） */
+/** 物品出库列表 query：按当前财年筛选（关联场次的 year_frame_id） */
 function invOutboundListQuery(opts = {}) {
   const p = new URLSearchParams();
   if (opts.status) p.set('status', opts.status);
   if (currentYearFrameId) p.set('yearFrameId', String(currentYearFrameId));
-  if (opts.status !== 'open') {
-    const lm =
-      typeof inventoryPageState !== 'undefined' ? String(inventoryPageState.invLedgerMonth || '').trim() : '';
-    if (/^\d{4}-\d{2}$/.test(lm)) p.set('month', lm);
-  }
   const q = p.toString();
   return q ? `?${q}` : '';
 }
 
-/** 入库单台账列表 query：财年与月份（月份与出库列表共用） */
+/** 入库单台账列表 query：仅按当前财年 */
 function invInboundReceiptListQuery() {
   return invOutboundListQuery();
 }
@@ -54,9 +50,43 @@ const reimbursementActivityIndex = {
   codeToId: new Map(),
   idToCode: new Map(),
 };
+const REIMB_PAYMENT_TYPE_OPTIONS = [
+  { value: 'personal_reimbursement', label: '个人报销' },
+  { value: 'corporate_payment', label: '对公付款' },
+];
+const REIMB_COST_MODULE_OPTIONS = [
+  { value: 'activity', label: '活动成本' },
+  { value: 'warehouse', label: '仓储成本（月结）' },
+  { value: 'logistics', label: '物流成本' },
+  { value: 'prop_repair', label: '道具维修' },
+  { value: 'general', label: '公共成本池' },
+];
+const REIMB_CLAIM_STATUS_OPTIONS = [
+  { value: 'draft', label: '草稿' },
+  { value: 'submitted', label: '待支付' },
+  { value: 'paid', label: '已支付' },
+  { value: 'rejected', label: '已驳回' },
+];
+
+function reimbPaymentTypeLabel(v) {
+  return REIMB_PAYMENT_TYPE_OPTIONS.find((x) => x.value === v)?.label || '个人报销';
+}
+function reimbCostModuleLabel(v) {
+  return REIMB_COST_MODULE_OPTIONS.find((x) => x.value === v)?.label || '活动成本';
+}
+function reimbClaimStatusLabel(v) {
+  return REIMB_CLAIM_STATUS_OPTIONS.find((x) => x.value === v)?.label || '草稿';
+}
+function reimbClaimStatusBadgeClass(v) {
+  if (v === 'paid') return 'badge-success';
+  if (v === 'submitted') return 'badge-accent';
+  if (v === 'rejected') return 'badge-danger';
+  return 'badge-gray';
+}
 let logisticsState = { data: [], selectedIds: new Set() };
 let warehouseState = { data: [], selectedIds: new Set() };
 let logisticsMergeFilter = 'all';
+let logisticsSortState = { key: 'shipping_date', dir: 'desc' };
 let warehouseMergeFilter = 'all';
 /** 物资模块：库存统计=主数据；出库页为逐单列表；入库页 tab=returns */
 let inventoryPageState = {
@@ -80,6 +110,7 @@ let inventoryPageState = {
     contact_name: '',
     contact_phone: '',
     logistics_method: '顺丰',
+    tracking_number: '',
     remarks: '',
     hint_msg: '',
   },
@@ -123,7 +154,29 @@ let inventoryPageState = {
   outboundLinesByWarehouse: {},
   outboundCommonByWarehouse: {},
   outboundWarehousesCache: [],
+  outboundCommonOrderByWarehouse: {},
+  outboundCommonSearchByWarehouse: {},
 };
+
+function invLoadCommonOrderStore() {
+  try {
+    const raw = localStorage.getItem('remy_invCommonOrderByWarehouse');
+    const parsed = raw ? JSON.parse(raw) : {};
+    if (parsed && typeof parsed === 'object') return parsed;
+  } catch (_) { /* ignore */ }
+  return {};
+}
+
+function invSaveCommonOrderStore() {
+  try {
+    localStorage.setItem(
+      'remy_invCommonOrderByWarehouse',
+      JSON.stringify(inventoryPageState.outboundCommonOrderByWarehouse || {})
+    );
+  } catch (_) { /* ignore */ }
+}
+
+inventoryPageState.outboundCommonOrderByWarehouse = invLoadCommonOrderStore();
 
 function invSetInvLedgerMonth(val) {
   const raw = val == null ? '' : String(val).trim();
@@ -338,6 +391,10 @@ function applyRoleUiGuards() {
     if (navUsers) navUsers.style.display = 'none';
   }
   if (!hasWriteAccess()) {
+    const navDashboard = document.getElementById('navDashboard');
+    if (navDashboard) navDashboard.style.display = 'none';
+  }
+  if (!hasWriteAccess()) {
     const navInvMaster = document.getElementById('navInventoryMaster');
     if (navInvMaster) navInvMaster.style.display = 'none';
   }
@@ -428,8 +485,25 @@ async function submitAdminResetPassword() {
 async function loadYearFrames() {
   try {
     const frames = await api('GET', '/year-frames');
-    const target = frames.find(f => f.year.startsWith(currentYear));
+    const pickYear = String(currentYear || '').padStart(2, '0');
+    // 仅按 year 字段精准匹配（避免 name 中出现“25-26”导致 26 命中到 25）
+    let target = (frames || []).find((f) => {
+      const y = String(f?.year || '').trim();
+      return y === `${pickYear}年度` || y === pickYear || y.startsWith(pickYear);
+    });
+    if (!target && Array.isArray(frames) && frames.length) {
+      const byNum = frames.find((f) => String(f?.id || '') === pickYear);
+      target = byNum || frames[0];
+    }
     if (target) currentYearFrameId = target.id;
+
+    // 页面刷新后回显用户上次选中的年度按钮
+    document.querySelectorAll('.year-btn').forEach((b) => {
+      b.classList.toggle('active', b.dataset.year === pickYear);
+    });
+    const badge = document.getElementById('yearBadge');
+    if (badge) badge.textContent = `${pickYear}年度`;
+    updateYearFrameHint(NaN);
     updateBadges();
   } catch (e) {
     console.error('加载年框失败', e);
@@ -443,22 +517,38 @@ function switchYear(year) {
     b.classList.toggle('active', b.dataset.year === year);
   });
   document.getElementById('yearBadge').textContent = year + '年度';
+  const defaultDashboardDateRange = getDashboardDefaultDateRange();
   dashboardState = {
     brand: '',
     region: '',
     activityType: '',
     executionFlag: '',
     period: '',
-    year: '',
-    month: '',
+    dateStart: defaultDashboardDateRange.start,
+    dateEnd: defaultDashboardDateRange.end,
     compareRegion: '',
   };
   dashboardDrillRegion = null;
   loadYearFrames().then(() => navigate(currentPage));
 }
 
+function updateYearFrameHint(activityCount) {
+  const el = document.getElementById('yearFrameHint');
+  if (!el) return;
+  const idText = currentYearFrameId ? `YF#${currentYearFrameId}` : 'YF#—';
+  if (Number.isFinite(activityCount)) {
+    el.textContent = `${idText} · 场次${activityCount}`;
+    return;
+  }
+  el.textContent = `${idText} · 场次—`;
+}
+
 // ===== 导航 =====
 function navigate(page) {
+  if (page === 'dashboard' && !hasWriteAccess()) {
+    showToast('仅管理员可查看数据看板', 'warning');
+    page = 'activities';
+  }
   if (page === 'users' && !canManageUsers()) {
     showToast('仅管理员可访问用户管理', 'warning');
     return;
@@ -500,7 +590,7 @@ function navigate(page) {
     'inv-inbound': '物品入库',
     material: '物料采购',
     'prop-repair': '道具维修',
-    reimbursement: '报销登记',
+    reimbursement: '付款申请',
     users: '用户管理',
     backup: '数据备份',
   };
@@ -541,7 +631,7 @@ function navigate(page) {
 /** 侧边栏：当前页所在分组自动展开 */
 function expandSidebarGroupForPage(page) {
   const map = {
-    dashboard: 'rec',
+    dashboard: 'sys',
     activities: 'rec',
     calendar: 'rec',
     cost: 'cost',
@@ -721,6 +811,29 @@ function closeModal() {
   }
 }
 
+function normalizeCloudAlbumUrl(raw) {
+  const v = String(raw || '').trim();
+  if (!v) return '';
+  if (/^https?:\/\//i.test(v)) return v;
+  return `https://${v}`;
+}
+
+function openActivityCloudAlbum(rawUrl) {
+  const url = normalizeCloudAlbumUrl(rawUrl);
+  if (!url) {
+    showToast('无相册', 'warning');
+    return;
+  }
+  const popup = window.open(
+    url,
+    '_blank',
+    'popup=yes,width=1000,height=800,resizable=yes,scrollbars=yes'
+  );
+  if (!popup) {
+    showToast('弹窗被拦截，请允许浏览器弹窗后重试', 'warning');
+  }
+}
+
 // ===== 工具函数 =====
 function parseWineDetails(raw) {
   if (raw == null || raw === '') return {};
@@ -752,6 +865,14 @@ function escapeHtml(s) {
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
+}
+
+function escapeJsSingleQuoted(s) {
+  return String(s == null ? '' : s)
+    .replace(/\\/g, '\\\\')
+    .replace(/'/g, "\\'")
+    .replace(/\r/g, ' ')
+    .replace(/\n/g, ' ');
 }
 
 function fmtDate(d) {
@@ -841,6 +962,7 @@ async function updateBadges() {
       invOpen = 0;
     }
     document.getElementById('badge-activities').textContent = acts.length || 0;
+    updateYearFrameHint(Array.isArray(acts) ? acts.length : 0);
     document.getElementById('badge-logistics').textContent = logs.length || 0;
     document.getElementById('badge-warehouse').textContent = wars.length || 0;
     const materialBadge = document.getElementById('badge-material');
@@ -867,23 +989,21 @@ async function updateBadges() {
         invInBadge.style.color = 'var(--text-muted)';
       }
     }
-  } catch (e) {}
+  } catch (e) {
+    updateYearFrameHint(NaN);
+  }
 }
 
 /* =============================================
    页面：数据看板
    ============================================= */
-function getCurrentMonthDateRange() {
-  const now = new Date();
-  const y = now.getFullYear();
-  const m = now.getMonth();
-  const start = `${y}-${String(m + 1).padStart(2, '0')}-01`;
-  const endDate = new Date(y, m + 1, 0).getDate();
-  const end = `${y}-${String(m + 1).padStart(2, '0')}-${String(endDate).padStart(2, '0')}`;
+function getDashboardDefaultDateRange() {
+  const yy = parseInt(String(currentYear || '').replace(/\D/g, ''), 10);
+  const fiscalStartYear = Number.isFinite(yy) ? (yy >= 100 ? yy : 2000 + yy) : new Date().getFullYear();
+  const start = `${fiscalStartYear}-04-01`;
+  const end = `${fiscalStartYear + 1}-03-31`;
   return { start, end };
 }
-
-const defaultDashboardDateRange = getCurrentMonthDateRange();
 
 let dashboardState = {
   brand: '',
@@ -891,8 +1011,8 @@ let dashboardState = {
   activityType: '',
   executionFlag: '',
   period: '',
-  dateStart: defaultDashboardDateRange.start,
-  dateEnd: defaultDashboardDateRange.end,
+  dateStart: getDashboardDefaultDateRange().start,
+  dateEnd: getDashboardDefaultDateRange().end,
   /** 右侧对比：空=不对比；「全国」或其它区域 value */
   compareRegion: '',
 };
@@ -908,6 +1028,8 @@ let dashboardDrillRegion = null;
 let dashboardChartMetric = localStorage.getItem('remy_dashboardChartMetric') === 'revenue' ? 'revenue' : 'count';
 let dashboardLastPayload = null;
 let dashboardLastQuery = '';
+let dashboardAnalysisTab = 'trend';
+let dashboardDetailFilters = { region: '', city: '', costType: '' };
 
 /** 与后端 ALLOWED_TYPES 一致，用于区域对比时类别柱图类目顺序 */
 const DASHBOARD_ACTIVITY_TYPES = ['晚宴', '品鉴', '培训', '纯设计'];
@@ -930,8 +1052,8 @@ function dashboardMetricValue(row) {
 function formatDashboardDateRangeLabel() {
   const s = dashboardState.dateStart || '';
   const e = dashboardState.dateEnd || '';
-  const currentMonth = getCurrentMonthDateRange();
-  if (s === currentMonth.start && e === currentMonth.end) return '本月';
+  const fiscalYear = getDashboardDefaultDateRange();
+  if (s === fiscalYear.start && e === fiscalYear.end) return '全年（财年）';
   if (s && e) return `${s} 至 ${e}`;
   if (s) return `${s} 起`;
   if (e) return `至 ${e}`;
@@ -971,6 +1093,7 @@ function buildDashboardCalendarMonth(monthKey, side) {
       .join(' ');
     cells.push(`<button type="button" class="${cls}" data-date="${dateStr}" onmouseenter="setDashboardDateHover('${dateStr}')" onclick="pickDashboardDate('${dateStr}')">${day}</button>`);
   }
+  const hintMsg = String(of.hint_msg || '').trim();
   return `
     <div class="dashboard-date-month">
       <div class="dashboard-date-month-head">
@@ -993,9 +1116,9 @@ function renderDashboardDatePicker() {
   const right = addMonthsToMonthKey(left, 1);
   host.innerHTML = `
     <div class="dashboard-date-range-wrap">
-      <button type="button" class="filter-select dashboard-date-trigger" onclick="toggleDashboardDatePicker(event)">
+      <button type="button" class="dash-control dashboard-date-trigger" onclick="toggleDashboardDatePicker(event)">
         <span>${escapeHtml(formatDashboardDateRangeLabel())}</span>
-        <span style="color:var(--text-muted)">日期区间</span>
+        <span class="dash-date-trigger__hint">日期区间</span>
       </button>
       ${dashboardDatePickerState.open ? `
         <div class="dashboard-date-popover">
@@ -1265,6 +1388,7 @@ async function populateDashboardFilterSelects() {
 }
 
 function resetDashboardFilters() {
+  const defaultDashboardDateRange = getDashboardDefaultDateRange();
   dashboardState = {
     brand: '',
     region: '',
@@ -1416,6 +1540,74 @@ function exportDashboardCityDrillCsv() {
   showToast('城市下钻 CSV 已导出', 'success');
 }
 
+function formatPercent(v) {
+  return `${(Number(v || 0) * 100).toFixed(1)}%`;
+}
+
+function setDashboardAnalysisTab(tab) {
+  const next = ['trend', 'structure', 'drill'].includes(tab) ? tab : 'trend';
+  if (dashboardAnalysisTab === next) return;
+  dashboardAnalysisTab = next;
+  renderDashboard();
+}
+
+function dashboardDetailFilterRows(rows) {
+  return (rows || []).filter((r) => {
+    if (dashboardDetailFilters.region && String(r.region || '') !== dashboardDetailFilters.region) return false;
+    if (dashboardDetailFilters.city && String(r.city || '') !== dashboardDetailFilters.city) return false;
+    if (!dashboardDetailFilters.costType) return true;
+    const keyMap = {
+      logistics: 'logisticsCost',
+      personnel: 'personnelCost',
+      procurement: 'procurementCost',
+      other: 'otherCost',
+    };
+    const k = keyMap[dashboardDetailFilters.costType];
+    if (!k) return true;
+    return Number(r[k] || 0) > 0;
+  });
+}
+
+function onDashboardDetailFiltersChange() {
+  dashboardDetailFilters.region = document.getElementById('dashDetailRegion')?.value || '';
+  dashboardDetailFilters.city = document.getElementById('dashDetailCity')?.value || '';
+  dashboardDetailFilters.costType = document.getElementById('dashDetailCostType')?.value || '';
+  renderDashboard();
+}
+
+function exportDashboardDetailCsv() {
+  if (!dashboardLastPayload || !Array.isArray(dashboardLastPayload.detailRows)) {
+    showToast('暂无可导出的明细数据', 'warning');
+    return;
+  }
+  const rows = dashboardDetailFilterRows(dashboardLastPayload.detailRows);
+  if (!rows.length) {
+    showToast('当前筛选下无明细可导出', 'warning');
+    return;
+  }
+  const head = ['场次编号', '活动名称', '大区', '城市', '报价', '物流', '人员', '采购', '其他', '总成本', '毛利', '毛利率'];
+  const lines = [head.map(toCsvCell).join(',')];
+  rows.forEach((r) => {
+    lines.push([
+      r.projectCode || '',
+      r.activityName || '',
+      r.region || '',
+      r.city || '',
+      roundMoney2(r.quotedPrice || 0).toFixed(2),
+      roundMoney2(r.logisticsCost || 0).toFixed(2),
+      roundMoney2(r.personnelCost || 0).toFixed(2),
+      roundMoney2(r.procurementCost || 0).toFixed(2),
+      roundMoney2(r.otherCost || 0).toFixed(2),
+      roundMoney2(r.totalCost || 0).toFixed(2),
+      roundMoney2(r.grossProfit || 0).toFixed(2),
+      formatPercent(r.grossMarginRate || 0),
+    ].map(toCsvCell).join(','));
+  });
+  const now = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+  downloadTextFile(`dashboard-detail-${now}.csv`, lines.join('\n'), 'text/csv;charset=utf-8');
+  showToast('明细 CSV 已导出', 'success');
+}
+
 async function renderDashboard() {
   const container = document.getElementById('pageContainer');
   try {
@@ -1427,169 +1619,195 @@ async function renderDashboard() {
     dashboardLastPayload = dash;
     dashboardLastQuery = query;
 
-    const {
-      summary,
-      activityByType,
-      activityByBrand,
-      activityByRegion,
-      activityByMonth,
-      cityBreakdown,
-    } = dash;
-    /** 仅当用户在右侧显式选择对比区域后，才展示双系列与对比卡片（避免误用接口残留字段） */
-    let chartCompare = dashboardState.compareRegion
-      ? resolveDashboardChartCompare(dash)
-      : null;
+    const { overview = {}, regionSummary = [], trendByMonth = [], costComposition = [], regionCityBreakdown = [], detailRows = [], metricDefinition = {} } = dash;
 
-    const primaryRegion = String(dashboardState.region || '').trim();
-    const compareRegion = String(dashboardState.compareRegion || '').trim();
-    const isSameRegionCompare = primaryRegion && compareRegion && primaryRegion === compareRegion;
-    if (isSameRegionCompare) {
-      chartCompare = {
-        region: primaryRegion,
-        compareLabel: compareRegion,
-        compareMode: 'regional',
-        primaryTotalCount: Number(summary.activityCount || 0),
-        compareTotalCount: Number(summary.activityCount || 0),
-        nationalActivityByMonth: activityByMonth,
-        nationalActivityByType: activityByType,
-        nationalActivityByBrand: activityByBrand,
-        nationalActivityByRegion: activityByRegion,
-      };
-    }
+    const regionOptions = [...new Set((detailRows || []).map((r) => String(r.region || '').trim()).filter(Boolean))];
+    const cityOptions = [...new Set((detailRows || []).map((r) => String(r.city || '').trim()).filter(Boolean))];
+    if (dashboardDetailFilters.region && !regionOptions.includes(dashboardDetailFilters.region)) dashboardDetailFilters.region = '';
+    if (dashboardDetailFilters.city && !cityOptions.includes(dashboardDetailFilters.city)) dashboardDetailFilters.city = '';
+    const filteredDetailRows = dashboardDetailFilterRows(detailRows);
+    const selectedRegionForDrill = dashboardDetailFilters.region || dashboardState.region || '';
+    const drillRows = regionCityBreakdown.filter((r) => !selectedRegionForDrill || String(r.region || '') === String(selectedRegionForDrill));
 
-    const effectiveRegionShare = isSameRegionCompare
-      ? {
-          region: primaryRegion,
-          compareLabel: compareRegion,
-          compareTarget: compareRegion,
-          regionCount: Number(summary.activityCount || 0),
-          compareCount: Number(summary.activityCount || 0),
-          ratio: 1,
-        }
-      : summary.regionShare;
+    const regionSummaryRows = (regionSummary || []).map((r) => `
+      <tr>
+        <td>${escapeHtml(r.region || '未分区')}</td>
+        <td class="dash-num">${r.sessions || 0}</td>
+        <td class="dash-num">${fmtMoney(r.revenue || 0)}</td>
+        <td class="dash-num">${fmtMoney(r.cost || 0)}</td>
+        <td class="dash-num">${formatPercent(r.grossMarginRate || 0)}</td>
+      </tr>
+    `).join('');
+    const regionSummaryTotal = {
+      sessions: regionSummary.reduce((s, r) => s + (Number(r.sessions) || 0), 0),
+      revenue: regionSummary.reduce((s, r) => s + (Number(r.revenue) || 0), 0),
+      cost: regionSummary.reduce((s, r) => s + (Number(r.cost) || 0), 0),
+    };
+    const totalMargin = regionSummaryTotal.revenue > 0 ? (regionSummaryTotal.revenue - regionSummaryTotal.cost) / regionSummaryTotal.revenue : 0;
 
-    const regionKeys = new Set((activityByRegion || []).map((d) => d.region || ''));
-    if (dashboardDrillRegion && !regionKeys.has(dashboardDrillRegion)) {
-      dashboardDrillRegion = null;
-    }
+    const drillRowsHtml = drillRows.map((r) => `
+      <tr>
+        <td>${escapeHtml(r.region || '')}</td>
+        <td>${escapeHtml(r.city || '')}</td>
+        <td class="dash-num">${r.sessions || 0}</td>
+        <td class="dash-num">${fmtMoney(r.revenue || 0)}</td>
+        <td class="dash-num">${fmtMoney(r.cost || 0)}</td>
+        <td class="dash-num">${formatPercent(r.grossMarginRate || 0)}</td>
+      </tr>
+    `).join('');
+
+    const detailRowsHtml = filteredDetailRows.map((r) => `
+      <tr>
+        <td>${escapeHtml(r.projectCode || '')}</td>
+        <td>${escapeHtml(r.activityName || '')}</td>
+        <td>${escapeHtml(r.region || '')}</td>
+        <td>${escapeHtml(r.city || '')}</td>
+        <td class="dash-num">${fmtMoney(r.quotedPrice || 0)}</td>
+        <td class="dash-num">${fmtMoney(r.logisticsCost || 0)}</td>
+        <td class="dash-num">${fmtMoney(r.personnelCost || 0)}</td>
+        <td class="dash-num">${fmtMoney(r.procurementCost || 0)}</td>
+        <td class="dash-num">${fmtMoney(r.otherCost || 0)}</td>
+        <td class="dash-num">${fmtMoney(r.totalCost || 0)}</td>
+        <td class="dash-num">${formatPercent(r.grossMarginRate || 0)}</td>
+      </tr>
+    `).join('');
 
     container.innerHTML = `
-      <!-- 统计卡片 -->
-      <div class="stats-grid">
-        <div class="stat-card accent">
-          <div class="stat-icon"><i data-lucide="flag" style="width:16px;height:16px"></i></div>
-          <div class="stat-label">活动总场次</div>
-          <div class="stat-value">${summary.activityCount || 0}</div>
-          <div class="stat-sub">当前筛选条件下场次记录数</div>
-        </div>
-        <div class="stat-card success">
-          <div class="stat-icon"><i data-lucide="wallet" style="width:16px;height:16px"></i></div>
-          <div class="stat-label">总报价</div>
-          <div class="stat-value">${fmtMoney(summary.totalRevenue || 0)}</div>
-          <div class="stat-sub">活动报价 + 仓储报价 + 道具维修报价</div>
-        </div>
-        <div class="stat-card warning">
-          <div class="stat-icon"><i data-lucide="warehouse" style="width:16px;height:16px"></i></div>
-          <div class="stat-label">仓储报价</div>
-          <div class="stat-value sm">${fmtMoney(summary.warehouseRevenue || 0)}</div>
-          <div class="stat-sub">仓储模块 quoted_price 合计</div>
-        </div>
-        <div class="stat-card blue">
-          <div class="stat-icon"><i data-lucide="bar-chart-3" style="width:16px;height:16px"></i></div>
-          <div class="stat-label">活动报价</div>
-          <div class="stat-value sm">${fmtMoney(summary.activityRevenue || 0)}</div>
-          <div class="stat-sub">活动报价汇总</div>
-        </div>
-        <div class="stat-card danger">
-          <div class="stat-icon"><i data-lucide="wrench" style="width:16px;height:16px"></i></div>
-          <div class="stat-label">道具维修报价</div>
-          <div class="stat-value sm">${fmtMoney(summary.propRepairQuoted || 0)}</div>
-          <div class="stat-sub">道具维修模块 quoted_price 合计（成本请见「活动成本」）</div>
-        </div>
-      </div>
-      <div class="card" style="margin:16px 0">
-        <div class="card-header">
-          <div><div class="card-title">数据详情</div></div>
-          <div style="display:flex;gap:8px;flex-wrap:wrap">
-            <button class="btn btn-secondary btn-sm" onclick="exportDashboardJson()">导出看板JSON</button>
-            <button class="btn btn-secondary btn-sm" onclick="exportDashboardCityDrillCsv()">导出城市明细CSV</button>
-            <button class="btn btn-secondary btn-sm" onclick="resetDashboardFilters()">重置筛选</button>
+      <div class="page-dashboard">
+      <div class="dash-card dash-filter-card">
+        <div class="dash-filter-card__header">
+          <h2 class="dash-page-title">数据详情</h2>
+          <div class="dash-filter-actions">
+            <button type="button" class="dash-btn dash-btn--secondary" onclick="resetDashboardFilters()">重置筛选</button>
+            <button type="button" class="dash-btn dash-btn--primary" onclick="exportDashboardJson()">导出看板JSON</button>
+            <button type="button" class="dash-btn dash-btn--primary" onclick="exportDashboardCityDrillCsv()">导出城市明细CSV</button>
+            <button type="button" class="dash-btn dash-btn--primary" onclick="exportDashboardDetailCsv()">导出明细CSV</button>
           </div>
         </div>
-        <div class="dashboard-detail-split" style="display:grid;grid-template-columns:1fr 1fr;gap:16px;align-items:start;margin-top:12px">
-          <div>
-            <div class="card-sub" style="margin-bottom:8px">主口径（左侧）：品牌、时段、类型等与下方关键数据一致；区域为主数据区域。</div>
-            <div class="toolbar" style="margin:0;border:none;padding:0;background:transparent">
-              <div class="toolbar-left" style="flex-wrap:wrap">
-                <div id="dashboardDateRangeHost"></div>
-                <select class="filter-select" id="dashFilterType" onchange="filterDashboard()"><option value="">类型</option></select>
-                <select class="filter-select" id="dashFilterPeriod" onchange="filterDashboard()"><option value="">时段</option></select>
-                <select class="filter-select" id="dashFilterRegion" onchange="filterDashboard()"><option value="">区域</option></select>
-                <select class="filter-select" id="dashFilterBrand" onchange="filterDashboard()"><option value="">品牌</option></select>
-                <select class="filter-select" id="dashFilterExecution" onchange="filterDashboard()">
-                  <option value="">执行</option>
-                  <option value="有">有</option>
-                  <option value="无">无</option>
-                </select>
-              </div>
+        <div class="dash-filter-fields">
+          <div class="dash-grid dash-grid--3col">
+            <div class="dash-field">
+              <span class="dash-label">日期区间</span>
+              <div id="dashboardDateRangeHost" class="dash-field__control"></div>
+            </div>
+            <div class="dash-field">
+              <label class="dash-label" for="dashFilterType">类型</label>
+              <select class="dash-control" id="dashFilterType" onchange="filterDashboard()"><option value="">类型</option></select>
+            </div>
+            <div class="dash-field">
+              <label class="dash-label" for="dashFilterPeriod">时段</label>
+              <select class="dash-control" id="dashFilterPeriod" onchange="filterDashboard()"><option value="">时段</option></select>
+            </div>
+            <div class="dash-field">
+              <label class="dash-label" for="dashFilterRegion">区域</label>
+              <select class="dash-control" id="dashFilterRegion" onchange="filterDashboard()"><option value="">区域</option></select>
+            </div>
+            <div class="dash-field">
+              <label class="dash-label" for="dashFilterBrand">品牌</label>
+              <select class="dash-control" id="dashFilterBrand" onchange="filterDashboard()"><option value="">品牌</option></select>
+            </div>
+            <div class="dash-field">
+              <label class="dash-label" for="dashFilterExecution">执行</label>
+              <select class="dash-control" id="dashFilterExecution" onchange="filterDashboard()">
+                <option value="">执行</option>
+                <option value="有">有</option>
+                <option value="无">无</option>
+              </select>
             </div>
           </div>
-          <div>
-            <div class="card-sub" style="margin-bottom:8px">对比口径（右侧）：继承左侧除「区域」外的条件；仅选对比区域或全国。</div>
-            <select class="filter-select" id="dashCompareRegion" onchange="filterDashboard()" style="max-width:100%"><option value="">不对比</option><option value="全国">全国</option></select>
+          <div class="dash-filter-compare-slot">
+            <div class="dash-field dash-field--compare">
+              <label class="dash-label" for="dashCompareRegion">对比区域</label>
+              <select class="dash-control" id="dashCompareRegion" onchange="filterDashboard()"><option value="">不对比</option><option value="全国">全国</option></select>
+            </div>
           </div>
         </div>
       </div>
-      ${chartCompare && effectiveRegionShare ? `<div class="card" style="margin-bottom:16px"><div class="card-title"><i data-lucide="columns-2" style="width:14px;height:14px;vertical-align:-2px;margin-right:6px"></i>${dashboardMetricText()}对比</div><div class="card-sub"><strong>${escapeHtml(effectiveRegionShare.region)}</strong> vs <strong>${escapeHtml(effectiveRegionShare.compareLabel || effectiveRegionShare.compareTarget || '')}</strong>：${effectiveRegionShare.regionCount} / ${effectiveRegionShare.compareCount} = ${(effectiveRegionShare.ratio * 100).toFixed(1)}%</div></div>` : ''}
 
-      <!-- 图表区 -->
-      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin:0 0 10px 0">
-        <div class="card-sub" style="margin:0">当前图表指标：<strong>${dashboardMetricText()}</strong></div>
-        <div style="display:flex;gap:8px">
-        <button type="button" class="btn btn-secondary btn-sm" style="${dashboardChartMetric === 'count' ? 'background:var(--accent);color:white' : ''}" onclick="setDashboardChartMetric('count')">场次</button>
-        <button type="button" class="btn btn-secondary btn-sm" style="${dashboardChartMetric === 'revenue' ? 'background:var(--accent);color:white' : ''}" onclick="setDashboardChartMetric('revenue')">金额</button>
+      <div class="stats-grid page-dashboard__stats">
+        <div class="stat-card accent"><div class="stat-label">本期场次总数</div><div class="stat-value">${overview.totalSessions || 0}</div><div class="stat-sub">当前筛选条件</div></div>
+        <div class="stat-card success"><div class="stat-label">本期项目总收入</div><div class="stat-value sm">${fmtMoney(overview.totalRevenue || 0)}</div><div class="stat-sub">${escapeHtml(metricDefinition.revenue || '')}</div></div>
+        <div class="stat-card warning"><div class="stat-label">本期总成本</div><div class="stat-value sm">${fmtMoney(overview.totalCost || 0)}</div><div class="stat-sub">${escapeHtml(metricDefinition.cost || '')}</div></div>
+        <div class="stat-card blue"><div class="stat-label">本期项目毛利率</div><div class="stat-value">${formatPercent(overview.grossMarginRate || 0)}</div><div class="stat-sub">${escapeHtml(metricDefinition.grossMarginRate || '')}</div></div>
+      </div>
+
+      <div class="dash-card dash-summary-card">
+        <div class="card-header">
+          <div><div class="card-title">全国汇总（大区）</div><div class="card-sub">按大区对比场次、收入、成本、毛利率</div></div>
+        </div>
+        <div class="table-wrapper">
+          <table class="dash-table">
+            <thead><tr><th>大区</th><th class="dash-num">场次</th><th class="dash-num">收入</th><th class="dash-num">成本</th><th class="dash-num">毛利率</th></tr></thead>
+            <tbody>
+              ${regionSummaryRows || '<tr><td colspan="5" class="dash-empty">暂无数据</td></tr>'}
+            </tbody>
+            <tfoot><tr><th>合计</th><th class="dash-num">${regionSummaryTotal.sessions}</th><th class="dash-num">${fmtMoney(regionSummaryTotal.revenue)}</th><th class="dash-num">${fmtMoney(regionSummaryTotal.cost)}</th><th class="dash-num">${formatPercent(totalMargin)}</th></tr></tfoot>
+          </table>
         </div>
       </div>
-      <div class="chart-grid" style="margin-bottom:24px">
-        <div class="chart-card">
-          <div class="card-header">
-            <div><div class="card-title">月度${dashboardMetricText()}趋势（财年）</div><div class="card-sub">${chartCompare ? `4月 → 次年3月 · 深紫=左侧主口径 · 浅灰=右侧对比（${dashboardMetricText()}）` : `4月 → 次年3月 · 指标：${dashboardMetricText()}`}</div></div>
-          </div>
-          <canvas id="chartMonthTrend"></canvas>
+
+      <div class="dash-card dash-analysis-card">
+        <div class="dash-tabs">
+          <button type="button" class="dash-tab ${dashboardAnalysisTab === 'trend' ? 'is-active' : ''}" onclick="setDashboardAnalysisTab('trend')">月度趋势</button>
+          <button type="button" class="dash-tab ${dashboardAnalysisTab === 'structure' ? 'is-active' : ''}" onclick="setDashboardAnalysisTab('structure')">成本结构占比</button>
+          <button type="button" class="dash-tab ${dashboardAnalysisTab === 'drill' ? 'is-active' : ''}" onclick="setDashboardAnalysisTab('drill')">大区详情下钻</button>
         </div>
-        <div class="chart-card">
-          <div class="card-header">
-            <div><div class="card-title">品牌${dashboardMetricText()}分布</div><div class="card-sub">${chartCompare ? `深紫=左侧主口径 · 浅灰=右侧对比（${dashboardMetricText()}）` : `按${dashboardMetricText()}汇总`}</div></div>
-          </div>
-          <canvas id="chartBrand"></canvas>
+        <div class="dash-tab-panel ${dashboardAnalysisTab === 'trend' ? 'is-active' : ''}">
+          <div class="card-header"><div><div class="card-title">月度趋势（收入/成本/毛利率）</div><div class="card-sub">双Y轴：柱状=收入/成本，折线=毛利率</div></div></div>
+          <canvas id="chartFinanceTrend"></canvas>
         </div>
-        <div class="chart-card">
-          <div class="card-header">
-            <div><div class="card-title">区域结构分布</div><div class="card-sub">${chartCompare?.compareMode === 'national' && chartCompare?.nationalActivityByRegion?.length > 1 ? `深紫=左侧主区域，浅灰=其它区域（对比=全国）· 指标=${dashboardMetricText()} · 点击深紫条可城市下钻` : chartCompare ? `深紫=左侧主口径 · 浅灰=右侧对比 · 指标=${dashboardMetricText()} · 点击深紫条可城市下钻` : `按${dashboardMetricText()}数量 · 点击扇区下钻城市`}</div></div>
-          </div>
-          <canvas id="chartRegion"></canvas>
-          ${chartCompare ? `<div style="margin-top:8px"><button type="button" class="btn btn-secondary btn-sm" onclick="toggleDashboardDrillForFilteredRegion()">${dashboardDrillRegion ? '收起' : '展开'}左侧区域城市排行</button></div>` : ''}
-          ${renderDashboardRegionDrillPanel(dashboardDrillRegion, cityBreakdown, !!chartCompare)}
+        <div class="dash-tab-panel ${dashboardAnalysisTab === 'structure' ? 'is-active' : ''}">
+          <div class="card-header"><div><div class="card-title">成本结构占比</div><div class="card-sub">物流 / 人员 / 采购 / 其他</div></div></div>
+          <canvas id="chartCostComposition"></canvas>
         </div>
-        <div class="chart-card">
+        <div class="dash-tab-panel ${dashboardAnalysisTab === 'drill' ? 'is-active' : ''}">
           <div class="card-header">
-            <div><div class="card-title">活动类别分布</div><div class="card-sub">${chartCompare ? `${dashboardMetricText()}对比 · 深紫=左侧主口径 · 浅灰=右侧对比` : `仅统计：晚宴/品鉴/培训/纯设计 · 指标=${dashboardMetricText()}`}</div></div>
+            <div><div class="card-title">大区城市下钻明细</div><div class="card-sub">${selectedRegionForDrill ? `当前区域：${escapeHtml(selectedRegionForDrill)}` : '显示全部区域'}</div></div>
           </div>
-          <canvas id="chartType"></canvas>
+          <div class="table-wrapper">
+            <table class="dash-table">
+              <thead><tr><th>大区</th><th>城市</th><th class="dash-num">场次</th><th class="dash-num">收入</th><th class="dash-num">成本</th><th class="dash-num">毛利率</th></tr></thead>
+              <tbody>${drillRowsHtml || '<tr><td colspan="6" class="dash-empty">暂无城市明细</td></tr>'}</tbody>
+            </table>
+          </div>
         </div>
+      </div>
+
+      <div class="dash-card dash-detail-card">
+        <div class="card-header">
+          <div><div class="card-title">场次级明细</div><div class="card-sub">支持大区 / 城市 / 成本类型筛选</div></div>
+        </div>
+        <div class="dash-detail-filters">
+          <select class="dash-control" id="dashDetailRegion" onchange="onDashboardDetailFiltersChange()">
+            <option value="">全部大区</option>
+            ${regionOptions.map((r) => `<option value="${escapeHtml(r)}" ${dashboardDetailFilters.region === r ? 'selected' : ''}>${escapeHtml(r)}</option>`).join('')}
+          </select>
+          <select class="dash-control" id="dashDetailCity" onchange="onDashboardDetailFiltersChange()">
+            <option value="">全部城市</option>
+            ${cityOptions.map((c) => `<option value="${escapeHtml(c)}" ${dashboardDetailFilters.city === c ? 'selected' : ''}>${escapeHtml(c)}</option>`).join('')}
+          </select>
+          <select class="dash-control" id="dashDetailCostType" onchange="onDashboardDetailFiltersChange()">
+            <option value="">全部成本类型</option>
+            <option value="logistics" ${dashboardDetailFilters.costType === 'logistics' ? 'selected' : ''}>物流成本</option>
+            <option value="personnel" ${dashboardDetailFilters.costType === 'personnel' ? 'selected' : ''}>人员成本</option>
+            <option value="procurement" ${dashboardDetailFilters.costType === 'procurement' ? 'selected' : ''}>采购成本</option>
+            <option value="other" ${dashboardDetailFilters.costType === 'other' ? 'selected' : ''}>其他成本</option>
+          </select>
+        </div>
+        <div class="table-wrapper">
+          <table class="dash-table dash-table--detail">
+            <thead><tr><th>场次编号</th><th>活动名称</th><th>大区</th><th>城市</th><th class="dash-num">报价</th><th class="dash-num">物流</th><th class="dash-num">人员</th><th class="dash-num">采购</th><th class="dash-num">其他</th><th class="dash-num">总成本</th><th class="dash-num">毛利率</th></tr></thead>
+            <tbody>${detailRowsHtml || '<tr><td colspan="11" class="dash-empty">暂无明细数据</td></tr>'}</tbody>
+          </table>
+        </div>
+      </div>
+
       </div>
 
     `;
 
-    // 绘制图表
-    drawMonthTrendChart(activityByMonth, chartCompare);
-    drawTypeChart(activityByType, chartCompare);
-    drawBrandChart(activityByBrand, chartCompare);
-    drawRegionChart(
-      activityByRegion,
-      chartCompare,
-      chartCompare && effectiveRegionShare ? effectiveRegionShare : null
-    );
+    drawDashboardFinanceTrend(trendByMonth);
+    drawDashboardCostComposition(costComposition);
     await populateDashboardFilterSelects();
     renderLucideIcons();
   } catch (err) {
@@ -1598,10 +1816,73 @@ async function renderDashboard() {
   }
 }
 
+function drawDashboardFinanceTrend(rows) {
+  const ctx = document.getElementById('chartFinanceTrend');
+  if (!ctx) return;
+  const sec = dashboardChartCssVar('--text-secondary', '#64748b');
+  const labels = (rows || []).map((r) => String(r.month || '').slice(5));
+  const revenueData = (rows || []).map((r) => Number(r.revenue) || 0);
+  const costData = (rows || []).map((r) => Number(r.cost) || 0);
+  const marginData = (rows || []).map((r) => Number(r.grossMarginRate || 0) * 100);
+  charts.financeTrend = new Chart(ctx, {
+    data: {
+      labels,
+      datasets: [
+        { type: 'bar', label: '收入', data: revenueData, backgroundColor: '#3b82f6', yAxisID: 'yAmount', borderRadius: 6 },
+        { type: 'bar', label: '成本', data: costData, backgroundColor: '#f59e0b', yAxisID: 'yAmount', borderRadius: 6 },
+        { type: 'line', label: '毛利率', data: marginData, yAxisID: 'yMargin', borderColor: '#10b981', backgroundColor: '#10b981', tension: 0.25, pointRadius: 3 },
+      ],
+    },
+    options: {
+      plugins: { legend: { labels: { color: sec } } },
+      scales: {
+        x: { ticks: { color: sec }, grid: { display: false } },
+        yAmount: { beginAtZero: true, position: 'left', ticks: { color: sec, callback: (v) => fmtMoney(v || 0) } },
+        yMargin: { beginAtZero: true, position: 'right', ticks: { color: sec, callback: (v) => `${v}%` }, grid: { display: false } },
+      },
+    },
+  });
+}
+
+function drawDashboardCostComposition(rows) {
+  const ctx = document.getElementById('chartCostComposition');
+  if (!ctx) return;
+  const sec = dashboardChartCssVar('--text-secondary', '#64748b');
+  const labels = (rows || []).map((r) => `${r.costType} ${formatPercent(r.ratio || 0)}`);
+  const values = (rows || []).map((r) => Number(r.amount) || 0);
+  charts.costComposition = new Chart(ctx, {
+    type: 'doughnut',
+    data: {
+      labels,
+      datasets: [{ data: values, backgroundColor: ['#3b82f6', '#10b981', '#f59e0b', '#a78bfa'], borderWidth: 0, hoverOffset: 6 }],
+    },
+    options: {
+      plugins: {
+        legend: { position: 'bottom', labels: { color: sec, padding: 12, font: { size: 12 } } },
+        tooltip: { callbacks: { label: (ctx) => `${ctx.label} · ${fmtMoney(ctx.raw || 0)}` } },
+      },
+      cutout: '58%',
+    },
+  });
+}
+
+function dashboardChartCssHost() {
+  return document.querySelector('.page-dashboard');
+}
+
+/** 白底看板内图表：优先读 `.page-dashboard` 上的 CSS 变量，避免全局暗色主题下图例/坐标过浅 */
+function dashboardChartCssVar(name, fallback) {
+  const host = dashboardChartCssHost();
+  const fromHost = host ? getComputedStyle(host).getPropertyValue(name).trim() : '';
+  if (fromHost) return fromHost;
+  const fromRoot = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  return fromRoot || fallback;
+}
+
 function drawMonthTrendChart(data, compare) {
   const ctx = document.getElementById('chartMonthTrend');
   if (!ctx) return;
-  const sec = getComputedStyle(document.documentElement).getPropertyValue('--text-secondary').trim();
+  const sec = dashboardChartCssVar('--text-secondary', '#64748b');
   const labels = data.map((d) => d.monthLabel);
   if (compare && compare.nationalActivityByMonth) {
     const nat = compare.nationalActivityByMonth;
@@ -1651,8 +1932,8 @@ function drawMonthTrendChart(data, compare) {
     options: {
       plugins: { legend: { display: false } },
       scales: {
-        x: { grid: { display: false } },
-        y: { beginAtZero: true, ticks: { callback: (v) => dashboardMetricTick(v) } },
+        x: { grid: { display: false }, ticks: { color: sec } },
+        y: { beginAtZero: true, ticks: { color: sec, callback: (v) => dashboardMetricTick(v) } },
       },
     },
   });
@@ -1661,7 +1942,7 @@ function drawMonthTrendChart(data, compare) {
 function drawTypeChart(data, compare) {
   const ctx = document.getElementById('chartType');
   if (!ctx) return;
-  const sec = getComputedStyle(document.documentElement).getPropertyValue('--text-secondary').trim();
+  const sec = dashboardChartCssVar('--text-secondary', '#64748b');
 
   if (compare && compare.nationalActivityByType) {
     const regMap = new Map((data || []).map((r) => [r.activity_type, dashboardMetricValue(r)]));
@@ -1754,8 +2035,8 @@ function buildBrandCompareRows(regional, national) {
 function drawBrandChart(data, compare) {
   const ctx = document.getElementById('chartBrand');
   if (!ctx) return;
-  const sec = getComputedStyle(document.documentElement).getPropertyValue('--text-secondary').trim();
-  const borderCol = getComputedStyle(document.documentElement).getPropertyValue('--border').trim();
+  const sec = dashboardChartCssVar('--text-secondary', '#64748b');
+  const borderCol = dashboardChartCssVar('--border', '#e2e8f0');
 
   if (compare && compare.nationalActivityByBrand) {
     const rows = buildBrandCompareRows(data, compare.nationalActivityByBrand);
@@ -1816,7 +2097,7 @@ function drawBrandChart(data, compare) {
 function drawRegionChart(data, compare, regionShare) {
   const ctx = document.getElementById('chartRegion');
   if (!ctx) return;
-  const sec = getComputedStyle(document.documentElement).getPropertyValue('--text-secondary').trim();
+  const sec = dashboardChartCssVar('--text-secondary', '#64748b');
 
   if (compare && regionShare) {
     const natReg = compare.nationalActivityByRegion;
@@ -1960,7 +2241,7 @@ function drawRegionChart(data, compare, regionShare) {
     },
     options: {
       plugins: {
-        legend: { position: 'bottom' },
+        legend: { position: 'bottom', labels: { color: sec, padding: 12, font: { size: 12 } } },
         tooltip: {
           callbacks: {
             footer: () => '点击扇区：城市下钻 / 再点同一扇区关闭',
@@ -2189,6 +2470,15 @@ async function loadActivities() {
   container.innerHTML = '<div style="text-align:center;padding:30px;color:var(--text-muted)">加载中...</div>';
 
   try {
+    // 每次进入场次记录时，自动把“活动日期早于今天且状态=待执行”的记录置为已完成
+    try {
+      await api('POST', '/activities/auto-complete-overdue', {
+        yearFrameId: currentYearFrameId || undefined,
+      });
+    } catch (e) {
+      console.warn('自动完结过期场次失败（忽略，不阻断列表加载）', e);
+    }
+
     let qs = `?sortBy=activity_date&sortOrder=${activitiesState.sortOrder}`;
     if (currentYearFrameId) qs += `&yearFrameId=${currentYearFrameId}`;
     if (activitiesState.type) qs += `&activityType=${activitiesState.type}`;
@@ -2277,9 +2567,16 @@ async function loadActivities() {
             <td style="max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px">${a.client||a.client_name||'—'}</td>
             <td><span class="badge badge-${typeColor(a.activity_type)}">${a.activity_type||'—'}</span></td>
             <td><span class="badge badge-${a.executor==='有'?'success':'gray'}">${a.executor||'无'}</span></td>
-            <td style="white-space:nowrap">${statusBadge(a.status)}</td>
+            <td style="white-space:nowrap" onclick="event.stopPropagation()">
+              <select class="status-pill-select status-pill-${a.status || 'pending'}" onchange="quickUpdateActivityStatus(${a.id}, this.value); this.className='status-pill-select status-pill-' + this.value;">
+                <option value="pending" ${(a.status || 'pending') === 'pending' ? 'selected' : ''}>待执行</option>
+                <option value="deferred" ${a.status === 'deferred' ? 'selected' : ''}>延期</option>
+                <option value="completed" ${a.status === 'completed' || a.status === 'done' ? 'selected' : ''}>已完成</option>
+              </select>
+            </td>
             <td onclick="event.stopPropagation()">
               <div style="display:flex;gap:4px;flex-wrap:wrap">
+                <button type="button" class="btn btn-secondary btn-sm" onclick="openActivityCloudAlbum('${escapeJsSingleQuoted(a.cloud_album_url || '')}')">云相册</button>
                 <button class="btn btn-secondary btn-sm" onclick="showActivityModal(${a.id})">编辑</button>
                 <button type="button" class="btn btn-danger btn-sm activity-row-remove-btn" onclick="openRemoveActivityDialog(${a.id})">删除</button>
               </div>
@@ -2373,14 +2670,30 @@ function renderPagination(current, total, count, fn) {
 }
 
 // 生成项目编号
+function normalizeProjectCodeCity(raw) {
+  // 城市仅保留中文，避免输入过程中的拼音/符号混入项目编号
+  return String(raw || '')
+    .replace(/\s+/g, '')
+    .replace(/[^\u4e00-\u9fa5]/g, '')
+    .trim();
+}
+
+function normalizeProjectCodeToken(raw) {
+  // 统一去除空白，仅保留中英文、数字与常见分隔符
+  return String(raw || '')
+    .replace(/\s+/g, '')
+    .replace(/[^\u4e00-\u9fa5A-Za-z0-9&.\-]/g, '')
+    .trim();
+}
+
 function genProjectCode() {
   const code = document.getElementById('actYearFrameCode')?.value || '';
   const date = document.getElementById('actDate')?.value || '';
-  const city = document.getElementById('actCity')?.value || '';
+  const city = normalizeProjectCodeCity(document.getElementById('actCity')?.value || '');
   syncActivityBrandFromYearFrameCode();
-  const brand = document.getElementById('actBrandField')?.value || '';
-  const type = document.getElementById('actActivityType')?.value || '';
-  const client = document.getElementById('actClient')?.value || '';
+  const brand = normalizeProjectCodeToken(document.getElementById('actBrandField')?.value || '');
+  const type = normalizeProjectCodeToken(document.getElementById('actActivityType')?.value || '');
+  const client = normalizeProjectCodeToken(document.getElementById('actClient')?.value || '');
 
   let dateStr = '';
   if (date) {
@@ -2492,7 +2805,24 @@ async function fillActivityLookupSelects(valueMap = {}) {
     if (!el) continue;
     const hasKey = Object.prototype.hasOwnProperty.call(valueMap, def.selectId);
     const raw = hasKey ? valueMap[def.selectId] : undefined;
-    populateLookupSelect(el, rows, def, raw);
+    const nextRows = def.selectId === 'actStatus'
+      ? (rows || []).filter((r) => String(r.value || '').trim() !== 'cancelled')
+      : rows;
+    populateLookupSelect(el, nextRows, def, raw);
+  }
+}
+
+async function quickUpdateActivityStatus(id, status) {
+  const next = String(status || '').trim();
+  if (!['pending', 'deferred', 'completed'].includes(next)) return;
+  try {
+    await api('PUT', `/activities/${id}`, { status: next });
+    const row = (activitiesState.data || []).find((x) => Number(x.id) === Number(id));
+    if (row) row.status = next;
+    showToast('状态已更新', 'success');
+  } catch (err) {
+    showToast('状态更新失败: ' + err.message, 'error');
+    loadActivities();
   }
 }
 
@@ -2513,6 +2843,7 @@ function getActivityLookupFormSnapshot() {
     actRegion: document.getElementById('actRegion')?.value,
     actBelonging: document.getElementById('actBelonging')?.value,
     actExecutor: document.getElementById('actExecutor')?.value,
+    actBrandAmbassador: document.getElementById('actBrandAmbassador')?.value,
     actStatus: document.getElementById('actStatus')?.value,
   };
 }
@@ -2664,6 +2995,7 @@ async function showActivityModal(id = null) {
         actRegion: a.region != null && a.region !== undefined ? a.region : '',
         actBelonging: displayActivityBelongingValue(a),
         actExecutor: a.executor != null && String(a.executor).trim() !== '' ? a.executor : '无',
+        actBrandAmbassador: a.brand_ambassador || '',
         actStatus: a.status || 'pending',
       }
     : {};
@@ -2679,7 +3011,7 @@ async function showActivityModal(id = null) {
     console.error(err);
   }
 
-  ['actCity', 'actBrandField', 'actDate', 'actClient', 'actVenue', 'actQuotedPrice', 'actGuestCount', 'actProjectCode', 'actRemarks'].forEach((fid) => {
+  ['actCity', 'actBrandField', 'actDate', 'actClient', 'actVenue', 'actQuotedPrice', 'actGuestCount', 'actProjectCode', 'actRemarks', 'actCloudAlbumUrl', 'actBrandAmbassador'].forEach((fid) => {
     const el = document.getElementById(fid);
     if (el) el.value = '';
   });
@@ -2697,9 +3029,12 @@ async function showActivityModal(id = null) {
     document.getElementById('actGuestCount').value = a.guest_count || '';
     document.getElementById('actProjectCode').value = a.project_code || '';
     document.getElementById('actRemarks').value = a.remarks || '';
+    document.getElementById('actCloudAlbumUrl').value = a.cloud_album_url || '';
+    document.getElementById('actBrandAmbassador').value = a.brand_ambassador || '';
   } else {
     applyNewActivityLookupDefaults();
     document.getElementById('actBrandField').value = 'PHD';
+    document.getElementById('actBrandAmbassador').value = '';
     genProjectCode();
   }
 
@@ -2827,6 +3162,8 @@ async function syncActivityWineUsageRecords(activityId, activityBody) {
 
 async function saveActivity() {
   const id = document.getElementById('actId').value;
+  const brandAmbassadorEl = document.getElementById('actBrandAmbassador');
+  const brandAmbassadorVal = brandAmbassadorEl ? String(brandAmbassadorEl.value || '').trim() : '';
   const body = {
     year_frame_id: currentYearFrameId || 1,
     year_frame_code: document.getElementById('actYearFrameCode').value,
@@ -2844,15 +3181,18 @@ async function saveActivity() {
     quoted_price: roundMoney2(document.getElementById('actQuotedPrice').value),
     guest_count: parseInt(document.getElementById('actGuestCount').value) || null,
     executor: document.getElementById('actExecutor').value,
+    brand_ambassador: brandAmbassadorVal || null,
     status: document.getElementById('actStatus').value,
     remarks: document.getElementById('actRemarks').value,
+    cloud_album_url: normalizeCloudAlbumUrl(document.getElementById('actCloudAlbumUrl').value) || null,
   };
 
   try {
     let activityId = id ? Number(id) : 0;
+    let successMsg = '';
     if (id) {
       await api('PUT', `/activities/${id}`, body);
-      showToast('活动已更新', 'success');
+      successMsg = '活动已更新';
     } else {
       const created = await api('POST', '/activities', body);
       activityId = Number(created?.id || created?.data?.id || 0);
@@ -2864,8 +3204,19 @@ async function saveActivity() {
           .sort((a, b) => Number(b.id || 0) - Number(a.id || 0))[0];
         activityId = Number(matched?.id || 0);
       }
-      showToast('活动已创建', 'success');
+      successMsg = '活动已创建';
     }
+    let ambassadorSavedLabel = '未填写';
+    if (activityId > 0) {
+      try {
+        const latest = await api('GET', `/activities/${activityId}`);
+        ambassadorSavedLabel = String(latest?.brand_ambassador || '').trim() || '未填写';
+      } catch (_) {
+        // 读回失败时不影响主流程，仍按本地值给提示
+        ambassadorSavedLabel = brandAmbassadorVal || '未填写';
+      }
+    }
+    showToast(`${successMsg} · 品牌大使：${ambassadorSavedLabel}`, 'success');
     closeModal();
     loadActivities();
     void updateBadges();
@@ -2961,14 +3312,6 @@ async function showActivityDetail(id) {
       showToast('找不到活动详情弹窗，请强制刷新页面 (Cmd+Shift+R)', 'error');
       return;
     }
-    const wines = parseWineDetails(a.wine_details);
-    const wineRows = Object.entries(wines)
-      .filter(([, v]) => v && v.qty > 0)
-      .map(
-        ([k, v]) =>
-          `<tr><td>${escapeHtml(k)}</td><td>${escapeHtml(v.spec || '—')}</td><td style="text-align:right;font-variant-numeric:tabular-nums">${escapeHtml(String(v.qty))}</td></tr>`
-      )
-      .join('');
     const guestLine =
       a.guest_count != null && Number(a.guest_count) > 0
         ? activityDetailRow('宾客人数', String(a.guest_count))
@@ -3011,6 +3354,7 @@ async function showActivityDetail(id) {
             ${activityDetailRow('归属', belRaw ? belLabel : '')}
             ${activityDetailRow('场地', a.venue)}
             ${activityDetailRow('客户', a.client || a.client_name)}
+            ${activityDetailRowHtml('云相册', a.cloud_album_url ? `<button type="button" class="btn btn-secondary btn-sm" onclick="openActivityCloudAlbum('${escapeJsSingleQuoted(a.cloud_album_url || '')}')">查看云相册</button>` : '<span style="color:var(--text-muted)">无相册</span>')}
             ${guestLine}
           </section>
           <section class="activity-detail-card">
@@ -3018,6 +3362,7 @@ async function showActivityDetail(id) {
             ${activityDetailRowHtml('报价', `<span class="amount amount-revenue">${fmtMoney(a.quoted_price)}</span>`)}
             ${activityDetailRowHtml('成本', costHtml)}
             ${activityDetailRow('执行', a.executor || '无')}
+            ${activityDetailRow('品牌大使', a.brand_ambassador || '')}
             ${activityDetailRowHtml('状态', statusBadge(a.status))}
           </section>
         </div>
@@ -3027,20 +3372,6 @@ async function showActivityDetail(id) {
             ? `<div class="activity-detail-remarks activity-detail-block"><h4>备注</h4><p>${escapeHtml(a.remarks)}</p></div>`
             : ''
         }
-        <div class="activity-detail-wine activity-detail-block">
-          <h4>用酒明细</h4>
-          ${
-            wineRows
-              ? `<div class="table-wrapper">
-              <table class="data-table" style="font-size:13px">
-                <thead><tr><th>酒品</th><th>规格</th><th style="text-align:right">数量</th></tr></thead>
-                <tbody>${wineRows}</tbody>
-              </table>
-            </div>`
-              : '<p style="margin:0;color:var(--text-muted);font-size:13px">未填写用酒明细</p>'
-          }
-        </div>
-
         <div class="activity-detail-actions">
           <button type="button" class="btn btn-success btn-sm" onclick="closeModal();setTimeout(()=>showCostFill(${id}),100)"><i data-lucide="wallet" style="width:13px;height:13px"></i>填写成本</button>
         </div>
@@ -3442,62 +3773,11 @@ async function renderCost() {
   try {
     await ensureBelongingLabelMap();
     const qs = currentYearFrameId ? `?yearFrameId=${currentYearFrameId}` : '';
-    const [activities, warehouse, logistics, reimbursements] = await Promise.all([
+    const [activities, reimbursements] = await Promise.all([
       api('GET', `/activities${qs}`),
-      api('GET', `/warehouse${qs}`),
-      api('GET', `/logistics${qs}`),
       api('GET', `/reimbursements${qs}`),
     ]);
-
-    let materialCost = 0;
-    let materialMergedCost = 0;
-    let propRepairCost = 0;
-    let propRepairMergedCost = 0;
-    let workforceAnalytics = null;
-    if (qs) {
-      try {
-        const mpS = await api('GET', `/material-purchases/summary${qs}`);
-        materialCost = roundMoney2(
-          mpS && mpS.pooledTotal != null ? mpS.pooledTotal : (mpS.grandTotal || 0)
-        );
-        materialMergedCost = roundMoney2(mpS && mpS.mergedTotal != null ? mpS.mergedTotal : 0);
-      } catch {
-        materialCost = 0;
-        materialMergedCost = 0;
-      }
-      try {
-        const prS = await api('GET', `/prop-repairs/summary${qs}`);
-        propRepairCost = roundMoney2(
-          prS && prS.pooledTotal != null ? prS.pooledTotal : (prS.grandTotal || 0)
-        );
-        propRepairMergedCost = roundMoney2(prS && prS.mergedTotal != null ? prS.mergedTotal : 0);
-      } catch {
-        propRepairCost = 0;
-        propRepairMergedCost = 0;
-      }
-      try {
-        const wr = await api('GET', `/cost/analytics/workforce${qs}`);
-        workforceAnalytics = wr && wr.success ? wr.data : null;
-      } catch {
-        workforceAnalytics = null;
-      }
-    }
-
-    // 计算统计
-    const actCost = activities.reduce((s, a) => s + (parseFloat(a.total_cost)||0), 0);
-    const warCost = warehouse
-      .filter((w) => !(w.merged_into_activity === 1 || w.merged_into_activity === true))
-      .reduce((s, w) => s + (parseFloat(w.actual_cost)||0), 0);
-    const warRev = warehouse.reduce((s, w) => s + (parseFloat(w.quoted_price)||0), 0);
-    const logCost = logistics
-      .filter((l) => !(l.merged_into_activity === 1 || l.merged_into_activity === true))
-      .reduce((s, l) => s + (parseFloat(l.fee)||0), 0);
-    const reimCost = reimbursements
-      .filter((r) => !(r.merged_into_activity === 1 || r.merged_into_activity === true))
-      .reduce((s, r) => s + (parseFloat(r.amount) || 0), 0);
-    const { reimbByAct, mergedTotal: reimMergedTotal } = buildReimbByActivityMap(reimbursements);
-    const totalCost = roundMoney2(actCost + warCost + logCost + reimCost + materialCost + propRepairCost);
-    const totalRev = activities.reduce((s, a) => s + (parseFloat(a.quoted_price)||0), 0) + warRev;
+    const { reimbByAct } = buildReimbByActivityMap(reimbursements);
 
     const isMarkedNoCost = (a) => {
       const v = a && a.no_cost;
@@ -3512,130 +3792,25 @@ async function renderCost() {
     const withCostKeys = uniqueCostYmKeys(actsWithCost);
     const noCostKeys = uniqueCostYmKeys(actsMarkedNoCost);
 
+    if (costPendingYMFilter !== 'all' && !pendingKeys.includes(costPendingYMFilter)) {
+      costPendingYMFilter = 'all';
+      localStorage.setItem('remy_costPendingYMFilter', 'all');
+      localStorage.setItem('remy_costNoCostYMFilter', 'all');
+    }
+    if (costWithCostYMFilter !== 'all' && !withCostKeys.includes(costWithCostYMFilter)) {
+      costWithCostYMFilter = 'all';
+      localStorage.setItem('remy_costWithCostYMFilter', 'all');
+    }
+    if (costMarkedNoCostYMFilter !== 'all' && !noCostKeys.includes(costMarkedNoCostYMFilter)) {
+      costMarkedNoCostYMFilter = 'all';
+      localStorage.setItem('remy_costMarkedNoCostYMFilter', 'all');
+    }
+
     const filteredActsPending = applyCostYmFilter(actsPendingCost, costPendingYMFilter);
     const filteredActsWithCost = applyCostYmFilter(actsWithCost, costWithCostYMFilter);
     const filteredActsMarkedNoCost = applyCostYmFilter(actsMarkedNoCost, costMarkedNoCostYMFilter);
 
-    const pooledCost = roundMoney2(warCost + logCost + reimCost + materialCost + propRepairCost);
     container.innerHTML = `
-      <div class="stats-grid" id="costStatsGrid">
-        <div class="stat-card success" data-cost-card-key="totalRev" title="拖拽调整卡片顺序">
-          <div class="stat-icon"><i data-lucide="wallet" style="width:16px;height:16px"></i></div>
-          <div class="stat-label">总报价</div>
-          <div class="stat-value sm">${fmtMoney(totalRev)}</div>
-          <div class="stat-sub">场次 ${fmtMoney(totalRev-warRev)} ｜ 仓储 ${fmtMoney(warRev)}</div>
-        </div>
-        <div class="stat-card warning" data-cost-card-key="totalCost" title="拖拽调整卡片顺序">
-          <div class="stat-icon"><i data-lucide="hand-coins" style="width:16px;height:16px"></i></div>
-          <div class="stat-label">总成本</div>
-          <div class="stat-value sm">${fmtMoney(totalCost)}</div>
-          <div class="stat-sub">已计入活动 ${fmtMoney(actCost)} ｜ 公共池：仓储 ${fmtMoney(warCost)}、物流 ${fmtMoney(logCost)}、报销 ${fmtMoney(reimCost)}、物料 ${fmtMoney(materialCost)}、维修 ${fmtMoney(propRepairCost)} · <a href="javascript:void(0)" onclick="navigate('reimbursement');return false;" style="color:var(--accent)">报销登记</a> / <a href="javascript:void(0)" onclick="navigate('material');return false;" style="color:var(--accent)">物料登记</a> / <a href="javascript:void(0)" onclick="navigate('prop-repair');return false;" style="color:var(--accent)">维修登记</a></div>
-        </div>
-        <div class="stat-card blue" data-cost-card-key="allocatedCost" title="拖拽调整卡片顺序">
-          <div class="stat-icon"><i data-lucide="folder-sync" style="width:16px;height:16px"></i></div>
-          <div class="stat-label">已计入活动成本</div>
-          <div class="stat-value sm">${fmtMoney(actCost)}</div>
-          <div class="stat-sub">来源：活动 total_cost（含已同步计入的公共成本）</div>
-        </div>
-        <div class="stat-card blue" data-cost-card-key="pooledCost" title="拖拽调整卡片顺序">
-          <div class="stat-icon"><i data-lucide="layers-2" style="width:16px;height:16px"></i></div>
-          <div class="stat-label">公共成本池（未计入）</div>
-          <div class="stat-value sm">${fmtMoney(pooledCost)}</div>
-          <div class="stat-sub">仓储+物流+报销+物料+维修中尚未计入活动成本的成本</div>
-        </div>
-        <div class="stat-card accent" data-cost-card-key="grossProfit" title="拖拽调整卡片顺序">
-          <div class="stat-icon"><i data-lucide="chart-column" style="width:16px;height:16px"></i></div>
-          <div class="stat-label">毛利润</div>
-          <div class="stat-value sm">${fmtMoney(totalRev - totalCost)}</div>
-          <div class="stat-sub">毛利率 ${totalRev > 0 ? ((totalRev-totalCost)/totalRev*100).toFixed(1) : 0}%</div>
-        </div>
-        <div class="stat-card blue" data-cost-card-key="filledCount" title="拖拽调整卡片顺序">
-          <div class="stat-icon"><i data-lucide="clipboard-list" style="width:16px;height:16px"></i></div>
-          <div class="stat-label">已填成本场次</div>
-          <div class="stat-value">${actsWithCost.length}</div>
-          <div class="stat-sub">待填 ${actsPendingCost.length} 场 ｜ 无成本 ${actsMarkedNoCost.length} 场</div>
-        </div>
-        <div class="stat-card danger" data-cost-card-key="propRepairCost" title="拖拽调整卡片顺序">
-          <div class="stat-icon"><i data-lucide="wrench" style="width:16px;height:16px"></i></div>
-          <div class="stat-label">道具维修成本</div>
-          <div class="stat-value sm">${fmtMoney(propRepairCost)}</div>
-          <div class="stat-sub">公共池（未计入）${fmtMoney(propRepairCost)} ｜ 已计入活动 ${fmtMoney(propRepairMergedCost)}</div>
-        </div>
-        <div class="stat-card blue" data-cost-card-key="logisticsCost" title="拖拽调整卡片顺序">
-          <div class="stat-icon"><i data-lucide="truck" style="width:16px;height:16px"></i></div>
-          <div class="stat-label">物流成本</div>
-          <div class="stat-value sm">${fmtMoney(logCost)}</div>
-          <div class="stat-sub">来源：物流模块（仅公共池未计入记录）</div>
-        </div>
-        <div class="stat-card warning" data-cost-card-key="materialCost" title="拖拽调整卡片顺序">
-          <div class="stat-icon"><i data-lucide="shopping-cart" style="width:16px;height:16px"></i></div>
-          <div class="stat-label">物料采购成本</div>
-          <div class="stat-value sm">${fmtMoney(materialCost)}</div>
-          <div class="stat-sub">公共池（未计入）${fmtMoney(materialCost)} ｜ 已计入活动 ${fmtMoney(materialMergedCost)}</div>
-        </div>
-        <div class="stat-card accent" data-cost-card-key="reimbursementCost" title="拖拽调整卡片顺序">
-          <div class="stat-icon"><i data-lucide="receipt" style="width:16px;height:16px"></i></div>
-          <div class="stat-label">报销成本</div>
-          <div class="stat-value sm">${fmtMoney(reimCost)}</div>
-          <div class="stat-sub">公共池（未计入）${fmtMoney(reimCost)} ｜ 已计入活动成本（场次） ${fmtMoney(reimMergedTotal)}（已含在活动成本）</div>
-        </div>
-      </div>
-
-      <div class="card" style="margin:0 0 16px 0">
-        <div class="card-body" style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
-          <div style="padding:12px;border:1px dashed var(--border);border-radius:var(--radius-sm);background:var(--bg-input)">
-            <div class="card-title" style="font-size:13px">已计入活动成本口径</div>
-            <div class="card-sub">用于单场成本构成、超支判断、活动维度分析（活动成本明细 + 已同步计入）</div>
-          </div>
-          <div style="padding:12px;border:1px dashed var(--border);border-radius:var(--radius-sm);background:var(--bg-input)">
-            <div class="card-title" style="font-size:13px">公共成本池口径</div>
-            <div class="card-sub">用于总账补充（尚未计入到活动的仓储/物流/采购/维修/报销）</div>
-          </div>
-        </div>
-      </div>
-
-      <div class="card" style="margin-bottom:16px">
-        <div class="card-header">
-          <div class="card-title"><i data-lucide="users" style="width:14px;height:14px;vertical-align:-2px;margin-right:6px"></i>活动维度人力分析（基于已计入活动明细）</div>
-        </div>
-        <div class="card-body">
-          ${
-            workforceAnalytics
-              ? `
-              <div class="stats-grid" style="margin-bottom:10px">
-                <div class="stat-card"><div class="stat-label">督导费用</div><div class="stat-value sm">${fmtMoney(workforceAnalytics.byItem?.supervisor || 0)}</div></div>
-                <div class="stat-card"><div class="stat-label">PG费用</div><div class="stat-value sm">${fmtMoney(workforceAnalytics.byItem?.pg || 0)}</div></div>
-                <div class="stat-card"><div class="stat-label">兼职费用</div><div class="stat-value sm">${fmtMoney(workforceAnalytics.byItem?.parttime || 0)}</div></div>
-                <div class="stat-card"><div class="stat-label">调酒师费用</div><div class="stat-value sm">${fmtMoney(workforceAnalytics.byItem?.bartender || 0)}</div></div>
-                <div class="stat-card"><div class="stat-label">演职人员费用</div><div class="stat-value sm">${fmtMoney(workforceAnalytics.byItem?.performance || 0)}</div></div>
-              </div>
-              <div class="card-sub" style="margin-bottom:8px">
-                区域用人成本最高：${escapeHtml(workforceAnalytics.topRegion?.region || '—')}（${fmtMoney(workforceAnalytics.topRegion?.humanCost || 0)}）
-                ｜最低：${escapeHtml(workforceAnalytics.lowRegion?.region || '—')}（${fmtMoney(workforceAnalytics.lowRegion?.humanCost || 0)}）
-              </div>
-              <div class="table-wrapper">
-                <table>
-                  <thead><tr><th>区域</th><th>活动数</th><th>用人成本</th><th>督导</th><th>PG</th><th>兼职</th><th>调酒师</th><th>演职</th></tr></thead>
-                  <tbody>
-                    ${(workforceAnalytics.byRegion || []).map((r) => `
-                      <tr>
-                        <td>${escapeHtml(r.region)}</td>
-                        <td>${r.activityCount || 0}</td>
-                        <td class="amount amount-cost">${fmtMoney(r.humanCost || 0)}</td>
-                        <td>${fmtMoney(r.supervisor || 0)}</td>
-                        <td>${fmtMoney(r.pg || 0)}</td>
-                        <td>${fmtMoney(r.parttime || 0)}</td>
-                        <td>${fmtMoney(r.bartender || 0)}</td>
-                        <td>${fmtMoney(r.performance || 0)}</td>
-                      </tr>`).join('')}
-                  </tbody>
-                </table>
-              </div>`
-              : '<div class="card-sub">暂无可分析数据（请先在活动成本明细中沉淀人员类成本）</div>'
-          }
-        </div>
-      </div>
-
       <!-- 待填写成本 -->
       <div class="card" style="margin-bottom:20px">
         <div class="card-header">
@@ -3669,7 +3844,7 @@ async function renderCost() {
               </thead>
               <tbody>
                 ${filteredActsPending.slice(0,30).map(a => `
-                  <tr>
+                  <tr onclick="showCostDetailFromCost(${a.id})" style="cursor:pointer">
                     <td>${fmtDateShort(a.date||a.activity_date)}</td>
                     <td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px" title="${a.project_code||''}">${a.project_code||'—'}</td>
                     <td><span style="font-size:11px;color:var(--text-secondary)">${a.region||'—'}</span></td>
@@ -3679,7 +3854,7 @@ async function renderCost() {
                     <td class="amount amount-revenue">${fmtMoney(a.quoted_price)}</td>
                     <td class="amount amount-neutral">—</td>
                     <td style="font-size:11px;line-height:1.35">${activityReimbCellHtml(reimbByAct, a.id)}</td>
-                    <td><button class="btn btn-success btn-sm" onclick="showCostFillFromCost(${a.id})">+ 填写</button></td>
+                    <td onclick="event.stopPropagation()"><button class="btn btn-success btn-sm" onclick="showCostFillFromCost(${a.id})">+ 填写</button></td>
                   </tr>
                 `).join('')}
                 ${filteredActsPending.length > 30 ? `<tr><td colspan="10" style="text-align:center;color:var(--text-muted);padding:10px">还有 ${filteredActsPending.length-30} 条，请在场次记录中查看</td></tr>` : ''}
@@ -3722,7 +3897,7 @@ async function renderCost() {
               </thead>
               <tbody>
                 ${filteredActsMarkedNoCost.map(a => `
-                  <tr>
+                  <tr onclick="showCostDetailFromCost(${a.id})" style="cursor:pointer">
                     <td>${fmtDateShort(a.date||a.activity_date)}</td>
                     <td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px" title="${a.project_code||''}">${a.project_code||'—'}</td>
                     <td><span style="font-size:11px;color:var(--text-secondary)">${a.region||'—'}</span></td>
@@ -3732,7 +3907,7 @@ async function renderCost() {
                     <td class="amount amount-revenue">${fmtMoney(a.quoted_price)}</td>
                     <td class="amount amount-neutral">无成本</td>
                     <td style="font-size:11px;line-height:1.35">${activityReimbCellHtml(reimbByAct, a.id)}</td>
-                    <td><button class="btn btn-secondary btn-sm" onclick="showCostFillFromCost(${a.id})">修改</button></td>
+                    <td onclick="event.stopPropagation()"><button class="btn btn-secondary btn-sm" onclick="showCostFillFromCost(${a.id})">修改</button></td>
                   </tr>
                 `).join('')}
               </tbody>
@@ -3776,7 +3951,7 @@ async function renderCost() {
               ${filteredActsWithCost.map(a => {
                 const profit = (parseFloat(a.quoted_price)||0) - (parseFloat(a.total_cost)||0);
                 return `
-                  <tr>
+                  <tr onclick="showCostDetailFromCost(${a.id})" style="cursor:pointer">
                     <td>${fmtDateShort(a.date||a.activity_date)}</td>
                     <td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px" title="${a.project_code||''}">${a.project_code||'—'}</td>
                     <td><span style="font-size:11px;color:var(--text-secondary)">${a.region||'—'}</span></td>
@@ -3787,7 +3962,7 @@ async function renderCost() {
                     <td class="amount amount-cost">${fmtMoney(a.total_cost)}</td>
                     <td style="font-size:11px;line-height:1.35">${activityReimbCellHtml(reimbByAct, a.id)}</td>
                     <td class="amount ${profit>=0?'amount-revenue':'amount-cost'}">${fmtMoney(profit)}</td>
-                    <td><button class="btn btn-secondary btn-sm" onclick="showCostFillFromCost(${a.id})">修改</button></td>
+                    <td onclick="event.stopPropagation()"><button class="btn btn-secondary btn-sm" onclick="showCostFillFromCost(${a.id})">修改</button></td>
                   </tr>
                 `;
               }).join('')}
@@ -3797,9 +3972,6 @@ async function renderCost() {
         </div>
       </div>
     `;
-    const costStatsGrid = document.getElementById('costStatsGrid');
-    applySavedCostStatsCardOrder(costStatsGrid);
-    bindCostStatsCardDrag(costStatsGrid);
     renderLucideIcons();
   } catch (err) {
     container.innerHTML = `<div class="empty-state"><div class="empty-icon"><i data-lucide="triangle-alert" style="width:20px;height:20px"></i></div><div class="empty-title">加载失败</div><div class="empty-sub">${err.message}</div></div>`;
@@ -3839,6 +4011,7 @@ const COST_DETAIL_GROUPS = [
     title: '四、采购',
     items: [
       { key: 'floral', label: '场地方（场地/餐饮）' },
+      { key: 'floral_design', label: '花艺' },
       { key: 'payment', label: '活动物料' },
       { key: 'tasting', label: '闻香物料' },
     ],
@@ -3880,7 +4053,7 @@ function renderCostDetailSections(fieldClass, details, onInputExpr) {
           ${g.items.map((f) => `
             <div class="form-group">
               <label class="form-label">${f.label}</label>
-              <input type="number" class="form-control ${fieldClass}" data-key="${f.key}" value="${details[f.key] !== undefined && details[f.key] !== null && details[f.key] !== '' ? roundMoney2(details[f.key]).toFixed(2) : ''}" placeholder="0.00" step="0.01" oninput="${onInputExpr}">
+              <input type="number" class="form-control ${fieldClass}" data-key="${f.key}" value="${roundMoney2(details[f.key]) > 0 ? roundMoney2(details[f.key]).toFixed(2) : ''}" step="0.01" oninput="${onInputExpr}">
             </div>
           `).join('')}
         </div>
@@ -3902,6 +4075,76 @@ function collectCostDetails(fieldClass) {
 function calcCostDetailsTotal(details) {
   if (!details || typeof details !== 'object') return 0;
   return roundMoney2(Object.values(details).reduce((s, v) => s + roundMoney2(v), 0));
+}
+
+async function showCostDetailFromCost(actId) {
+  try {
+    const a = await api('GET', `/activities/${actId}`);
+    const details = parseActivityCostDetails(a);
+    const total = calcCostDetailsTotal(details);
+    const noCost = a && (a.no_cost === true || a.no_cost === 1 || String(a.no_cost) === '1');
+    const content = document.getElementById('costDetailContent');
+    if (!content) {
+      showToast('找不到成本详情弹窗，请强制刷新页面 (Cmd+Shift+R)', 'error');
+      return;
+    }
+
+    const titleEl = document.getElementById('costDetailModalTitle');
+    if (titleEl) {
+      const pc = a.project_code ? String(a.project_code).trim() : '';
+      titleEl.textContent = pc ? `成本详情 · ${pc}` : '成本详情';
+    }
+
+    const detailCards = COST_DETAIL_GROUPS.map((g) => {
+      const rows = g.items
+        .map((it) => {
+          const v = roundMoney2(details[it.key] || 0);
+          return `<div class="activity-detail-row"><div class="activity-detail-k">${escapeHtml(it.label)}</div><div class="activity-detail-v"><span class="${v > 0 ? 'amount amount-cost' : 'amount amount-neutral'}">${v > 0 ? fmtMoney(v) : '—'}</span></div></div>`;
+        })
+        .join('');
+      return `<section class="activity-detail-card"><h4>${escapeHtml(g.title)}</h4>${rows}</section>`;
+    }).join('');
+
+    content.innerHTML = `
+      <div class="activity-detail">
+        <div class="activity-detail-hero">
+          <div class="activity-detail-hero-top">
+            <div class="activity-detail-hero-code">${escapeHtml(a.project_code || '—')}</div>
+            <div class="activity-detail-hero-date">${escapeHtml(fmtDate(a.date || a.activity_date))}</div>
+          </div>
+          <div class="activity-detail-hero-meta">
+            <span><strong style="color:var(--text-primary)">${escapeHtml(a.city || '—')}</strong></span>
+            <span class="badge badge-${brandColor(a.brand)}">${escapeHtml(a.brand || '—')}</span>
+            <span class="badge badge-${typeColor(a.activity_type)}">${escapeHtml(a.activity_type || '—')}</span>
+          </div>
+        </div>
+        <div class="activity-detail-grid">
+          <section class="activity-detail-card">
+            <h4>场次信息</h4>
+            <div class="activity-detail-row"><div class="activity-detail-k">状态</div><div class="activity-detail-v">${statusBadge(a.status)}</div></div>
+            <div class="activity-detail-row"><div class="activity-detail-k">报价</div><div class="activity-detail-v"><span class="amount amount-revenue">${fmtMoney(a.quoted_price || 0)}</span></div></div>
+            <div class="activity-detail-row"><div class="activity-detail-k">成本</div><div class="activity-detail-v"><span class="${noCost ? 'amount amount-neutral' : 'amount amount-cost'}">${noCost ? '无成本' : fmtMoney(total)}</span></div></div>
+            <div class="activity-detail-row"><div class="activity-detail-k">利润</div><div class="activity-detail-v"><span class="amount ${(Number(a.quoted_price || 0) - total) >= 0 ? 'amount-revenue' : 'amount-cost'}">${fmtMoney((Number(a.quoted_price || 0) - total))}</span></div></div>
+          </section>
+        </div>
+        <div class="activity-detail-grid">
+          ${detailCards}
+        </div>
+      </div>
+    `;
+
+    const editBtn = document.getElementById('costDetailEditBtn');
+    if (editBtn) {
+      editBtn.onclick = () => {
+        closeModal();
+        setTimeout(() => showCostFillFromCost(actId), 100);
+      };
+    }
+    openModal('modalCostDetail');
+    renderLucideIcons();
+  } catch (err) {
+    showToast('加载成本详情失败: ' + err.message, 'error');
+  }
 }
 
 async function showCostFillFromCost(actId) {
@@ -3998,8 +4241,8 @@ function getLogisticsVisibleRows() {
   let data = logisticsState.data || [];
   if (logisticsMergeFilter === 'merged') data = data.filter((l) => isMergedFlag(l.merged_into_activity));
   if (logisticsMergeFilter === 'unmerged') data = data.filter((l) => !isMergedFlag(l.merged_into_activity));
-  if (!search) return data;
-  return data.filter((l) =>
+  if (search) {
+    data = data.filter((l) =>
     (l.tracking_number || '').toLowerCase().includes(search) ||
     (l.logistics_company || '').toLowerCase().includes(search) ||
     (l.express_company || '').toLowerCase().includes(search) ||
@@ -4007,7 +4250,58 @@ function getLogisticsVisibleRows() {
     (l.destination_city || '').toLowerCase().includes(search) ||
     (l.related_project_code || '').toLowerCase().includes(search) ||
     (l.project_code || '').toLowerCase().includes(search)
-  );
+    );
+  }
+  return sortLogisticsRows(data);
+}
+
+function logisticsSortDateValue(row) {
+  const settlement = parseSettlementMonthValue(row && row.settlement_month);
+  const hasSettlementMonth = !!(settlement.year && settlement.month);
+  const isMonthly = isTruthyFlag(row && row.monthly_settlement);
+  if (hasSettlementMonth && (isMonthly || !(row && row.shipping_date))) {
+    return Date.UTC(parseInt(settlement.year, 10), parseInt(settlement.month, 10) - 1, 1);
+  }
+  const dt = new Date(row && row.shipping_date ? row.shipping_date : 0).getTime();
+  return Number.isFinite(dt) ? dt : 0;
+}
+
+function sortLogisticsRows(rows) {
+  const key = logisticsSortState.key;
+  const dir = logisticsSortState.dir === 'asc' ? 1 : -1;
+  const arr = Array.isArray(rows) ? rows.slice() : [];
+  const cmpText = (a, b) => String(a || '').localeCompare(String(b || ''), 'zh-Hans-CN');
+  arr.sort((a, b) => {
+    let c = 0;
+    if (key === 'shipping_date') {
+      c = logisticsSortDateValue(a) - logisticsSortDateValue(b);
+    } else if (key === 'brand') {
+      c = cmpText(a.brand, b.brand);
+      if (c === 0) c = cmpText(a.logistics_company, b.logistics_company);
+    } else if (key === 'logistics_company') {
+      c = cmpText(a.logistics_company, b.logistics_company);
+      if (c === 0) c = cmpText(a.brand, b.brand);
+    }
+    if (c === 0) c = Number(a.id || 0) - Number(b.id || 0);
+    return c * dir;
+  });
+  return arr;
+}
+
+function logisticsSortIndicator(key) {
+  if (logisticsSortState.key !== key) return '';
+  return logisticsSortState.dir === 'asc' ? ' ↑' : ' ↓';
+}
+
+function toggleLogisticsSort(key) {
+  if (!['shipping_date', 'brand', 'logistics_company'].includes(key)) return;
+  if (logisticsSortState.key === key) {
+    logisticsSortState.dir = logisticsSortState.dir === 'asc' ? 'desc' : 'asc';
+  } else {
+    logisticsSortState.key = key;
+    logisticsSortState.dir = 'asc';
+  }
+  loadLogistics();
 }
 
 function setLogisticsMergeFilter(v) {
@@ -4103,13 +4397,16 @@ async function loadLogistics() {
           <div class="stat-sub">物流费用合计</div>
         </div>
       </div>
-      <div class="table-wrapper">
-        <table>
+      <div class="table-wrapper log-table-scroll-wrap">
+        <table class="log-table-sticky-head">
           <thead><tr>
               <th style="width:44px;text-align:center" title="多选">
                 <input type="checkbox" id="logSelectAll" style="width:16px;height:16px;cursor:pointer;accent-color:var(--accent)" onchange="toggleLogisticsSelectAll(this.checked)" aria-label="全选当前列表">
               </th>
-              <th>日期</th><th>品牌</th><th>物流公司</th><th>单号</th><th>路线</th><th>费用</th><th>关联项目</th><th>计入说明</th><th>计入状态</th><th>操作</th>
+              <th style="cursor:pointer;user-select:none" onclick="toggleLogisticsSort('shipping_date')" title="点击排序">日期${logisticsSortIndicator('shipping_date')}</th>
+              <th style="cursor:pointer;user-select:none" onclick="toggleLogisticsSort('brand')" title="点击排序">品牌${logisticsSortIndicator('brand')}</th>
+              <th style="cursor:pointer;user-select:none" onclick="toggleLogisticsSort('logistics_company')" title="点击排序">物流公司${logisticsSortIndicator('logistics_company')}</th>
+              <th>单号</th><th>路线</th><th>费用</th><th>关联项目</th><th>计入说明</th><th>计入状态</th><th>操作</th>
           </tr></thead>
           <tbody>
             ${filtered.length ? filtered.map(l => {
@@ -5557,7 +5854,7 @@ async function deleteMaterialPurchaseRecord(rid) {
 }
 
 /* =============================================
-   页面：报销登记（场次 + 费用明细 + 发票 + 同步到场次成本）
+  页面：付款申请（场次 + 费用明细 + 发票 + 同步到场次成本）
    ============================================= */
 function reimbActivityLine(a) {
   if (!a) return '—';
@@ -5695,6 +5992,9 @@ function reimbExportPayloadFromForm() {
   const actId = parseInt(document.getElementById('reimbActivityId')?.value, 10);
   const act = (reimbursementPageState.activities || []).find((x) => Number(x.id) === actId);
   const brand = document.getElementById('reimbBrand')?.value?.trim() || '';
+  const payment_type = document.getElementById('reimbPaymentType')?.value || 'personal_reimbursement';
+  const cost_module = document.getElementById('reimbCostModule')?.value || 'activity';
+  const claim_status = document.getElementById('reimbClaimStatus')?.value || 'draft';
   const has_invoice = !!document.getElementById('reimbHasInvY')?.checked;
   const invoices = has_invoice ? reimbCollectInvoicesFromForm() : [];
   const cost_details = collectCostDetails('reimb-cost-field');
@@ -5706,6 +6006,9 @@ function reimbExportPayloadFromForm() {
     remarks,
     activity_id: actId,
     brand,
+    payment_type,
+    cost_module,
+    claim_status,
     project_code: act?.project_code || '',
     has_invoice,
     invoices,
@@ -5715,8 +6018,7 @@ function reimbExportPayloadFromForm() {
   };
 }
 
-function reimbursementDownloadCsvFromForm() {
-  const p = reimbExportPayloadFromForm();
+function buildReimbursementCsvText(p) {
   const lines = [];
   const esc = (v) => {
     const s = v == null ? '' : String(v);
@@ -5724,6 +6026,7 @@ function reimbursementDownloadCsvFromForm() {
     return s;
   };
   lines.push(['报销日期', p.date, '金额合计', p.amount].join(','));
+  lines.push(['申请类型', reimbPaymentTypeLabel(p.payment_type), '成本板块', reimbCostModuleLabel(p.cost_module), '状态', reimbClaimStatusLabel(p.claim_status)].join(','));
   lines.push(['品牌', esc(p.brand), '项目编号', esc(p.project_code), '关联场次ID', p.activity_id || ''].join(','));
   lines.push(['备注', esc(p.remarks)].join(','));
   lines.push(['有发票', p.has_invoice ? '是' : '否'].join(','));
@@ -5741,16 +6044,60 @@ function reimbursementDownloadCsvFromForm() {
       if (v && roundMoney2(v) !== 0) lines.push([esc(it.label), roundMoney2(v)].join(','));
     });
   });
-  const blob = new Blob(['\uFEFF' + lines.join('\n')], { type: 'text/csv;charset=utf-8' });
+  return lines.join('\n');
+}
+
+function downloadReimbursementCsv(csvText, filename) {
+  const blob = new Blob(['\uFEFF' + csvText], { type: 'text/csv;charset=utf-8' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
-  a.download = `报销_${p.date || 'export'}.csv`;
+  a.download = filename;
   a.click();
   URL.revokeObjectURL(a.href);
 }
 
-function reimbursementPrintCurrentForm() {
-  const p = reimbExportPayloadFromForm();
+let reimbursementPreviewState = {
+  type: '',
+  csvText: '',
+  filename: '',
+};
+
+function openReimbursementPreviewModal({ title, bodyHtml, type = '', csvText = '', filename = '' }) {
+  const titleEl = document.getElementById('modalReimbPreviewTitle');
+  const bodyEl = document.getElementById('modalReimbPreviewBody');
+  const csvBtn = document.getElementById('reimbPreviewDownloadCsvBtn');
+  const pdfBtn = document.getElementById('reimbPreviewPrintPdfBtn');
+  if (!titleEl || !bodyEl || !csvBtn || !pdfBtn) {
+    showToast('预览弹窗未就绪，请刷新页面重试', 'warning');
+    return;
+  }
+  reimbursementPreviewState = { type, csvText, filename };
+  titleEl.textContent = title || '预览';
+  bodyEl.innerHTML = bodyHtml || '';
+  csvBtn.style.display = type === 'csv' ? 'inline-flex' : 'none';
+  pdfBtn.style.display = type === 'pdf' ? 'inline-flex' : 'none';
+  openModal('modalReimbPreview');
+}
+
+function reimbursementPreviewDownloadCsv() {
+  if (reimbursementPreviewState.type !== 'csv' || !reimbursementPreviewState.csvText) return;
+  downloadReimbursementCsv(
+    reimbursementPreviewState.csvText,
+    reimbursementPreviewState.filename || `付款申请_${todayDateInputValue()}.csv`
+  );
+}
+
+function reimbursementPreviewPrintPdf() {
+  const frame = document.getElementById('reimbPreviewPdfFrame');
+  if (!frame || !frame.contentWindow) {
+    showToast('PDF 预览内容未就绪', 'warning');
+    return;
+  }
+  frame.contentWindow.focus();
+  frame.contentWindow.print();
+}
+
+function buildReimbursementPrintableHtml(p) {
   let invHtml = '';
   if (p.has_invoice && p.invoices.length) {
     invHtml = `<h3>发票明细</h3><table border="1" cellpadding="6" cellspacing="0" style="max-width:720px"><tr><th>发票内容</th><th>发票号码</th><th>开票日期</th><th>类型</th></tr>
@@ -5769,24 +6116,40 @@ function reimbursementPrintCurrentForm() {
       if (v) detailRows += `<tr><td>${escapeHtml(it.label)}</td><td style="text-align:right">${v.toFixed(2)}</td></tr>`;
     });
   });
-  const w = window.open('', '_blank');
-  if (!w) {
-    showToast('请允许弹出窗口以使用打印预览', 'warning');
-    return;
-  }
-  w.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>报销打印</title>
+  return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>付款申请打印</title>
     <style>body{font-family:sans-serif;padding:24px;color:#111} table{border-collapse:collapse;width:100%;max-width:720px} h2{margin-top:0}</style>
   </head><body>
-  <h2>报销单（预览）</h2>
+  <h2>付款申请单（预览）</h2>
   <p>日期：${escapeHtml(p.date)}　品牌：${escapeHtml(p.brand || '—')}　项目编号：${escapeHtml(p.project_code || '—')}　金额合计：<strong>${p.amount.toFixed(2)}</strong> 元</p>
   <p>备注：${escapeHtml(p.remarks || '—')}</p>
   ${invHtml}
   <h3>费用明细</h3>
   <table border="1" cellpadding="6" cellspacing="0"><tr><th>项目</th><th>金额（元）</th></tr>${detailRows}<tr><th>合计</th><th style="text-align:right">${p.amount.toFixed(2)}</th></tr></table>
   <p style="margin-top:24px;font-size:12px;color:#666">已计入活动成本（场次）：${p.merged_into_activity ? '是' : '否'}</p>
-  <script>window.onload=function(){window.print();}<\/script>
-  </body></html>`);
-  w.document.close();
+  </body></html>`;
+}
+
+function reimbursementPreviewCsvFromForm() {
+  const p = reimbExportPayloadFromForm();
+  const csvText = buildReimbursementCsvText(p);
+  const filename = `付款申请_${p.date || 'export'}.csv`;
+  openReimbursementPreviewModal({
+    title: 'CSV 预览',
+    type: 'csv',
+    csvText,
+    filename,
+    bodyHtml: `<pre style="white-space:pre-wrap;word-break:break-word;background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;padding:12px;max-height:68vh;overflow:auto;margin:0">${escapeHtml(csvText)}</pre>`,
+  });
+}
+
+function reimbursementPrintCurrentForm() {
+  const p = reimbExportPayloadFromForm();
+  const html = buildReimbursementPrintableHtml(p);
+  openReimbursementPreviewModal({
+    title: 'PDF 预览',
+    type: 'pdf',
+    bodyHtml: `<iframe id="reimbPreviewPdfFrame" style="width:100%;height:70vh;border:1px solid #e5e7eb;border-radius:8px;background:#fff" srcdoc="${escapeHtml(html)}"></iframe>`,
+  });
 }
 
 async function reimbursementEditById(id) {
@@ -5835,8 +6198,20 @@ async function showReimbursementModal(record) {
   const invList =
     record && Array.isArray(record.invoices) && record.invoices.length ? record.invoices : [];
   const brandVal = record && record.brand ? String(record.brand) : '';
+  const paymentTypeVal = record && record.payment_type ? String(record.payment_type) : 'personal_reimbursement';
+  const costModuleVal = record && record.cost_module ? String(record.cost_module) : 'activity';
+  const claimStatusVal = record && record.claim_status ? String(record.claim_status) : 'draft';
   const brandOpts = FIXED_BRAND_CODES
     .map((code) => `<option value="${escapeHtml(code)}">${escapeHtml(code)}</option>`)
+    .join('');
+  const paymentTypeOptions = REIMB_PAYMENT_TYPE_OPTIONS
+    .map((x) => `<option value="${x.value}" ${x.value === paymentTypeVal ? 'selected' : ''}>${x.label}</option>`)
+    .join('');
+  const costModuleOptions = REIMB_COST_MODULE_OPTIONS
+    .map((x) => `<option value="${x.value}" ${x.value === costModuleVal ? 'selected' : ''}>${x.label}</option>`)
+    .join('');
+  const claimStatusOptions = REIMB_CLAIM_STATUS_OPTIONS
+    .map((x) => `<option value="${x.value}" ${x.value === claimStatusVal ? 'selected' : ''}>${x.label}</option>`)
     .join('');
 
   let pickedMergedLabel = '—';
@@ -5845,7 +6220,7 @@ async function showReimbursementModal(record) {
     pickedMergedLabel = ax ? reimbActivityLine(ax) : `场次 #${actId}`;
   }
 
-  title.textContent = rid ? `编辑报销 #${rid}` : '新建报销';
+  title.textContent = rid ? `编辑付款申请 #${rid}` : '新建付款申请';
   body.innerHTML = `
     <input type="hidden" id="reimbRecordId" value="${rid}">
     <input type="hidden" id="reimbActivityId" value="${actId || ''}">
@@ -5861,6 +6236,20 @@ async function showReimbursementModal(record) {
              <datalist id="reimbProjectList"></datalist>
              <div id="reimbActivityPicked" style="display:none;margin-top:8px;font-size:12px;color:var(--text-secondary)"></div>`
       }
+    </div>
+    <div class="form-grid" style="grid-template-columns:1fr 1fr 1fr">
+      <div class="form-group">
+        <label class="form-label">申请类型 <span class="required">*</span></label>
+        <select class="form-control" id="reimbPaymentType">${paymentTypeOptions}</select>
+      </div>
+      <div class="form-group">
+        <label class="form-label">成本板块 <span class="required">*</span></label>
+        <select class="form-control" id="reimbCostModule">${costModuleOptions}</select>
+      </div>
+      <div class="form-group">
+        <label class="form-label">申请状态 <span class="required">*</span></label>
+        <select class="form-control" id="reimbClaimStatus">${claimStatusOptions}</select>
+      </div>
     </div>
     <div class="form-grid" style="grid-template-columns:1fr 1fr 1fr">
       <div class="form-group">
@@ -5939,6 +6328,9 @@ async function saveReimbursementForm() {
   const brand = document.getElementById('reimbBrand')?.value?.trim() || '';
   const date = document.getElementById('reimbDate')?.value;
   const remarks = document.getElementById('reimbRemarks')?.value?.trim() || '';
+  const payment_type = document.getElementById('reimbPaymentType')?.value || 'personal_reimbursement';
+  const cost_module = document.getElementById('reimbCostModule')?.value || 'activity';
+  const claim_status = document.getElementById('reimbClaimStatus')?.value || 'draft';
   const has_invoice = !!document.getElementById('reimbHasInvY')?.checked;
   const invoices = has_invoice ? reimbCollectInvoicesFromForm() : [];
   const cost_details = collectCostDetails('reimb-cost-field');
@@ -5991,6 +6383,9 @@ async function saveReimbursementForm() {
     brand,
     date,
     remarks,
+    payment_type,
+    cost_module,
+    claim_status,
     has_invoice,
     invoices,
     cost_details,
@@ -6009,7 +6404,7 @@ async function saveReimbursementForm() {
       showToast('已更新', 'success');
     } else {
       await api('POST', '/reimbursements', body);
-      showToast('已保存', 'success');
+      showToast('付款申请已保存', 'success');
     }
     closeModal();
     if (currentPage === 'reimbursement') await renderReimbursements();
@@ -6058,13 +6453,16 @@ function reimbursementRenderListDom() {
         const brand = String(r.brand || '').toLowerCase();
         const city = String(r.city || '').toLowerCase();
         const rm = String(r.remarks || '').toLowerCase();
-        return pc.includes(kw) || brand.includes(kw) || city.includes(kw) || rm.includes(kw) || String(r.id).includes(kw);
+        const tp = reimbPaymentTypeLabel(r.payment_type || '').toLowerCase();
+        const mod = reimbCostModuleLabel(r.cost_module || '').toLowerCase();
+        const st = reimbClaimStatusLabel(r.claim_status || '').toLowerCase();
+        return pc.includes(kw) || brand.includes(kw) || city.includes(kw) || rm.includes(kw) || tp.includes(kw) || mod.includes(kw) || st.includes(kw) || String(r.id).includes(kw);
       });
   const fi = escapeHtml(reimbursementPageState.filterInput || '');
   container.innerHTML = `
       <div class="page-toolbar" style="margin-bottom:16px;display:flex;flex-wrap:wrap;gap:10px;align-items:center">
-        <button type="button" class="btn btn-primary" onclick="showReimbursementModal(null)">新建报销</button>
-        <input type="search" class="form-control" id="reimbListFilter" placeholder="筛选：品牌 / 项目编号 / 城市 / 备注" style="max-width:320px"
+        <button type="button" class="btn btn-primary" onclick="showReimbursementModal(null)">新建付款申请</button>
+        <input type="search" class="form-control" id="reimbListFilter" placeholder="筛选：品牌 / 项目编号 / 城市 / 备注 / 类型" style="max-width:360px"
           value="${fi}"
           oninput="reimbursementPageState.filterInput=this.value;reimbursementListFilterDebounced()">
       </div>
@@ -6075,9 +6473,12 @@ function reimbursementRenderListDom() {
               <thead>
                 <tr>
                   <th style="min-width:88px">日期</th>
+                  <th style="min-width:96px">申请类型</th>
+                  <th style="min-width:120px">成本板块</th>
                   <th style="min-width:72px">品牌</th>
                   <th style="min-width:120px;text-align:left">金额</th>
                   <th style="min-width:140px">项目编号</th>
+                  <th style="min-width:88px">状态</th>
                   <th style="min-width:88px">合并场次</th>
                   <th style="min-width:72px">发票</th>
                   <th style="min-width:180px">备注</th>
@@ -6089,17 +6490,23 @@ function reimbursementRenderListDom() {
                   .map((r) => {
                     const m = r.merged_into_activity === 1 || r.merged_into_activity === true;
                     const hi = r.has_invoice === 1 || r.has_invoice === true;
+                    const paymentType = r.payment_type || 'personal_reimbursement';
+                    const costModule = r.cost_module || 'activity';
+                    const claimStatus = r.claim_status || 'draft';
                     return `<tr>
                     <td style="white-space:nowrap">${escapeHtml(fmtDateShort(r.date))}</td>
+                    <td style="white-space:nowrap">${escapeHtml(reimbPaymentTypeLabel(paymentType))}</td>
+                    <td style="white-space:nowrap">${escapeHtml(reimbCostModuleLabel(costModule))}</td>
                     <td style="white-space:nowrap">${escapeHtml(r.brand || '—')}</td>
                     <td class="amount" style="text-align:left;white-space:nowrap">${fmtMoney(r.amount)}</td>
                     <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis" title="${escapeHtml(r.related_project_code || '')}">${escapeHtml(r.related_project_code || '—')}</td>
+                    <td style="white-space:nowrap"><span class="badge ${reimbClaimStatusBadgeClass(claimStatus)}">${escapeHtml(reimbClaimStatusLabel(claimStatus))}</span></td>
                     <td style="white-space:nowrap">${m ? '<span class="badge badge-success">已计入</span>' : '—'}</td>
                     <td style="white-space:nowrap">${hi ? '有' : '无'}</td>
                     <td style="max-width:220px;overflow:hidden;text-overflow:ellipsis" title="${escapeHtml(r.remarks || '')}">${escapeHtml(r.remarks || '—')}</td>
                     <td onclick="event.stopPropagation()" style="white-space:nowrap">
                       <button type="button" class="btn btn-secondary btn-sm" onclick="reimbursementEditById(${r.id})">编辑</button>
-                      <button type="button" class="btn btn-secondary btn-sm" onclick="reimbursementQuickExport(${r.id})">CSV</button>
+                      <button type="button" class="btn btn-secondary btn-sm" onclick="reimbursementQuickExport(${r.id})">CSV预览</button>
                       <button type="button" class="btn btn-danger btn-sm" onclick="deleteReimbursementRecord(${r.id})">删除</button>
                     </td>
                   </tr>`;
@@ -6110,7 +6517,7 @@ function reimbursementRenderListDom() {
           </div>
           ${
             !filtered.length
-              ? '<div class="empty-state" style="padding:24px"><div class="empty-title">暂无报销记录</div></div>'
+              ? '<div class="empty-state" style="padding:24px"><div class="empty-title">暂无付款申请记录</div></div>'
               : ''
           }
         </div>
@@ -6153,44 +6560,24 @@ async function reimbursementQuickExport(id) {
       activity_id: r.activity_id,
       brand: r.brand || '',
       project_code: r.related_project_code || '',
+      payment_type: r.payment_type || 'personal_reimbursement',
+      cost_module: r.cost_module || 'activity',
+      claim_status: r.claim_status || 'draft',
       has_invoice: !!(r.has_invoice === 1 || r.has_invoice === true),
       invoices: Array.isArray(r.invoices) ? r.invoices : [],
       cost_details: parseActivityCostDetails({ cost_details: r.cost_details }),
       amount: parseFloat(r.amount) || 0,
       merged_into_activity: !!(r.merged_into_activity === 1 || r.merged_into_activity === true),
     };
-    const lines = [];
-    const esc = (v) => {
-      const s = v == null ? '' : String(v);
-      if (/[",\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
-      return s;
-    };
-    lines.push(['报销ID', p.id, '报销日期', p.date, '金额', p.amount].join(','));
-    lines.push(['品牌', esc(p.brand), '项目编号', esc(p.project_code)].join(','));
-    lines.push(['备注', esc(p.remarks)].join(','));
-    lines.push(
-      ['有发票', p.has_invoice ? '是' : '否', '已计入活动成本（场次）', p.merged_into_activity ? '是' : '否'].join(',')
-    );
-    if (p.has_invoice && p.invoices.length) {
-      lines.push('发票内容,发票号码,开票日期,专票/普票');
-      p.invoices.forEach((iv) =>
-        lines.push([esc(iv.invoice_content), esc(iv.invoice_no), iv.invoice_date, esc(iv.invoice_kind)].join(','))
-      );
-    }
-    lines.push('');
-    lines.push('费用明细项,金额');
-    COST_DETAIL_GROUPS.forEach((g) => {
-      g.items.forEach((it) => {
-        const v = p.cost_details[it.key];
-        if (v && roundMoney2(v) !== 0) lines.push([esc(it.label), roundMoney2(v)].join(','));
-      });
+    const csvText = buildReimbursementCsvText(p);
+    const filename = `付款申请_${p.id}_${(p.date || '').slice(0, 10)}.csv`;
+    openReimbursementPreviewModal({
+      title: `CSV 预览 #${p.id}`,
+      type: 'csv',
+      csvText,
+      filename,
+      bodyHtml: `<pre style="white-space:pre-wrap;word-break:break-word;background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;padding:12px;max-height:68vh;overflow:auto;margin:0">${escapeHtml(csvText)}</pre>`,
     });
-    const blob = new Blob(['\uFEFF' + lines.join('\n')], { type: 'text/csv;charset=utf-8' });
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = `报销_${p.id}_${(p.date || '').slice(0, 10)}.csv`;
-    a.click();
-    URL.revokeObjectURL(a.href);
   } catch (e) {
     showToast(e.message || '导出失败', 'error');
   }
@@ -7716,7 +8103,7 @@ function invRenderItemsPanel(items, viewMode) {
         const to = invStatQty(it.total_outbound);
         const tdmg = invStatQty(it.total_damaged);
         const tlost = invStatQty(it.total_lost);
-        return `<tr class="inv-item-clickable-row" onclick="invOpenItemDetail(${it.id})">
+        return `<tr class="inv-item-clickable-row" data-item-id="${it.id}" onclick="invOpenItemDetail(${it.id})">
           <td class="inv-items-col-thumb"><div class="inv-list-thumb">${invItemImageInnerHtml(it)}</div></td>
           <td class="inv-items-col-name">
             <div class="inv-list-name">${escapeHtml(it.name)} ${commonBadge}</div>
@@ -7755,7 +8142,7 @@ function invRenderItemsPanel(items, viewMode) {
       .map((it) => {
         const commonBadge = invItemIsCommon(it) ? '<span class="inv-badge-common">常用</span>' : '';
         return `
-        <div class="inv-thumb-tile inv-item-clickable-card" onclick="invOpenItemDetail(${it.id})">
+        <div class="inv-thumb-tile inv-item-clickable-card" data-item-id="${it.id}" onclick="invOpenItemDetail(${it.id})">
           <div class="inv-thumb-tile-img">${invItemImageInnerHtml(it)}</div>
           <div class="inv-thumb-tile-body">
             <div class="inv-thumb-tile-title">${escapeHtml(it.name)} ${commonBadge}</div>
@@ -7778,7 +8165,7 @@ function invRenderItemsPanel(items, viewMode) {
           const img = (it.image_urls && it.image_urls[0]) ? `<img src="${escapeHtml(it.image_urls[0])}" alt="">` : '<span style="color:var(--text-muted);font-size:12px">无图</span>';
           const commonBadge = invItemIsCommon(it) ? '<span class="inv-badge-common">常用</span>' : '';
           return `
-          <div class="inv-item-card inv-item-clickable-card" onclick="invOpenItemDetail(${it.id})">
+          <div class="inv-item-card inv-item-clickable-card" data-item-id="${it.id}" onclick="invOpenItemDetail(${it.id})">
             <div class="inv-item-card-img">${img}</div>
             <div style="padding:12px">
               <div style="font-weight:700;font-size:14px;margin-bottom:6px;display:flex;align-items:center;gap:6px;flex-wrap:wrap">${escapeHtml(it.name)} ${commonBadge}</div>
@@ -7803,7 +8190,7 @@ function invRenderEmptyBottleWarehouseSections(groups) {
   const total = arr.reduce((s, g) => s + (parseInt(g.total_empty_bottles, 10) || 0), 0);
   return `
     <div class="inv-empty-bottle-root">
-      <p class="form-hint inv-empty-bottle-lead">按仓库查看空瓶名称与当前库存；点击名称可查看<strong>项目编号、回收时间（入库登记时间）、数量</strong>追溯明细（受上方「显示月份」筛选）。各仓合计：<strong>${total}</strong></p>
+      <p class="form-hint inv-empty-bottle-lead">按仓库查看空瓶名称与当前库存；点击名称可查看<strong>项目编号、回收时间（入库登记时间）、数量</strong>追溯明细。各仓合计：<strong>${total}</strong></p>
       ${arr
         .map((g) => {
           const whLabel = `${g.brand_code || ''} · ${g.region || ''}`;
@@ -7844,9 +8231,7 @@ async function invOpenEmptyBottleTraceModal(itemId) {
   body.innerHTML = '<div class="empty-state">加载中...</div>';
   openModal('modalInvEmptyBottleTrace');
   try {
-    const lm = String(inventoryPageState.invLedgerMonth || '').trim();
-    const mq = /^\d{4}-\d{2}$/.test(lm) ? `?month=${encodeURIComponent(lm)}` : '';
-    const data = await api('GET', `/inventory/empty-bottles/items/${id}/trace${mq}`);
+    const data = await api('GET', `/inventory/empty-bottles/items/${id}/trace`);
     const it = data.item || {};
     if (title) title.textContent = it.name ? `空瓶追溯 · ${it.name}` : '空瓶回收追溯';
     const lines = Array.isArray(data.lines) ? data.lines : [];
@@ -7871,7 +8256,7 @@ async function invOpenEmptyBottleTraceModal(itemId) {
       })
       .join('');
     body.innerHTML = `
-      <p class="form-hint" style="margin-top:0;margin-bottom:12px">回收时间为<strong>提交入库登记</strong>时的系统时间（与「物品入库」台账一致）。${lm && /^\d{4}-\d{2}$/.test(lm) ? `当前仅显示 <strong>${escapeHtml(lm)}</strong> 月份内的登记。` : ''}</p>
+      <p class="form-hint" style="margin-top:0;margin-bottom:12px">回收时间为<strong>提交入库登记</strong>时的系统时间（与「物品入库」台账一致）。</p>
       <div class="table-wrapper">
         <table class="data-table">
           <thead><tr><th>项目编号 / 关联</th><th>回收时间（入库登记）</th><th>空瓶数量</th></tr></thead>
@@ -7907,7 +8292,7 @@ async function invOpenItemDetail(itemId) {
     const it = await api('GET', `/inventory/items/${id}`);
     const urls = Array.isArray(it.image_urls) ? it.image_urls.filter(Boolean) : [];
     const main = urls[0]
-      ? `<img src="${escapeHtml(urls[0])}" alt="" style="width:100%;aspect-ratio:4/3;object-fit:cover;object-position:center;border-radius:8px;background:var(--bg-secondary)">`
+      ? `<img src="${escapeHtml(urls[0])}" alt="" style="width:100%;aspect-ratio:4/3;object-fit:contain;object-position:center;border-radius:8px;background:var(--bg-secondary);border:1px solid var(--border)">`
       : `<div style="width:100%;aspect-ratio:4/3;border-radius:8px;background:var(--bg-secondary);display:flex;align-items:center;justify-content:center;color:var(--text-muted)">暂无图片</div>`;
     const thumbs =
       urls.length > 1
@@ -7916,7 +8301,7 @@ async function invOpenItemDetail(itemId) {
               .slice(1, 13)
               .map(
                 (u) =>
-                  `<img src="${escapeHtml(u)}" alt="" style="width:64px;height:64px;object-fit:cover;object-position:center;border-radius:6px;border:1px solid var(--border);background:var(--bg-secondary)">`,
+                  `<img src="${escapeHtml(u)}" alt="" style="width:64px;height:64px;object-fit:contain;object-position:center;border-radius:6px;border:1px solid var(--border);background:var(--bg-secondary)">`,
               )
               .join('')}
           </div>`
@@ -7992,6 +8377,7 @@ function invCaptureOutboundDraft() {
   of.contact_name = g('invContactName')?.value ?? '';
   of.contact_phone = g('invContactPhone')?.value ?? '';
   of.logistics_method = g('invLogistics')?.value || of.logistics_method || INV_LOGISTICS_OPTS[0];
+  of.tracking_number = g('invTrackingNo')?.value ?? '';
   of.remarks = g('invObRemarks')?.value ?? '';
   of.hint_msg = g('invHintMsg')?.textContent ?? '';
   inventoryPageState.linkMode = of.linkMode;
@@ -8008,24 +8394,140 @@ function invEnsureTabForPage(invPage) {
 }
 
 async function invFillInvProjectDatalist() {
-  const dl = document.getElementById('invProjectList');
-  if (!dl || !currentYearFrameId) return;
+  if (!currentYearFrameId) return;
   try {
     const actList = await api('GET', `/activities?yearFrameId=${currentYearFrameId}`);
-    if (Array.isArray(actList)) {
-      dl.innerHTML = actList
-        .filter((a) => a.project_code && String(a.project_code).trim())
-        .map((a) => `<option value="${escapeHtml(String(a.project_code).trim())}"></option>`)
-        .join('');
-    }
+    invSetOutboundProjectOptions(actList);
   } catch (_) { /* ignore */ }
+}
+
+function invSetOutboundProjectOptions(actList) {
+  const seen = new Set();
+  const vals = Array.isArray(actList)
+    ? actList
+      .map((a) => String(a && a.project_code ? a.project_code : '').trim())
+      .filter((v) => {
+        if (!v || seen.has(v)) return false;
+        seen.add(v);
+        return true;
+      })
+    : [];
+  inventoryPageState.outboundProjectOptions = vals;
+  invRenderProjectSuggestionList(document.getElementById('invProjectCode')?.value || '');
+}
+
+function invRenderProjectSuggestionList(keyword) {
+  const menu = document.getElementById('invProjectMenu');
+  if (!menu) return;
+  const q = String(keyword || '').trim().toLowerCase();
+  const all = Array.isArray(inventoryPageState.outboundProjectOptions) ? inventoryPageState.outboundProjectOptions : [];
+  const list = q ? all.filter((v) => v.toLowerCase().includes(q)) : all;
+  const shown = list.slice(0, 80);
+  if (!shown.length) {
+    menu.innerHTML = '<div class="inv-project-menu-empty">无匹配项目编号</div>';
+    return;
+  }
+  menu.innerHTML = shown
+    .map((v) => `<button type="button" class="inv-project-option" data-value="${escapeHtml(v)}" onclick="invPickProjectSuggestionFromBtn(this)">${escapeHtml(v)}</button>`)
+    .join('');
+}
+
+function invOpenProjectSuggestionList() {
+  const menu = document.getElementById('invProjectMenu');
+  if (!menu) return;
+  if (!inventoryPageState.outboundProjectMenuBound) {
+    document.addEventListener('click', (evt) => {
+      const target = evt && evt.target;
+      if (!target) return;
+      const wrap = document.querySelector('.inv-project-combobox');
+      if (!wrap) return;
+      if (!wrap.contains(target)) invCloseProjectSuggestionList();
+    });
+    inventoryPageState.outboundProjectMenuBound = true;
+  }
+  invRenderProjectSuggestionList(document.getElementById('invProjectCode')?.value || '');
+  menu.style.display = 'block';
+}
+
+function invCloseProjectSuggestionList() {
+  const menu = document.getElementById('invProjectMenu');
+  if (menu) menu.style.display = 'none';
+}
+
+function invToggleProjectSuggestionList() {
+  const menu = document.getElementById('invProjectMenu');
+  if (!menu) return;
+  if (menu.style.display === 'block') invCloseProjectSuggestionList();
+  else invOpenProjectSuggestionList();
+}
+
+function invOnProjectInput(value) {
+  invOpenProjectSuggestionList();
+  invRenderProjectSuggestionList(value);
+}
+
+function invOnProjectInputBlur() {
+  // Delay close slightly so clicking suggestion options still works.
+  window.setTimeout(() => {
+    const wrap = document.querySelector('.inv-project-combobox');
+    const active = document.activeElement;
+    if (!wrap || !active || !wrap.contains(active)) invCloseProjectSuggestionList();
+  }, 120);
+}
+
+function invHandleProjectInputKeydown(e) {
+  if (!e) return;
+  if (e.key === 'Escape') {
+    invCloseProjectSuggestionList();
+    return;
+  }
+  if (e.key === 'Enter') {
+    const first = document.querySelector('#invProjectMenu .inv-project-option');
+    if (first) {
+      e.preventDefault();
+      first.click();
+    }
+  }
+}
+
+function invPickProjectSuggestionFromBtn(btn) {
+  const val = btn ? String(btn.getAttribute('data-value') || '').trim() : '';
+  const input = document.getElementById('invProjectCode');
+  if (!input) return;
+  input.value = val;
+  inventoryPageState.outboundForm.project_code = val;
+  invCloseProjectSuggestionList();
+  void invApplyProjectHint();
 }
 
 function invBuildCommonRowsHtml(items, preset) {
   const P = preset || {};
-  const commonItems = items.filter(invItemIsCommon);
+  const whId = Number(inventoryPageState.warehouseId || 0);
+  const key = String(whId || 'global');
+  const q = String((inventoryPageState.outboundCommonSearchByWarehouse || {})[key] || '').trim().toLowerCase();
+  const commonItemsRaw = items.filter(invItemIsCommon);
+  const orderIdsStored = ((inventoryPageState.outboundCommonOrderByWarehouse || {})[key] || [])
+    .map((x) => Number(x))
+    .filter((x) => Number.isFinite(x));
+  const allCommonIds = commonItemsRaw.map((it) => Number(it.id));
+  const orderIds = [...orderIdsStored.filter((id) => allCommonIds.includes(id)), ...allCommonIds.filter((id) => !orderIdsStored.includes(id))];
+  inventoryPageState.outboundCommonOrderByWarehouse[key] = orderIds;
+  const rank = new Map(orderIds.map((id, idx) => [id, idx]));
+  const commonItems = commonItemsRaw
+    .slice()
+    .sort((a, b) => {
+      const ra = rank.has(Number(a.id)) ? rank.get(Number(a.id)) : Number.MAX_SAFE_INTEGER;
+      const rb = rank.has(Number(b.id)) ? rank.get(Number(b.id)) : Number.MAX_SAFE_INTEGER;
+      if (ra !== rb) return ra - rb;
+      return String(a.name || '').localeCompare(String(b.name || ''), 'zh-Hans-CN');
+    })
+    .filter((it) => {
+      if (!q) return true;
+      const text = `${it.name || ''} ${it.dimensions || ''}`.toLowerCase();
+      return text.includes(q);
+    });
   if (!commonItems.length) {
-    return '<tr><td colspan="5" style="color:var(--text-muted);font-size:13px">暂无常用物料。请在「库存统计」中设为常用，或添加物料时勾选「常用物料」。</td></tr>';
+    return '<tr><td colspan="6" style="color:var(--text-muted);font-size:13px">暂无常用物料。请在「库存统计」中设为常用，或添加物料时勾选「常用物料」。</td></tr>';
   }
   return commonItems
     .map((it) => {
@@ -8035,9 +8537,11 @@ function invBuildCommonRowsHtml(items, preset) {
       const checked = qty > 0;
       const note = p && p.line_note != null ? String(p.line_note) : '';
       return `
-        <tr data-inv-common-row data-item-id="${id}">
-          <td style="width:36px;text-align:center">
-            <input type="checkbox" id="invCommonCk_${id}" class="inv-outbound-common-ck" ${checked ? 'checked' : ''} onchange="invOnOutboundCommonCk(${id})">
+        <tr data-inv-common-row data-item-id="${id}" draggable="true" ondragstart="invCommonDragStart(event, ${id})" ondragover="invCommonDragOver(event)" ondrop="invCommonDrop(event, ${id})" ondragend="invCommonDragEnd(event)">
+          <td style="width:42px;text-align:center">
+            <div class="inv-common-select-wrap">
+              <input type="checkbox" id="invCommonCk_${id}" class="inv-outbound-common-ck" ${checked ? 'checked' : ''} onchange="invOnOutboundCommonCk(${id})">
+            </div>
           </td>
           <td>
             <div style="font-weight:600;font-size:13px">${escapeHtml(it.name)}</div>
@@ -8048,22 +8552,25 @@ function invBuildCommonRowsHtml(items, preset) {
             <input type="number" class="form-control form-control-sm" id="invCommonQty_${id}" min="0" step="1" value="${qty}" placeholder="0" onchange="invOnOutboundCommonQty(${id})">
           </td>
           <td><input type="text" class="form-control form-control-sm" id="invCommonNote_${id}" placeholder="行备注" value="${escapeHtml(note)}"></td>
+          <td style="width:36px;text-align:center"><span class="inv-common-drag-handle" title="按住拖动排序">···</span></td>
         </tr>`;
     })
     .join('');
 }
 
 function invBuildExtraLineRowsHtml(items, lines) {
-  const itemOpts = (selId) =>
-    `<option value="">选物料</option>${items.map((it) => `<option value="${it.id}" ${String(selId) === String(it.id) ? 'selected' : ''}>${escapeHtml(it.name)} (余${it.quantity_on_hand})</option>`).join('')}`;
+  const byId = new Map(items.map((it) => [String(it.id), it]));
+  const itemDisplay = (it) => `${it.name} [#${it.id}] (余${it.quantity_on_hand})`;
+  const selectedDisplay = (selId) => {
+    const it = byId.get(String(selId || ''));
+    return it ? itemDisplay(it) : '';
+  };
   return lines
     .map(
       (ln, idx) => `
       <tr>
         <td>
-          <select class="form-control form-control-sm" data-idx="${idx}" onchange="invPatchOutboundLine(${idx},'item_id',this.value)">
-            ${itemOpts(ln.item_id)}
-          </select>
+          <input type="text" class="form-control form-control-sm" data-idx="${idx}" list="invExtraItemList" placeholder="输入关键词并下拉选择物料" value="${escapeHtml(selectedDisplay(ln.item_id))}" onchange="invPatchOutboundLineByDisplay(${idx}, this.value)">
         </td>
         <td style="width:88px"><input type="number" class="form-control form-control-sm" min="1" step="1" value="${ln.quantity || 1}" onchange="invPatchOutboundLine(${idx},'quantity',this.value)"></td>
         <td><input type="text" class="form-control form-control-sm" placeholder="说明" value="${escapeHtml(ln.line_note || '')}" onchange="invPatchOutboundLine(${idx},'line_note',this.value)"></td>
@@ -8091,26 +8598,40 @@ function invBuildOutboundModalMarkup(warehouses, items, of, modalOpts) {
         .join('')}
     </div>`;
   const linkMode = of.linkMode === 'standalone' ? 'standalone' : 'activity';
+  const whKey = String(Number(inventoryPageState.warehouseId || 0) || 'global');
+  const commonSearch = String((inventoryPageState.outboundCommonSearchByWarehouse || {})[whKey] || '');
+  const hintMsg = String(of.hint_msg || '').trim();
+  const extraItemOptions = items
+    .map((it) => `<option value="${escapeHtml(`${it.name} [#${it.id}] (余${it.quantity_on_hand})`)}"></option>`)
+    .join('');
   return `
     <div class="inv-ob-modal-form">
       <input type="hidden" id="invOutboundEditOrderId" value="${editOrderId ? String(editOrderId) : ''}">
       <input type="hidden" id="invWarehouseSelect" value="${inventoryPageState.warehouseId || ''}">
       <div class="inv-ob-modal-row">
-        <div class="form-group inv-ob-field-short">
+        <div class="form-group inv-ob-field-short inv-ob-field-purpose">
           <label class="form-label">用途</label>
           <select class="form-control" id="invLinkMode" onchange="inventoryPageState.linkMode=this.value;inventoryPageState.outboundForm.linkMode=this.value;invToggleLinkMode()">
             <option value="activity" ${linkMode !== 'standalone' ? 'selected' : ''}>活动用</option>
             <option value="standalone" ${linkMode === 'standalone' ? 'selected' : ''}>非活动用</option>
           </select>
         </div>
-        <div class="form-group inv-ob-field-mid" id="invProjectWrap">
+        <div class="form-group inv-ob-field-mid inv-ob-field-project" id="invProjectWrap">
           <label class="form-label">项目编号（活动用）</label>
-          <input type="text" class="form-control" id="invProjectCode" placeholder="与场次一致" list="invProjectList" value="${escapeHtml(of.project_code || '')}">
-          <span class="form-hint" id="invHintMsg" style="display:block;margin-top:4px">${escapeHtml(of.hint_msg || '')}</span>
+          <div class="inv-project-combobox">
+            <input type="text" class="form-control" id="invProjectCode" placeholder="与场次一致" autocomplete="off" value="${escapeHtml(of.project_code || '')}" onfocus="invOpenProjectSuggestionList()" onblur="invOnProjectInputBlur()" oninput="invOnProjectInput(this.value)" onkeydown="invHandleProjectInputKeydown(event)">
+            <button type="button" class="inv-project-trigger" onclick="invToggleProjectSuggestionList()" aria-label="展开项目编号建议"></button>
+            <div class="inv-project-menu" id="invProjectMenu" style="display:none"></div>
+          </div>
+          <span class="form-hint" id="invHintMsg" style="${hintMsg ? 'display:block;margin-top:4px' : 'display:none;margin-top:0'}">${escapeHtml(hintMsg)}</span>
         </div>
-        <div class="form-group inv-ob-field-short">
+        <div class="form-group inv-ob-field-short inv-ob-field-logistics">
           <label class="form-label">物流方式</label>
           <select class="form-control" id="invLogistics">${INV_LOGISTICS_OPTS.map((x) => `<option value="${x}" ${(of.logistics_method || INV_LOGISTICS_OPTS[0]) === x ? 'selected' : ''}>${x}</option>`).join('')}</select>
+        </div>
+        <div class="form-group inv-ob-field-mid inv-ob-field-tracking">
+          <label class="form-label">物流单号</label>
+          <input type="text" class="form-control" id="invTrackingNo" placeholder="顺丰请填写单号" value="${escapeHtml(of.tracking_number || '')}">
         </div>
       </div>
       <div class="inv-ob-modal-row" id="invPurposeWrap" style="display:none">
@@ -8154,10 +8675,14 @@ function invBuildOutboundModalMarkup(warehouses, items, of, modalOpts) {
         </div>
       </div>
       <input type="hidden" id="invActivityId" value="${escapeHtml(String(of.activity_id || ''))}">
+      <datalist id="invExtraItemList">${extraItemOptions}</datalist>
       <h4 class="inv-outbound-section-title">常用物料 <span style="font-weight:400;color:var(--text-muted);font-size:12px">（勾选并填数量）</span></h4>
+      <div class="inv-ob-common-tools">
+        <input type="text" class="form-control form-control-sm" id="invCommonSearch" placeholder="输入关键词筛选常用物料..." value="${escapeHtml(commonSearch)}" oninput="invOnCommonSearchInput(this.value)">
+      </div>
       <div class="table-wrapper inv-outbound-table-wrap">
         <table class="data-table inv-outbound-table">
-          <thead><tr><th style="width:36px">选</th><th>物料</th><th style="width:56px">库存</th><th style="width:88px">数量</th><th>行备注</th></tr></thead>
+          <thead><tr><th style="width:42px">选</th><th>物料</th><th style="width:56px">库存</th><th style="width:88px">数量</th><th>行备注</th><th style="width:36px">序</th></tr></thead>
           <tbody id="invObCommonTbody">${commonRows}</tbody>
         </table>
       </div>
@@ -8289,54 +8814,79 @@ function invSetOutboundModalTitle(isEdit) {
 }
 
 async function invOpenOutboundModal() {
-  inventoryPageState.editOutboundOrderId = null;
-  inventoryPageState.outboundEditCommonPreset = null;
-  inventoryPageState.outboundLinesByWarehouse = {};
-  inventoryPageState.outboundCommonByWarehouse = {};
-  invSetOutboundModalTitle(false);
-  let warehouses = [];
   try {
-    warehouses = await api('GET', '/inventory/warehouses');
+    const body = document.getElementById('invOutboundModalBody');
+    if (body) body.innerHTML = '<div class="empty-state">加载中...</div>';
+    openModal('modalInvOutbound');
+    inventoryPageState.editOutboundOrderId = null;
+    inventoryPageState.outboundEditCommonPreset = null;
+    inventoryPageState.outboundLines = [];
+    inventoryPageState.outboundLinesByWarehouse = {};
+    inventoryPageState.outboundCommonByWarehouse = {};
+    inventoryPageState.outboundCommonSearchByWarehouse = {};
+    inventoryPageState.outboundForm = {
+      linkMode: 'activity',
+      project_code: '',
+      purpose: '',
+      activity_id: '',
+      recipient_city: '',
+      recipient_address: '',
+      contact_name: '',
+      contact_phone: '',
+      logistics_method: INV_LOGISTICS_OPTS[0],
+      tracking_number: '',
+      remarks: '',
+      hint_msg: '',
+    };
+    invSetOutboundModalTitle(false);
+    let warehouses = [];
+    try {
+      warehouses = await api('GET', '/inventory/warehouses');
+    } catch (e) {
+      showToast(e.message || '加载仓库失败', 'error');
+      closeModal();
+      return;
+    }
+    if (!warehouses.length) {
+      showToast('暂无仓库，请先在库存统计中新建仓库', 'warning');
+      closeModal();
+      return;
+    }
+    if (!inventoryPageState.warehouseId || !warehouses.some((w) => w.id === inventoryPageState.warehouseId)) {
+      inventoryPageState.warehouseId = warehouses[0].id;
+    }
+    inventoryPageState.outboundWarehousesCache = warehouses.slice();
+    let items = [];
+    try {
+      items = await api('GET', `/inventory/items?inv_warehouse_id=${inventoryPageState.warehouseId}`);
+    } catch (_) {
+      items = [];
+    }
+    const of = inventoryPageState.outboundForm;
+    const curWh = Number(inventoryPageState.warehouseId || 0);
+    inventoryPageState.outboundLinesByWarehouse[curWh] = [];
+    inventoryPageState.outboundCommonByWarehouse[curWh] = {};
+    if (!body) return;
+    body.innerHTML = invBuildOutboundModalMarkup(warehouses, items, of);
+    await invFillInvProjectDatalist();
+    const lmEl = document.getElementById('invLinkMode');
+    if (lmEl) {
+      lmEl.value = of.linkMode !== 'standalone' ? 'activity' : 'standalone';
+      inventoryPageState.linkMode = lmEl.value;
+      of.linkMode = lmEl.value;
+      invToggleLinkMode();
+    }
+    renderLucideIcons();
   } catch (e) {
-    showToast(e.message || '加载仓库失败', 'error');
-    return;
+    console.error('invOpenOutboundModal failed:', e);
+    showToast(e?.message || '打开新建出库失败', 'error');
+    closeModal();
   }
-  if (!warehouses.length) {
-    showToast('暂无仓库，请先在库存统计中新建仓库', 'warning');
-    return;
-  }
-  if (!inventoryPageState.warehouseId || !warehouses.some((w) => w.id === inventoryPageState.warehouseId)) {
-    inventoryPageState.warehouseId = warehouses[0].id;
-  }
-  inventoryPageState.outboundWarehousesCache = warehouses.slice();
-  let items = [];
-  try {
-    items = await api('GET', `/inventory/items?inv_warehouse_id=${inventoryPageState.warehouseId}`);
-  } catch (_) {
-    items = [];
-  }
-  const of = inventoryPageState.outboundForm;
-  const curWh = Number(inventoryPageState.warehouseId || 0);
-  inventoryPageState.outboundLinesByWarehouse[curWh] = [];
-  inventoryPageState.outboundCommonByWarehouse[curWh] = {};
-  const body = document.getElementById('invOutboundModalBody');
-  if (!body) return;
-  body.innerHTML = invBuildOutboundModalMarkup(warehouses, items, of);
-  openModal('modalInvOutbound');
-  await invFillInvProjectDatalist();
-  const lmEl = document.getElementById('invLinkMode');
-  if (lmEl) {
-    lmEl.value = of.linkMode !== 'standalone' ? 'activity' : 'standalone';
-    inventoryPageState.linkMode = lmEl.value;
-    of.linkMode = lmEl.value;
-    invToggleLinkMode();
-  }
-  renderLucideIcons();
 }
 
 function invRenderOutboundOrderTable(orders) {
   if (!orders.length) {
-    return '<div class="empty-state" style="margin-top:8px">当前筛选条件下暂无物品出库记录。可切换「显示月份」或点击「新建出库」创建。</div>';
+    return '<div class="empty-state" style="margin-top:8px">暂无物品出库记录，可点击「新建出库」创建。</div>';
   }
   return `
     <div class="table-wrapper">
@@ -8346,6 +8896,7 @@ function invRenderOutboundOrderTable(orders) {
             <th>出库日期</th>
             <th>项目编号</th>
             <th>物流方式</th>
+            <th>物流单号</th>
             <th>发货仓</th>
             <th>收件城市</th>
             <th style="min-width:220px">操作</th>
@@ -8370,6 +8921,11 @@ function invRenderOutboundOrderTable(orders) {
             <td>${shipDate}</td>
             <td>${proj}</td>
             <td>${escapeHtml(o.logistics_method || '—')}</td>
+            <td>${
+              o.tracking_number
+                ? `<a href="https://www.sf-express.com/cn/sc/dynamic_function/waybill/#search/bill-number/${encodeURIComponent(String(o.tracking_number))}" target="_blank" style="color:var(--accent);font-family:monospace;font-size:12px">${escapeHtml(o.tracking_number)}</a>`
+                : '<span style="color:var(--text-muted)">—</span>'
+            }</td>
             <td>${escapeHtml(o.brand_code)} ${escapeHtml(o.region)}</td>
             <td>${escapeHtml(o.recipient_city || '—')}</td>
             <td class="inv-ob-order-actions">
@@ -8388,7 +8944,7 @@ function invRenderOutboundOrderTable(orders) {
 
 function invRenderInboundLedgerTable(rows) {
   if (!rows.length) {
-    return '<div class="empty-state" style="margin-top:8px">当前筛选条件下暂无已入库记录。可切换「显示月份」或调整左侧年度。</div>';
+    return '<div class="empty-state" style="margin-top:8px">暂无已入库记录，可调整左侧年度查看。</div>';
   }
   return `
     <div class="table-wrapper inv-inbound-ledger-wrap">
@@ -8590,6 +9146,26 @@ async function invOpenOutboundOrderDetail(orderId) {
     const html = `
         <div class="inv-ob-detail-block">
           <div class="inv-ob-detail-head">出库单 #${ord.id} · ${ord.shipped_at ? String(ord.shipped_at).slice(0, 16) : '—'} · ${escapeHtml(ord.brand_code)} ${escapeHtml(ord.region)} · ${ord.status === 'closed' ? '已结清' : '待归还'}</div>
+          <div class="activity-detail-grid" style="margin-bottom:12px">
+            <section class="activity-detail-card">
+              <h4>基础信息</h4>
+              ${activityDetailRow('关联方式', ord.link_mode === 'standalone' ? '非项目出库' : '项目编号')}
+              ${activityDetailRow(ord.link_mode === 'standalone' ? '用途说明' : '项目编号', ord.link_mode === 'standalone' ? (ord.purpose || '—') : (ord.project_code || '—'))}
+              ${activityDetailRow('发货仓', `${ord.brand_code || ''} ${ord.region || ''}`.trim() || '—')}
+              ${activityDetailRow('状态', ord.status === 'closed' ? '已归还' : '出库中')}
+            </section>
+            <section class="activity-detail-card">
+              <h4>收件信息</h4>
+              ${activityDetailRow('收件城市', ord.recipient_city || '—')}
+              ${activityDetailRow('联系人', ord.contact_name || '—')}
+              ${activityDetailRow('联系电话', ord.contact_phone || '—')}
+              ${activityDetailRow('收件地址', ord.recipient_address || '—')}
+              ${activityDetailRow('物流方式', ord.logistics_method || '—')}
+              ${activityDetailRowHtml('物流单号', ord.tracking_number
+                ? `<a href="https://www.sf-express.com/cn/sc/dynamic_function/waybill/#search/bill-number/${encodeURIComponent(String(ord.tracking_number))}" target="_blank" style="color:var(--accent);font-family:monospace;font-size:12px">${escapeHtml(ord.tracking_number)}</a>`
+                : '<span style="color:var(--text-muted)">—</span>')}
+            </section>
+          </div>
           <div class="table-wrapper">
             <table class="data-table">
               <thead><tr><th>物料</th><th>规格</th><th>数量</th><th>行备注</th></tr></thead>
@@ -8641,99 +9217,111 @@ async function invOpenOutboundOrderDetail(orderId) {
 }
 
 async function invOpenOutboundEditModal(orderId) {
-  let det;
   try {
-    det = await api('GET', `/inventory/outbound/${orderId}`);
-  } catch (e) {
-    showToast(e.message || '加载失败', 'error');
-    return;
-  }
-  const o = det.order;
-  let warehouses = [];
-  try {
-    warehouses = await api('GET', '/inventory/warehouses');
-  } catch (e) {
-    showToast(e.message || '加载仓库失败', 'error');
-    return;
-  }
-  if (!warehouses.length) {
-    showToast('暂无仓库，请先在库存统计中新建仓库', 'warning');
-    return;
-  }
-  inventoryPageState.warehouseId = o.inv_warehouse_id;
-  if (!warehouses.some((w) => w.id === inventoryPageState.warehouseId)) {
-    showToast('该出库单关联的仓库不存在', 'error');
-    return;
-  }
-  let items = [];
-  try {
-    items = await api('GET', `/inventory/items?inv_warehouse_id=${inventoryPageState.warehouseId}`);
-  } catch (_) {
-    items = [];
-  }
-  const itemById = new Map(items.map((it) => [it.id, it]));
-  const commonPreset = {};
-  const extraParts = [];
-  for (const ln of det.lines || []) {
-    const it = itemById.get(ln.item_id);
-    if (it && invItemIsCommon(it)) {
-      const qty = Number(ln.quantity) || 0;
-      const note = (ln.line_note && String(ln.line_note).trim()) || '';
-      const prev = commonPreset[ln.item_id];
-      if (!prev) {
-        commonPreset[ln.item_id] = { checked: qty > 0, quantity: qty, line_note: note };
-      } else {
-        prev.quantity += qty;
-        const merged = [prev.line_note, note].filter(Boolean).join('；');
-        prev.line_note = merged;
-        prev.checked = prev.quantity > 0;
-      }
-    } else {
-      extraParts.push({
-        item_id: ln.item_id,
-        quantity: ln.quantity,
-        line_note: ln.line_note || '',
-      });
+    const body = document.getElementById('invOutboundModalBody');
+    if (body) body.innerHTML = '<div class="empty-state">加载中...</div>';
+    openModal('modalInvOutbound');
+    let det;
+    try {
+      det = await api('GET', `/inventory/outbound/${orderId}`);
+    } catch (e) {
+      showToast(e.message || '加载失败', 'error');
+      closeModal();
+      return;
     }
-  }
-  inventoryPageState.outboundLines = invMergeOutboundLines(extraParts);
-  inventoryPageState.editOutboundOrderId = orderId;
-  inventoryPageState.outboundEditCommonPreset = commonPreset;
-  inventoryPageState.outboundLinesByWarehouse = {};
-  inventoryPageState.outboundCommonByWarehouse = {};
-  inventoryPageState.outboundWarehousesCache = warehouses.slice();
+    const o = det.order;
+    let warehouses = [];
+    try {
+      warehouses = await api('GET', '/inventory/warehouses');
+    } catch (e) {
+      showToast(e.message || '加载仓库失败', 'error');
+      closeModal();
+      return;
+    }
+    if (!warehouses.length) {
+      showToast('暂无仓库，请先在库存统计中新建仓库', 'warning');
+      closeModal();
+      return;
+    }
+    inventoryPageState.warehouseId = o.inv_warehouse_id;
+    if (!warehouses.some((w) => w.id === inventoryPageState.warehouseId)) {
+      showToast('该出库单关联的仓库不存在', 'error');
+      closeModal();
+      return;
+    }
+    let items = [];
+    try {
+      items = await api('GET', `/inventory/items?inv_warehouse_id=${inventoryPageState.warehouseId}`);
+    } catch (_) {
+      items = [];
+    }
+    const itemById = new Map(items.map((it) => [it.id, it]));
+    const commonPreset = {};
+    const extraParts = [];
+    for (const ln of det.lines || []) {
+      const it = itemById.get(ln.item_id);
+      if (it && invItemIsCommon(it)) {
+        const qty = Number(ln.quantity) || 0;
+        const note = (ln.line_note && String(ln.line_note).trim()) || '';
+        const prev = commonPreset[ln.item_id];
+        if (!prev) {
+          commonPreset[ln.item_id] = { checked: qty > 0, quantity: qty, line_note: note };
+        } else {
+          prev.quantity += qty;
+          const merged = [prev.line_note, note].filter(Boolean).join('；');
+          prev.line_note = merged;
+          prev.checked = prev.quantity > 0;
+        }
+      } else {
+        extraParts.push({
+          item_id: ln.item_id,
+          quantity: ln.quantity,
+          line_note: ln.line_note || '',
+        });
+      }
+    }
+    inventoryPageState.outboundLines = invMergeOutboundLines(extraParts);
+    inventoryPageState.editOutboundOrderId = orderId;
+    inventoryPageState.outboundEditCommonPreset = commonPreset;
+    inventoryPageState.outboundLinesByWarehouse = {};
+    inventoryPageState.outboundCommonByWarehouse = {};
+    inventoryPageState.outboundWarehousesCache = warehouses.slice();
 
-  const of = inventoryPageState.outboundForm;
-  of.linkMode = o.link_mode === 'standalone' ? 'standalone' : 'activity';
-  of.project_code = o.project_code || '';
-  of.purpose = o.purpose || '';
-  of.activity_id = o.activity_id != null ? String(o.activity_id) : '';
-  of.recipient_city = o.recipient_city || '';
-  of.recipient_address = o.recipient_address || '';
-  of.contact_name = o.contact_name || '';
-  of.contact_phone = o.contact_phone || '';
-  of.logistics_method = o.logistics_method || INV_LOGISTICS_OPTS[0];
-  of.remarks = o.remarks || '';
-  of.hint_msg = '';
-  inventoryPageState.linkMode = of.linkMode;
+    const of = inventoryPageState.outboundForm;
+    of.linkMode = o.link_mode === 'standalone' ? 'standalone' : 'activity';
+    of.project_code = o.project_code || '';
+    of.purpose = o.purpose || '';
+    of.activity_id = o.activity_id != null ? String(o.activity_id) : '';
+    of.recipient_city = o.recipient_city || '';
+    of.recipient_address = o.recipient_address || '';
+    of.contact_name = o.contact_name || '';
+    of.contact_phone = o.contact_phone || '';
+    of.logistics_method = o.logistics_method || INV_LOGISTICS_OPTS[0];
+    of.tracking_number = o.tracking_number || '';
+    of.remarks = o.remarks || '';
+    of.hint_msg = '';
+    inventoryPageState.linkMode = of.linkMode;
 
-  const body = document.getElementById('invOutboundModalBody');
-  if (!body) return;
-  body.innerHTML = invBuildOutboundModalMarkup(warehouses, items, of, {
-    editOrderId: orderId,
-    commonPreset,
-  });
-  invSetOutboundModalTitle(true);
-  openModal('modalInvOutbound');
-  await invFillInvProjectDatalist();
-  const lmEl = document.getElementById('invLinkMode');
-  if (lmEl) {
-    lmEl.value = of.linkMode !== 'standalone' ? 'activity' : 'standalone';
-    inventoryPageState.linkMode = lmEl.value;
-    of.linkMode = lmEl.value;
-    invToggleLinkMode();
+    if (!body) return;
+    body.innerHTML = invBuildOutboundModalMarkup(warehouses, items, of, {
+      editOrderId: orderId,
+      commonPreset,
+    });
+    invSetOutboundModalTitle(true);
+    await invFillInvProjectDatalist();
+    const lmEl = document.getElementById('invLinkMode');
+    if (lmEl) {
+      lmEl.value = of.linkMode !== 'standalone' ? 'activity' : 'standalone';
+      inventoryPageState.linkMode = lmEl.value;
+      of.linkMode = lmEl.value;
+      invToggleLinkMode();
+    }
+    renderLucideIcons();
+  } catch (e) {
+    console.error('invOpenOutboundEditModal failed:', e);
+    showToast(e?.message || '打开编辑出库失败', 'error');
+    closeModal();
   }
-  renderLucideIcons();
 }
 
 async function invDeleteOutboundOrder(orderId) {
@@ -8817,17 +9405,6 @@ async function renderInventory() {
   const masterIsWine = invPage === 'master' && inventoryPageState.stockMasterView === 'wine';
   const masterIsEmpty = invPage === 'master' && inventoryPageState.stockMasterView === 'empty';
   const masterIsWarehouse = invPage === 'master' && !masterIsWine && !masterIsEmpty;
-
-  let ledgerMonthRange = { min_month: null, max_month: null };
-  if (invPage === 'outbound' || invPage === 'inbound' || (invPage === 'master' && inventoryPageState.stockMasterView === 'empty')) {
-    try {
-      const qs = yfId ? `?yearFrameId=${yfId}` : '';
-      const r = await api('GET', `/inventory/ledger-month-range${qs}`);
-      ledgerMonthRange = r && typeof r === 'object' ? r : { min_month: null, max_month: null };
-    } catch (_) {
-      ledgerMonthRange = { min_month: null, max_month: null };
-    }
-  }
 
   let displayItems = items;
   if (masterIsWarehouse) {
@@ -8936,7 +9513,7 @@ async function renderInventory() {
                 <td>#${o.id}</td>
                 <td>${escapeHtml(o.brand_code)} ${escapeHtml(o.region)}</td>
                 <td>${projLine}</td>
-                <td>${o.shipped_at ? String(o.shipped_at).slice(0, 16) : '—'}</td>
+                <td>${o.shipped_at ? String(o.shipped_at).slice(0, 10) : '—'}</td>
                 <td>
                   <button type="button" class="btn btn-sm btn-primary" onclick="invOpenReturn(${o.id})">归还登记</button>
                   <button type="button" class="btn btn-sm btn-secondary" onclick="invDownloadPdf(${o.id})">PDF</button>
@@ -8971,8 +9548,7 @@ async function renderInventory() {
       ${invRenderStockMasterCardsHtml(warehouses, inventoryPageState.warehouseId, inventoryPageState.stockMasterView)}
     </div>
     <div class="inv-toolbar inv-toolbar-master inv-toolbar-empty-ledger">
-      ${invRenderLedgerMonthSelectHtml(inventoryPageState.invLedgerMonth, ledgerMonthRange)}
-      <span class="form-hint" style="flex:1;min-width:200px;margin:0">空瓶回收仅作查看与追溯：上方月份作用于<strong>追溯明细</strong>；列表仍为各仓当前库存。</span>
+      <span class="form-hint" style="flex:1;min-width:200px;margin:0">空瓶回收仅作查看与追溯，列表为各仓当前库存。</span>
     </div>`;
   const masterToolbar =
     invPage === 'master' && inventoryPageState.stockMasterView === 'wine'
@@ -8984,8 +9560,7 @@ async function renderInventory() {
   const outboundPageHeader = `
     <div class="inv-out-page-head">
       <div class="inv-out-page-head-main">
-        <span class="form-hint" style="margin:0">按项目编号汇总已出库记录；<strong>出库日期</strong>按发货时间，无则按创建时间落入所选月份。主数据请在 <strong>库存统计</strong> 维护。</span>
-        ${invRenderLedgerMonthSelectHtml(inventoryPageState.invLedgerMonth, ledgerMonthRange)}
+        <span class="form-hint" style="margin:0">按项目编号汇总已出库记录；<strong>出库日期</strong>按发货时间，无则按创建时间。主数据请在 <strong>库存统计</strong> 维护。</span>
       </div>
       <button type="button" class="btn btn-primary btn-sm" onclick="invOpenOutboundModal()">新建出库</button>
     </div>`;
@@ -9002,9 +9577,7 @@ async function renderInventory() {
   const tabsBarInbound = `
     <div class="inv-tabs-bar">
       <span class="inv-page-lead">已入库</span>
-      <div class="inv-tabs-bar-tools">
-        ${invRenderLedgerMonthSelectHtml(inventoryPageState.invLedgerMonth, ledgerMonthRange)}
-      </div>
+      <div class="inv-tabs-bar-tools"></div>
     </div>`;
 
   const toolbarHtml =
@@ -9027,13 +9600,7 @@ async function renderInventory() {
     try {
       if (yfId) {
         const actList = await api('GET', `/activities?yearFrameId=${yfId}`);
-        const dl = document.getElementById('invProjectList');
-        if (dl && Array.isArray(actList)) {
-          dl.innerHTML = actList
-            .filter((a) => a.project_code && String(a.project_code).trim())
-            .map((a) => `<option value="${escapeHtml(String(a.project_code).trim())}"></option>`)
-            .join('');
-        }
+        invSetOutboundProjectOptions(actList);
       }
     } catch (_) { /* ignore */ }
 
@@ -9123,15 +9690,127 @@ function invPatchOutboundLine(idx, key, val) {
   }
 }
 
+function invPatchOutboundLineByDisplay(idx, displayVal) {
+  const m = String(displayVal || '').match(/\[#(\d+)\]/);
+  const itemId = m ? parseInt(m[1], 10) : '';
+  invPatchOutboundLine(idx, 'item_id', itemId);
+}
+
+function invOnCommonSearchInput(val) {
+  const whId = Number(inventoryPageState.warehouseId || 0);
+  const key = String(whId || 'global');
+  inventoryPageState.outboundCommonSearchByWarehouse = inventoryPageState.outboundCommonSearchByWarehouse || {};
+  inventoryPageState.outboundCommonSearchByWarehouse[key] = String(val || '');
+  const commonTbody = document.getElementById('invObCommonTbody');
+  if (!commonTbody) return;
+  const wh = inventoryPageState.warehouseId;
+  if (!wh) return;
+  api('GET', `/inventory/items?inv_warehouse_id=${wh}`)
+    .then((items) => {
+      const preset = inventoryPageState.outboundEditCommonPreset;
+      commonTbody.innerHTML = invBuildCommonRowsHtml(Array.isArray(items) ? items : [], preset);
+    })
+    .catch(() => {});
+}
+
+function invMoveCommonItem(itemId, step) {
+  const whId = Number(inventoryPageState.warehouseId || 0);
+  const key = String(whId || 'global');
+  inventoryPageState.outboundCommonOrderByWarehouse = inventoryPageState.outboundCommonOrderByWarehouse || {};
+  const ids = [...new Set((inventoryPageState.outboundCommonOrderByWarehouse[key] || []).map((x) => Number(x)).filter((x) => Number.isFinite(x)))];
+  if (!ids.includes(Number(itemId))) ids.push(Number(itemId));
+  const i = ids.indexOf(Number(itemId));
+  if (i < 0) return;
+  if (step === 'top') {
+    if (i === 0) return;
+    ids.splice(i, 1);
+    ids.unshift(Number(itemId));
+  } else if (step === 'bottom') {
+    if (i === ids.length - 1) return;
+    ids.splice(i, 1);
+    ids.push(Number(itemId));
+  } else {
+    const j = i + (step > 0 ? 1 : -1);
+    if (j < 0 || j >= ids.length) return;
+    const tmp = ids[i];
+    ids[i] = ids[j];
+    ids[j] = tmp;
+  }
+  inventoryPageState.outboundCommonOrderByWarehouse[key] = ids;
+  invSaveCommonOrderStore();
+  const commonTbody = document.getElementById('invObCommonTbody');
+  if (!commonTbody) return;
+  const wh = inventoryPageState.warehouseId;
+  if (!wh) return;
+  api('GET', `/inventory/items?inv_warehouse_id=${wh}`)
+    .then((items) => {
+      const preset = inventoryPageState.outboundEditCommonPreset;
+      commonTbody.innerHTML = invBuildCommonRowsHtml(Array.isArray(items) ? items : [], preset);
+    })
+    .catch(() => {});
+}
+
+let invCommonDraggingItemId = null;
+
+function invCommonDragStart(event, itemId) {
+  invCommonDraggingItemId = Number(itemId);
+  try {
+    event.dataTransfer.effectAllowed = 'move';
+    event.dataTransfer.setData('text/plain', String(itemId));
+  } catch (_) { /* ignore */ }
+}
+
+function invCommonDragOver(event) {
+  event.preventDefault();
+  if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
+}
+
+function invCommonDrop(event, targetItemId) {
+  event.preventDefault();
+  const targetId = Number(targetItemId);
+  const sourceId = Number(invCommonDraggingItemId);
+  if (!Number.isFinite(sourceId) || !Number.isFinite(targetId) || sourceId === targetId) return;
+  const whId = Number(inventoryPageState.warehouseId || 0);
+  const key = String(whId || 'global');
+  const domOrder = Array.from(document.querySelectorAll('#invObCommonTbody [data-inv-common-row]'))
+    .map((row) => Number(row.getAttribute('data-item-id')))
+    .filter((id) => Number.isFinite(id));
+  if (!domOrder.length) return;
+  const ids = [...domOrder];
+  const from = ids.indexOf(sourceId);
+  const to = ids.indexOf(targetId);
+  if (from < 0 || to < 0) return;
+  ids.splice(from, 1);
+  ids.splice(to, 0, sourceId);
+  inventoryPageState.outboundCommonOrderByWarehouse[key] = ids;
+  invSaveCommonOrderStore();
+  const commonTbody = document.getElementById('invObCommonTbody');
+  if (!commonTbody) return;
+  const wh = inventoryPageState.warehouseId;
+  if (!wh) return;
+  api('GET', `/inventory/items?inv_warehouse_id=${wh}`)
+    .then((items) => {
+      const preset = inventoryPageState.outboundEditCommonPreset;
+      commonTbody.innerHTML = invBuildCommonRowsHtml(Array.isArray(items) ? items : [], preset);
+    })
+    .catch(() => {});
+}
+
+function invCommonDragEnd() {
+  invCommonDraggingItemId = null;
+}
+
 async function invToggleItemCommon(id, asCommon) {
   if (!hasWriteAccess()) {
     showToast('仅管理员可修改常用物料', 'warning');
     return;
   }
+  const pageScrollSnapshot = invCapturePageScrollPosition(id);
   try {
     await api('PUT', `/inventory/items/${id}`, { is_common: Boolean(asCommon) });
     showToast(asCommon ? '已设为常用物料' : '已取消常用', 'success');
     await renderInventory();
+    invRestorePageScrollPosition(pageScrollSnapshot);
   } catch (e) {
     showToast(e.message || '更新失败', 'error');
   }
@@ -9173,6 +9852,7 @@ async function invSubmitOutbound() {
     contact_name: document.getElementById('invContactName')?.value || null,
     contact_phone: document.getElementById('invContactPhone')?.value || null,
     logistics_method: document.getElementById('invLogistics')?.value || null,
+    tracking_number: (document.getElementById('invTrackingNo')?.value || '').trim() || null,
     remarks: document.getElementById('invObRemarks')?.value || null,
   };
   if (lm === 'activity' && !baseBody.project_code) {
@@ -9181,6 +9861,10 @@ async function invSubmitOutbound() {
   }
   if (lm === 'standalone' && !baseBody.purpose) {
     showToast('请填写非活动信息', 'warning');
+    return;
+  }
+  if (String(baseBody.logistics_method || '') === '顺丰' && !String(baseBody.tracking_number || '').trim()) {
+    showToast('顺丰发货请填写单号', 'warning');
     return;
   }
   const editHidden = document.getElementById('invOutboundEditOrderId');
@@ -9249,6 +9933,7 @@ async function invSubmitOutbound() {
         contact_name: '',
         contact_phone: '',
         logistics_method: INV_LOGISTICS_OPTS[0],
+        tracking_number: '',
         remarks: '',
         hint_msg: '',
       };
@@ -9298,7 +9983,7 @@ async function invSubmitOutbound() {
             logistics_company: logisticsCompany,
             brand: sampleWh?.brand_code || 'PHD',
             express_company: logisticsCompany,
-            tracking_number: null,
+            tracking_number: baseBody.tracking_number || null,
             origin_city: sampleWh ? `${sampleWh.region || ''}仓` : null,
             destination_city: baseBody.recipient_city || null,
             shipping_date: todayDateInputValue(),
@@ -9329,6 +10014,7 @@ async function invSubmitOutbound() {
       contact_name: '',
       contact_phone: '',
       logistics_method: INV_LOGISTICS_OPTS[0],
+      tracking_number: '',
       remarks: '',
       hint_msg: '',
     };
@@ -9762,6 +10448,52 @@ async function invSubmitAddWineToWarehouse() {
   }
 }
 
+function invCapturePageScrollPosition(anchorItemId) {
+  const container = document.getElementById('pageContainer');
+  const scrollingEl = document.scrollingElement || document.documentElement;
+  const listWrap = container ? container.querySelector('.inv-items-table-wrap') : null;
+  const normalizedAnchorId = Number(anchorItemId);
+  const anchorEl =
+    container && Number.isFinite(normalizedAnchorId) && normalizedAnchorId > 0
+      ? container.querySelector(`[data-item-id="${normalizedAnchorId}"]`)
+      : null;
+  return {
+    containerTop: container ? container.scrollTop : null,
+    pageTop: Math.max(0, window.scrollY || scrollingEl?.scrollTop || 0),
+    listWrapTop: listWrap ? listWrap.scrollTop : null,
+    anchorItemId: Number.isFinite(normalizedAnchorId) && normalizedAnchorId > 0 ? normalizedAnchorId : null,
+    anchorTop: anchorEl ? anchorEl.getBoundingClientRect().top : null,
+  };
+}
+
+function invRestorePageScrollPosition(snapshot) {
+  if (!snapshot) return;
+  const restoreOnce = () => {
+    const container = document.getElementById('pageContainer');
+    if (container && Number.isFinite(snapshot.containerTop)) {
+      container.scrollTop = Math.max(0, snapshot.containerTop);
+    }
+    const listWrap = container ? container.querySelector('.inv-items-table-wrap') : null;
+    if (listWrap && Number.isFinite(snapshot.listWrapTop)) {
+      listWrap.scrollTop = Math.max(0, snapshot.listWrapTop);
+    }
+    const targetTop = Number.isFinite(snapshot.pageTop) ? Math.max(0, snapshot.pageTop) : 0;
+    window.scrollTo(0, targetTop);
+    if (container && snapshot.anchorItemId && Number.isFinite(snapshot.anchorTop)) {
+      const anchorEl = container.querySelector(`[data-item-id="${snapshot.anchorItemId}"]`);
+      if (anchorEl) {
+        const nowTop = anchorEl.getBoundingClientRect().top;
+        const delta = nowTop - snapshot.anchorTop;
+        if (Math.abs(delta) > 1) window.scrollBy(0, delta);
+      }
+    }
+  };
+  requestAnimationFrame(() => {
+    restoreOnce();
+    requestAnimationFrame(restoreOnce);
+  });
+}
+
 async function invSaveEditItem() {
   if (!hasWriteAccess()) {
     showToast('仅管理员可保存库存主数据', 'warning');
@@ -9805,6 +10537,7 @@ async function invSaveEditItem() {
       statsLostOverride = invMergeStatOverride(statsLostOverride, Number.isFinite(aggL) ? aggL : 0);
     }
   }
+  const pageScrollSnapshot = invCapturePageScrollPosition(Number.isFinite(id) && id > 0 ? id : null);
   try {
     if (mode === 'new' || !Number.isFinite(id) || id <= 0) {
       if (!inventoryPageState.warehouseId) {
@@ -9838,6 +10571,7 @@ async function invSaveEditItem() {
     }
     invCancelEditItem();
     await renderInventory();
+    invRestorePageScrollPosition(pageScrollSnapshot);
   } catch (e) {
     showToast(e.message || '保存失败', 'error');
   }
@@ -9849,10 +10583,12 @@ async function invDeleteItem(id) {
     return;
   }
   if (!window.confirm('删除该物料？')) return;
+  const pageScrollSnapshot = invCapturePageScrollPosition(id);
   try {
     await api('DELETE', `/inventory/items/${id}`);
     showToast('已删除', 'success');
     await renderInventory();
+    invRestorePageScrollPosition(pageScrollSnapshot);
   } catch (e) {
     showToast(e.message || '删除失败', 'error');
   }
@@ -10012,6 +10748,24 @@ function invRevokePdfPreviewBlobUrl() {
   invPdfPreviewBlob = null;
 }
 
+function invFilenameFromDisposition(cd, fallbackName) {
+  const raw = String(cd || '');
+  if (!raw) return fallbackName;
+  // RFC 5987: filename*=UTF-8''...
+  const star = raw.match(/filename\*\s*=\s*UTF-8''([^;]+)/i);
+  if (star && star[1]) {
+    try {
+      return decodeURIComponent(star[1].trim().replace(/^["']|["']$/g, ''));
+    } catch (_) {
+      return star[1].trim().replace(/^["']|["']$/g, '');
+    }
+  }
+  // fallback: filename="..."
+  const normal = raw.match(/filename\s*=\s*("?)([^";]+)\1/i);
+  if (normal && normal[2]) return normal[2].trim();
+  return fallbackName;
+}
+
 function invResetOutboundPdfModal() {
   invRevokePdfPreviewBlobUrl();
   const frame = document.getElementById('invOutboundPdfFrame');
@@ -10063,6 +10817,10 @@ async function invDownloadPdf(id) {
       const t = await res.text();
       throw new Error(t.slice(0, 160) || '服务器未返回 PDF');
     }
+    const downloadName = invFilenameFromDisposition(
+      res.headers.get('content-disposition'),
+      `出库单_${id}.pdf`
+    );
     const blob = await res.blob();
     invPdfPreviewBlob = blob;
     const blobUrl = URL.createObjectURL(blob);
@@ -10078,7 +10836,7 @@ async function invDownloadPdf(id) {
         const url = URL.createObjectURL(invPdfPreviewBlob);
         const a = document.createElement('a');
         a.href = url;
-        a.download = `出库单_${id}.pdf`;
+        a.download = downloadName;
         document.body.appendChild(a);
         a.click();
         a.remove();

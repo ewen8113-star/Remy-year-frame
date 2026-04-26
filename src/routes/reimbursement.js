@@ -2,6 +2,10 @@ const express = require('express');
 const router = express.Router();
 const db = require('../config/database');
 
+const PAYMENT_TYPES = ['personal_reimbursement', 'corporate_payment'];
+const COST_MODULES = ['activity', 'warehouse', 'logistics', 'prop_repair', 'general'];
+const CLAIM_STATUSES = ['draft', 'submitted', 'paid', 'rejected'];
+
 /** 与 public/app.js COST_DETAIL_GROUPS 键一致 */
 const COST_DETAIL_KEYS = [
   'supervisor', 'pg', 'parttime', 'bartender', 'photo', 'cloud_album_edit', 'performance',
@@ -89,7 +93,23 @@ function serializeRow(row) {
   r.invoices = parseJsonArray(r.invoices);
   r.merged_into_activity = r.merged_into_activity === 1 || r.merged_into_activity === true ? 1 : 0;
   r.has_invoice = r.has_invoice === 1 || r.has_invoice === true ? 1 : 0;
+  r.payment_type = PAYMENT_TYPES.includes(String(r.payment_type || '')) ? String(r.payment_type) : 'personal_reimbursement';
+  r.cost_module = COST_MODULES.includes(String(r.cost_module || '')) ? String(r.cost_module) : 'activity';
+  r.claim_status = CLAIM_STATUSES.includes(String(r.claim_status || '')) ? String(r.claim_status) : 'draft';
   return r;
+}
+
+function normalizePaymentType(v) {
+  const s = v == null ? '' : String(v).trim();
+  return PAYMENT_TYPES.includes(s) ? s : 'personal_reimbursement';
+}
+function normalizeCostModule(v) {
+  const s = v == null ? '' : String(v).trim();
+  return COST_MODULES.includes(s) ? s : 'activity';
+}
+function normalizeClaimStatus(v) {
+  const s = v == null ? '' : String(v).trim();
+  return CLAIM_STATUSES.includes(s) ? s : 'draft';
 }
 
 async function mergeReimbIntoActivity(conn, activityId, reimbCostDetails) {
@@ -173,6 +193,9 @@ router.post('/', async (req, res) => {
       year_frame_id,
       activity_id,
       reimbursement_type,
+      payment_type,
+      cost_module,
+      claim_status,
       city,
       brand,
       date,
@@ -219,6 +242,10 @@ router.post('/', async (req, res) => {
       return res.status(400).json({ error: '勾选同步到场次成本时，必须选择关联场次' });
     }
 
+    const paymentType = normalizePaymentType(payment_type);
+    const costModule = normalizeCostModule(cost_module);
+    const claimStatus = normalizeClaimStatus(claim_status);
+
     let act = null;
     if (actId) {
       const [acts] = await conn.query(
@@ -247,14 +274,17 @@ router.post('/', async (req, res) => {
 
     const [result] = await conn.query(
       `INSERT INTO reimbursements (
-        year_frame_id, activity_id, reimbursement_type, city, brand, amount, date, related_project_code,
+        year_frame_id, activity_id, reimbursement_type, payment_type, cost_module, claim_status, city, brand, amount, date, related_project_code,
         props, printing, express, other,
         cost_details, merged_into_activity, has_invoice, invoices, remarks
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, 0, ?, ?, ?, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, 0, ?, ?, ?, ?, ?)`,
       [
         year_frame_id,
         actId,
         reimbursement_type || null,
+        paymentType,
+        costModule,
+        claimStatus,
         cityVal,
         brandVal,
         amount,
@@ -300,6 +330,9 @@ router.put('/:id', async (req, res) => {
     const {
       activity_id,
       reimbursement_type,
+      payment_type,
+      cost_module,
+      claim_status,
       city,
       brand,
       date,
@@ -334,6 +367,9 @@ router.put('/:id', async (req, res) => {
     }
 
     const sync = !!(sync_to_activity === true || sync_to_activity === 1 || String(sync_to_activity) === '1');
+    const paymentType = normalizePaymentType(payment_type != null ? payment_type : ex.payment_type);
+    const costModule = normalizeCostModule(cost_module != null ? cost_module : ex.cost_module);
+    const claimStatus = normalizeClaimStatus(claim_status != null ? claim_status : ex.claim_status);
     const incomingActId = activity_id == null || activity_id === '' ? null : Number(activity_id);
     const actId = incomingActId == null ? (ex.activity_id ? Number(ex.activity_id) : null) : incomingActId;
     if (alreadyMerged) {
@@ -378,7 +414,8 @@ router.put('/:id', async (req, res) => {
     await conn.query(
       `UPDATE reimbursements SET
         activity_id = ?,
-        reimbursement_type = ?, city = ?, brand = ?, amount = ?,
+        reimbursement_type = ?, payment_type = ?, cost_module = ?, claim_status = ?,
+        city = ?, brand = ?, amount = ?,
         date = ?, related_project_code = ?,
         props = 0, printing = 0, express = 0, other = 0,
         cost_details = ?, merged_into_activity = ?, has_invoice = ?, invoices = ?,
@@ -387,6 +424,9 @@ router.put('/:id', async (req, res) => {
       [
         actId,
         reimbursement_type || null,
+        paymentType,
+        costModule,
+        claimStatus,
         cityVal || null,
         brandVal,
         amount,
@@ -426,11 +466,6 @@ router.delete('/:id', async (req, res) => {
     );
     if (!rows.length) {
       return res.status(404).json({ error: '记录不存在' });
-    }
-    if (rows[0].merged_into_activity === 1 || rows[0].merged_into_activity === true) {
-      return res.status(400).json({
-        error: '该报销已同步到场次成本，请先在场次成本中手动调整后再删除（避免数据不一致）',
-      });
     }
     await db.query('DELETE FROM reimbursements WHERE id = ?', [id]);
     res.json({ message: '删除成功' });

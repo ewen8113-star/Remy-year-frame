@@ -4,6 +4,19 @@ const db = require('../config/database');
 
 const ALLOWED_TYPES = ['晚宴', '品鉴', '培训', '纯设计'];
 const FISCAL_MONTH_LABELS = ['4月', '5月', '6月', '7月', '8月', '9月', '10月', '11月', '12月', '1月', '2月', '3月'];
+const COST_DETAIL_KEYS = [
+  'supervisor', 'pg', 'parttime', 'bartender', 'photo', 'cloud_album_edit', 'performance',
+  'travel_supervisor', 'travel_company',
+  'structure', 'print', 'spray',
+  'floral', 'payment', 'tasting',
+  'warehouse', 'express', 'logistics',
+];
+const COST_BUCKET_KEYS = {
+  logistics: ['warehouse', 'express', 'logistics'],
+  personnel: ['supervisor', 'pg', 'parttime', 'bartender', 'photo', 'cloud_album_edit', 'performance', 'travel_supervisor', 'travel_company'],
+  procurement: ['structure', 'print', 'spray', 'floral', 'tasting'],
+  other: ['payment'],
+};
 
 function parseCsv(v) {
   if (v == null || v === '') return [];
@@ -116,6 +129,80 @@ function mapTrendRowsToActivityByMonth(trendRows) {
   });
 }
 
+function round2(n) {
+  return Math.round((parseFloat(n) || 0) * 100) / 100;
+}
+
+function ratio(numerator, denominator) {
+  const den = Number(denominator || 0);
+  if (den <= 0) return 0;
+  return Number(numerator || 0) / den;
+}
+
+function parseCostDetails(raw) {
+  if (!raw) return {};
+  if (typeof raw === 'object') return raw;
+  try {
+    const obj = JSON.parse(raw);
+    return obj && typeof obj === 'object' ? obj : {};
+  } catch {
+    return {};
+  }
+}
+
+function sumKeys(obj, keys) {
+  return round2((keys || []).reduce((s, key) => s + (parseFloat(obj[key]) || 0), 0));
+}
+
+function buildActivityFinancialRows(rows) {
+  return (rows || []).map((r) => {
+    const costDetails = parseCostDetails(r.cost_details);
+    const logisticsCost = sumKeys(costDetails, COST_BUCKET_KEYS.logistics);
+    const personnelCost = sumKeys(costDetails, COST_BUCKET_KEYS.personnel);
+    const procurementCost = sumKeys(costDetails, COST_BUCKET_KEYS.procurement);
+    const detailsKnown = COST_DETAIL_KEYS.some((k) => (parseFloat(costDetails[k]) || 0) > 0);
+    const totalCost = round2(r.total_cost || 0);
+    const baselineCost = round2(logisticsCost + personnelCost + procurementCost);
+    const otherCost = detailsKnown ? round2((parseFloat(costDetails.payment) || 0)) : totalCost;
+    const mergedTotalCost = detailsKnown ? round2(baselineCost + otherCost) : totalCost;
+    const revenue = round2(r.quoted_price || 0);
+    const grossProfit = round2(revenue - mergedTotalCost);
+    return {
+      id: Number(r.id),
+      projectCode: r.project_code || '',
+      activityName: r.client_name || r.client || r.activity_type || '未命名活动',
+      activityType: r.activity_type || '',
+      date: r.date || null,
+      period: r.period || '日常',
+      region: r.region || '未分区',
+      city: r.city || '未分城市',
+      brand: r.brand || '',
+      executor: r.executor || '',
+      quotedPrice: revenue,
+      logisticsCost,
+      personnelCost,
+      procurementCost,
+      otherCost,
+      totalCost: mergedTotalCost,
+      grossProfit,
+      grossMarginRate: ratio(grossProfit, revenue),
+    };
+  });
+}
+
+function aggregateRegionRows(rows, keyBuilder) {
+  const map = new Map();
+  (rows || []).forEach((row) => {
+    const key = keyBuilder(row);
+    const cur = map.get(key) || { sessions: 0, revenue: 0, cost: 0 };
+    cur.sessions += 1;
+    cur.revenue = round2(cur.revenue + row.quotedPrice);
+    cur.cost = round2(cur.cost + row.totalCost);
+    map.set(key, cur);
+  });
+  return map;
+}
+
 function buildWarehouseFilters(query) {
   const where = ['1=1'];
   const params = [];
@@ -176,6 +263,19 @@ router.get('/', async (req, res) => {
   try {
     const actFilter = buildActivityFilters(req.query);
     const whFilter = buildWarehouseFilters(req.query);
+    const [activityFinancialSourceRows] = await db.query(
+      `SELECT
+        a.id, a.project_code, a.activity_type, a.client_name, a.client, a.date, a.period,
+        a.region, a.city, a.brand, a.executor,
+        COALESCE(a.quoted_price, 0) AS quoted_price,
+        COALESCE(a.total_cost, 0) AS total_cost,
+        a.cost_details
+       FROM activities a
+       WHERE ${actFilter.whereClause}
+       ORDER BY a.date DESC`,
+      actFilter.params
+    );
+    const detailRows = buildActivityFinancialRows(activityFinancialSourceRows);
 
     const [summaryActivityRows] = await db.query(
       `SELECT COUNT(*) AS activity_count, COALESCE(SUM(a.quoted_price), 0) AS activity_revenue
@@ -370,6 +470,85 @@ router.get('/', async (req, res) => {
     const warehouseRevenue = Number(summaryWarehouseRows[0]?.warehouse_revenue || 0);
     const propRepairQuoted = Number(summaryPropRepairRows[0]?.prop_repair_quoted || 0);
     const activityCount = Number(summaryActivityRows[0]?.activity_count || 0);
+    const detailRevenue = round2(detailRows.reduce((s, r) => s + r.quotedPrice, 0));
+    const detailCost = round2(detailRows.reduce((s, r) => s + r.totalCost, 0));
+    const logisticsCost = round2(detailRows.reduce((s, r) => s + r.logisticsCost, 0));
+    const personnelCost = round2(detailRows.reduce((s, r) => s + r.personnelCost, 0));
+    const procurementCost = round2(detailRows.reduce((s, r) => s + r.procurementCost, 0));
+    const otherCost = round2(detailRows.reduce((s, r) => s + r.otherCost, 0));
+    const grossProfit = round2(detailRevenue - detailCost);
+
+    const regionSummaryMap = aggregateRegionRows(detailRows, (row) => row.region);
+    const regionSummary = [...regionSummaryMap.entries()]
+      .map(([region, val]) => {
+        const gp = round2(val.revenue - val.cost);
+        return {
+          region,
+          sessions: val.sessions,
+          revenue: round2(val.revenue),
+          cost: round2(val.cost),
+          grossProfit: gp,
+          grossMarginRate: ratio(gp, val.revenue),
+        };
+      })
+      .sort((a, b) => b.revenue - a.revenue);
+
+    const regionCityMap = aggregateRegionRows(detailRows, (row) => `${row.region}__${row.city}`);
+    const regionCityBreakdown = [...regionCityMap.entries()]
+      .map(([key, val]) => {
+        const [region, city] = key.split('__');
+        const gp = round2(val.revenue - val.cost);
+        return {
+          region,
+          city,
+          sessions: val.sessions,
+          revenue: round2(val.revenue),
+          cost: round2(val.cost),
+          grossProfit: gp,
+          grossMarginRate: ratio(gp, val.revenue),
+        };
+      })
+      .sort((a, b) => {
+        if (a.region === b.region) return b.revenue - a.revenue;
+        return String(a.region).localeCompare(String(b.region), 'zh-CN');
+      });
+
+    const monthlySummaryMap = new Map();
+    detailRows.forEach((row) => {
+      if (!row.date) return;
+      const dt = new Date(row.date);
+      if (Number.isNaN(dt.getTime())) return;
+      const ym = `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}`;
+      const cur = monthlySummaryMap.get(ym) || { sessions: 0, revenue: 0, cost: 0 };
+      cur.sessions += 1;
+      cur.revenue = round2(cur.revenue + row.quotedPrice);
+      cur.cost = round2(cur.cost + row.totalCost);
+      monthlySummaryMap.set(ym, cur);
+    });
+    const trendByMonth = [...monthlySummaryMap.entries()]
+      .sort(([a], [b]) => String(a).localeCompare(String(b)))
+      .map(([month, val]) => {
+        const gp = round2(val.revenue - val.cost);
+        return {
+          month,
+          sessions: val.sessions,
+          revenue: round2(val.revenue),
+          cost: round2(val.cost),
+          grossProfit: gp,
+          grossMarginRate: ratio(gp, val.revenue),
+        };
+      });
+
+    const costCompositionRaw = [
+      { costType: '物流成本', amount: logisticsCost },
+      { costType: '人员成本', amount: personnelCost },
+      { costType: '采购成本', amount: procurementCost },
+      { costType: '其他成本', amount: otherCost },
+    ];
+    const costComposition = costCompositionRaw.map((item) => ({
+      ...item,
+      ratio: ratio(item.amount, detailCost),
+    }));
 
     res.json({
       summary: {
@@ -380,6 +559,23 @@ router.get('/', async (req, res) => {
         propRepairQuoted,
         regionShare,
       },
+      overview: {
+        totalSessions: detailRows.length,
+        totalRevenue: detailRevenue,
+        totalCost: detailCost,
+        grossProfit,
+        grossMarginRate: ratio(grossProfit, detailRevenue),
+      },
+      metricDefinition: {
+        revenue: '活动报价合计（activities.quoted_price）',
+        cost: '场次总成本合计（activities.total_cost；若 cost_details 存在则拆分物流/人员/采购/其他）',
+        grossMarginRate: '(收入-成本)/收入',
+      },
+      regionSummary,
+      trendByMonth,
+      costComposition,
+      regionCityBreakdown,
+      detailRows,
       activityByType,
       activityByBrand,
       activityByRegion,

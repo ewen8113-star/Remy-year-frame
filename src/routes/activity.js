@@ -24,6 +24,21 @@ function canonicalStatusFromInput(s) {
   return null;
 }
 
+function todayYmd() {
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, '0');
+  const d = String(now.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+function maybeAutoCompleteStatusByDate(status, dateStr) {
+  const st = String(status || '').trim() || 'pending';
+  const dt = String(dateStr || '').slice(0, 10);
+  if (st !== 'pending' || !/^\d{4}-\d{2}-\d{2}$/.test(dt)) return st;
+  return dt < todayYmd() ? 'completed' : st;
+}
+
 /**
  * 解析前端/lookup 提交的状态。
  * 不再依赖解析 SHOW COLUMNS（部分环境 Type 含 COLLATE 等导致 ENUM 解析为空，误判 deferred 无效）。
@@ -133,19 +148,22 @@ router.post('/', async (req, res) => {
     const {
       year_frame_id, year_frame_code, project_code, activity_type,
       city, brand, client, client_name, venue, date, period, region, belonging, guest_count,
-      quoted_price, executor, remarks, wine_details
+      quoted_price, executor, brand_ambassador, remarks, wine_details, cloud_album_url, cloudAlbumUrl
     } = req.body;
+    const cloudAlbumUrlFinal = String(cloud_album_url != null ? cloud_album_url : cloudAlbumUrl || '').trim() || null;
+    const brandAmbassadorFinal = String(brand_ambassador || '').trim() || null;
     
+    const finalStatus = maybeAutoCompleteStatusByDate('pending', date);
     const [result] = await db.query(`
       INSERT INTO activities (
         year_frame_id, year_frame_code, project_code, activity_type,
         city, brand, client, client_name, venue, date, period, region, belonging, guest_count,
-        quoted_price, executor, remarks, wine_details
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        quoted_price, executor, brand_ambassador, status, remarks, wine_details, cloud_album_url
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `, [
       year_frame_id, year_frame_code, project_code, activity_type,
       city, brand, client, client_name, venue, date, period || '日常', region || null, belonging || null, guest_count,
-      quoted_price, executor, remarks, JSON.stringify(wine_details || {})
+      quoted_price, executor, brandAmbassadorFinal, finalStatus, remarks, JSON.stringify(wine_details || {}), cloudAlbumUrlFinal
     ]);
     
     res.json({ id: result.insertId, message: '创建成功' });
@@ -173,6 +191,23 @@ router.put('/:id', async (req, res) => {
         req.body.status = out.value;
       }
     }
+    if (req.body && req.body.cloudAlbumUrl !== undefined && req.body.cloud_album_url === undefined) {
+      req.body.cloud_album_url = req.body.cloudAlbumUrl;
+    }
+    if (req.body && req.body.brand_ambassador !== undefined) {
+      req.body.brand_ambassador = String(req.body.brand_ambassador || '').trim() || null;
+    }
+    // 若用户把状态设为待执行，但日期已早于今天，则自动改为已完成
+    if (req.body && (req.body.status !== undefined || req.body.date !== undefined)) {
+      const [rows] = await db.query('SELECT date, status FROM activities WHERE id = ? LIMIT 1', [id]);
+      const current = rows && rows[0] ? rows[0] : {};
+      const effectiveDate = req.body.date !== undefined ? req.body.date : current.date;
+      const effectiveStatus = req.body.status !== undefined ? req.body.status : current.status;
+      const autoStatus = maybeAutoCompleteStatusByDate(effectiveStatus, effectiveDate);
+      if (String(autoStatus) !== String(effectiveStatus)) {
+        req.body.status = autoStatus;
+      }
+    }
     const allowedFields = [
       'year_frame_code',
       'project_code',
@@ -191,10 +226,12 @@ router.put('/:id', async (req, res) => {
       'total_cost',
       'no_cost',
       'executor',
+      'brand_ambassador',
       'status',
       'remarks',
       'wine_details',
-      'cost_details'
+      'cost_details',
+      'cloud_album_url'
     ];
 
     const keys = Object.keys(req.body || {}).filter(
@@ -235,6 +272,32 @@ router.delete('/:id', async (req, res) => {
     const { id } = req.params;
     await db.query('DELETE FROM activities WHERE id = ?', [id]);
     res.json({ message: '删除成功' });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 自动将过期未完成场次置为已完成（仅 pending -> completed）
+router.post('/auto-complete-overdue', async (req, res) => {
+  try {
+    const { yearFrameId } = req.body || {};
+    const params = [];
+    let sql = `
+      UPDATE activities
+      SET status = 'completed'
+      WHERE status = 'pending'
+        AND date IS NOT NULL
+        AND date < CURDATE()
+    `;
+    if (yearFrameId) {
+      sql += ' AND year_frame_id = ?';
+      params.push(parseInt(yearFrameId, 10));
+    }
+    const [r] = await db.query(sql, params);
+    res.json({
+      updated: Number(r?.affectedRows || 0),
+      message: `已自动完成 ${Number(r?.affectedRows || 0)} 条过期场次`,
+    });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }

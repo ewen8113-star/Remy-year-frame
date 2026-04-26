@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>报销登记原型（批次）</title>
+  <style>
+    :root {
+      --bg: #f6f8fb;
+      --card: #ffffff;
+      --line: #e5e7eb;
+      --text: #111827;
+      --muted: #6b7280;
+      --primary: #1f2937;
+      --accent: #2563eb;
+      --ok: #10b981;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif; background: var(--bg); color: var(--text); }
+    .page { max-width: 1280px; margin: 24px auto; padding: 0 16px; }
+    .title { font-size: 24px; font-weight: 700; margin: 0 0 6px; }
+    .sub { margin: 0 0 16px; color: var(--muted); font-size: 13px; }
+    .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 16px; margin-bottom: 14px; }
+    .h { font-size: 16px; font-weight: 600; margin: 0 0 12px; }
+    .grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+    .full { grid-column: 1 / -1; }
+    .f label { display: block; margin-bottom: 6px; color: var(--muted); font-size: 12px; }
+    .input, .select, .ta { width: 100%; border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; font-size: 14px; background: #fff; }
+    .ta { min-height: 72px; resize: vertical; }
+    .row { display: flex; gap: 8px; align-items: center; }
+    .btn { border: 1px solid var(--line); background: #fff; border-radius: 8px; padding: 8px 12px; font-size: 13px; cursor: pointer; }
+    .btn.primary { background: var(--primary); color: #fff; border-color: var(--primary); }
+    .btn.link { color: var(--accent); border-color: #c7d2fe; background: #eef2ff; }
+    .pill { display: inline-block; border-radius: 999px; padding: 3px 10px; font-size: 12px; border: 1px solid var(--line); color: var(--muted); }
+    .table-wrap { overflow: auto; border: 1px solid var(--line); border-radius: 10px; }
+    table { border-collapse: collapse; width: 100%; min-width: 980px; background: #fff; }
+    th, td { border-bottom: 1px solid var(--line); padding: 10px; font-size: 13px; text-align: left; vertical-align: top; }
+    th { background: #f9fafb; color: #374151; font-weight: 600; }
+    td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+    .sum { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-top: 12px; }
+    .kpi { border: 1px solid var(--line); border-radius: 8px; padding: 10px; background: #fff; }
+    .kpi .k { color: var(--muted); font-size: 12px; }
+    .kpi .v { margin-top: 6px; font-size: 18px; font-weight: 700; }
+    .v.ok { color: var(--ok); }
+    .v.main { color: var(--primary); }
+    .foot { display: flex; justify-content: space-between; gap: 8px; margin-top: 14px; }
+    @media (max-width: 1100px) { .grid, .sum { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+    @media (max-width: 680px) { .grid, .sum { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <h1 class="title">报销登记（批次模式）</h1>
+    <p class="sub">效果稿（不接系统）｜一张报销单可覆盖多场次/一个时段，支持同步到场次成本与财务PDF出单。</p>
+
+    <section class="card">
+      <h2 class="h">1) 报销单头信息</h2>
+      <div class="grid">
+        <div class="f">
+          <label>报销单号</label>
+          <input class="input" value="RB-2026-04-021" />
+        </div>
+        <div class="f">
+          <label>报销人</label>
+          <input class="input" value="张三" />
+        </div>
+        <div class="f">
+          <label>提交日期</label>
+          <input class="input" type="date" value="2026-04-21" />
+        </div>
+        <div class="f">
+          <label>品牌</label>
+          <select class="select"><option>PHD</option><option>X.O</option><option>CLUB</option></select>
+        </div>
+        <div class="f">
+          <label>报销时段开始</label>
+          <input class="input" type="date" value="2026-04-01" />
+        </div>
+        <div class="f">
+          <label>报销时段结束</label>
+          <input class="input" type="date" value="2026-04-14" />
+        </div>
+        <div class="f">
+          <label>发票类型</label>
+          <select class="select"><option>专票</option><option>普票</option><option>无发票</option></select>
+        </div>
+        <div class="f">
+          <label>状态</label>
+          <span class="pill">草稿</span>
+        </div>
+        <div class="f full">
+          <label>备注</label>
+          <textarea class="ta">本批次覆盖 4/1-4/14 期间上海/杭州共 6 场。</textarea>
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2 class="h">2) 场次分配明细（多行）</h2>
+      <div class="row" style="margin-bottom:10px">
+        <button class="btn">+ 添加明细行</button>
+        <button class="btn">按时段批量带入场次</button>
+        <button class="btn link">自动平均分摊到已选 6 场</button>
+      </div>
+
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>项目编号</th>
+              <th>城市 / 日期</th>
+              <th class="num">人员</th>
+              <th class="num">采购</th>
+              <th class="num">物流</th>
+              <th class="num">其他</th>
+              <th class="num">小计</th>
+              <th>同步到场次成本</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>N230530-RM-CLUB 260420上海CLUB晚宴</td>
+              <td>上海 · 2026-04-20</td>
+              <td class="num">2,000</td><td class="num">1,200</td><td class="num">500</td><td class="num">0</td><td class="num">3,700</td>
+              <td><input type="checkbox" checked></td><td><button class="btn">删除</button></td>
+            </tr>
+            <tr>
+              <td>N220630-RC-PHD 260417贵阳PHD晚宴</td>
+              <td>贵阳 · 2026-04-17</td>
+              <td class="num">1,500</td><td class="num">900</td><td class="num">600</td><td class="num">300</td><td class="num">3,300</td>
+              <td><input type="checkbox" checked></td><td><button class="btn">删除</button></td>
+            </tr>
+            <tr>
+              <td>（公共池，不挂场次）</td>
+              <td>—</td>
+              <td class="num">0</td><td class="num">800</td><td class="num">0</td><td class="num">200</td><td class="num">1,000</td>
+              <td><input type="checkbox"></td><td><button class="btn">删除</button></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="sum">
+        <div class="kpi"><div class="k">明细行数</div><div class="v main">3</div></div>
+        <div class="kpi"><div class="k">覆盖场次数</div><div class="v main">2</div></div>
+        <div class="kpi"><div class="k">本单总金额</div><div class="v main">¥8,000.00</div></div>
+        <div class="kpi"><div class="k">将同步到场次</div><div class="v ok">2 行</div></div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2 class="h">3) 财务模板输出</h2>
+      <div class="row">
+        <button class="btn">预览报销模板</button>
+        <button class="btn">导出CSV明细</button>
+        <button class="btn primary">导出财务PDF</button>
+      </div>
+    </section>
+
+    <div class="foot">
+      <button class="btn">保存草稿</button>
+      <div class="row">
+        <button class="btn">取消</button>
+        <button class="btn primary">提交报销单</button>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

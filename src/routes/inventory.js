@@ -97,14 +97,32 @@ const upload = multer({
   },
 });
 
-const pdfFonts = {
-  fangzhen: {
-    normal: 'fzhei-jt.TTF',
-    bold: 'fzhei-jt.TTF',
-    italics: 'fzhei-jt.TTF',
-    bolditalics: 'fzhei-jt.TTF',
-  },
-};
+const systemUnicodeFontPath = '/System/Library/Fonts/Supplemental/Arial Unicode.ttf';
+const hasSystemUnicodeFont = fs.existsSync(systemUnicodeFontPath);
+
+const pdfFonts = hasSystemUnicodeFont
+  ? {
+      unicode: {
+        normal: systemUnicodeFontPath,
+        bold: systemUnicodeFontPath,
+        italics: systemUnicodeFontPath,
+        bolditalics: systemUnicodeFontPath,
+      },
+      fangzhen: {
+        normal: 'fzhei-jt.TTF',
+        bold: 'fzhei-jt.TTF',
+        italics: 'fzhei-jt.TTF',
+        bolditalics: 'fzhei-jt.TTF',
+      },
+    }
+  : {
+      fangzhen: {
+        normal: 'fzhei-jt.TTF',
+        bold: 'fzhei-jt.TTF',
+        italics: 'fzhei-jt.TTF',
+        bolditalics: 'fzhei-jt.TTF',
+      },
+    };
 
 function parseImageUrls(row) {
   if (!row || row.image_urls == null) return [];
@@ -169,6 +187,33 @@ function sqlAggNum(v) {
   if (typeof v === 'bigint') return Number(v);
   const n = Number(v);
   return Number.isFinite(n) ? n : 0;
+}
+
+function compactDateYYMMDD(input) {
+  const d = input ? new Date(input) : new Date();
+  if (Number.isNaN(d.getTime())) return '';
+  const yy = String(d.getFullYear()).slice(-2);
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  return `${yy}${mm}${dd}`;
+}
+
+function extractBrandFromProjectCode(projectCodeRaw) {
+  const s = String(projectCodeRaw || '').toUpperCase().replace(/\s+/g, '');
+  if (!s) return '';
+  if (s.includes('CLUB')) return 'CLUB';
+  if (s.includes('PHD')) return 'PHD';
+  if (s.includes('X.O') || s.includes('XO')) return 'XO';
+  if (s.includes('REMY')) return 'REMY';
+  if (s.includes('RC')) return 'RC';
+  return '';
+}
+
+function safeFilePart(v) {
+  return String(v || '')
+    .trim()
+    .replace(/[\\/:*?"<>|]/g, '')
+    .replace(/\s+/g, '');
 }
 
 /**
@@ -896,6 +941,7 @@ router.post('/outbound', async (req, res) => {
       contact_name,
       contact_phone,
       logistics_method,
+      tracking_number,
       remarks,
       lines,
       year_frame_id,
@@ -912,6 +958,10 @@ router.post('/outbound', async (req, res) => {
     }
     if (lm === 'standalone' && !String(purpose || '').trim()) {
       return res.status(400).json({ error: '非项目出库请填写用途说明' });
+    }
+    const trackingNumber = tracking_number != null && String(tracking_number).trim() !== '' ? String(tracking_number).trim() : null;
+    if (String(logistics_method || '').trim() === '顺丰' && !trackingNumber) {
+      return res.status(400).json({ error: '顺丰发货请填写单号' });
     }
 
     await conn.beginTransaction();
@@ -940,9 +990,9 @@ router.post('/outbound', async (req, res) => {
       `
       INSERT INTO inv_outbound_orders (
         inv_warehouse_id, activity_id, link_mode, project_code, purpose,
-        recipient_city, recipient_address, contact_name, contact_phone, logistics_method,
+        recipient_city, recipient_address, contact_name, contact_phone, logistics_method, tracking_number,
         status, shipped_at, operator, remarks
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'shipped', NOW(), ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'shipped', NOW(), ?, ?)
     `,
       [
         headerWhId,
@@ -955,6 +1005,7 @@ router.post('/outbound', async (req, res) => {
         contact_name || null,
         contact_phone || null,
         logistics_method || null,
+        trackingNumber,
         op,
         remarks || null,
       ]
@@ -1081,7 +1132,7 @@ router.get('/outbound', async (req, res) => {
     const yfId = parseInt(yfRaw, 10);
     let sql = `
       SELECT o.id, o.activity_id, o.project_code, o.purpose, o.link_mode, o.status, o.shipped_at, o.recipient_city,
-             o.contact_name, o.logistics_method, o.created_at,
+             o.contact_name, o.logistics_method, o.tracking_number, o.created_at,
              wh.region, bi.brand_code,
              act.activity_date AS activity_date,
              act.city AS activity_city,
@@ -1305,6 +1356,7 @@ router.put('/outbound/:id', async (req, res) => {
       contact_name,
       contact_phone,
       logistics_method,
+      tracking_number,
       remarks,
       lines,
       year_frame_id,
@@ -1321,6 +1373,10 @@ router.put('/outbound/:id', async (req, res) => {
     }
     if (lm === 'standalone' && !String(purpose || '').trim()) {
       return res.status(400).json({ error: '请填写用途说明' });
+    }
+    const trackingNumber = tracking_number != null && String(tracking_number).trim() !== '' ? String(tracking_number).trim() : null;
+    if (String(logistics_method || '').trim() === '顺丰' && !trackingNumber) {
+      return res.status(400).json({ error: '顺丰发货请填写单号' });
     }
 
     await conn.beginTransaction();
@@ -1383,7 +1439,7 @@ router.put('/outbound/:id', async (req, res) => {
       UPDATE inv_outbound_orders SET
         inv_warehouse_id = ?, activity_id = ?, link_mode = ?, project_code = ?, purpose = ?,
         recipient_city = ?, recipient_address = ?, contact_name = ?, contact_phone = ?,
-        logistics_method = ?, remarks = ?, operator = ?
+        logistics_method = ?, tracking_number = ?, remarks = ?, operator = ?
       WHERE id = ?
     `,
       [
@@ -1397,6 +1453,7 @@ router.put('/outbound/:id', async (req, res) => {
         contact_name || null,
         contact_phone || null,
         logistics_method || null,
+        trackingNumber,
         remarks || null,
         op,
         orderId,
@@ -1462,7 +1519,7 @@ router.delete('/outbound/:id', async (req, res) => {
 
     const [retRows] = await conn.query(
       `
-      SELECT rl.qty_empty_recovered, ol.item_id
+      SELECT rl.qty_return, rl.qty_empty_recovered, rl.empty_bottle_item_id, ol.item_id
       FROM inv_return_lines rl
       INNER JOIN inv_return_batches rb ON rb.id = rl.batch_id
       INNER JOIN inv_outbound_lines ol ON ol.id = rl.outbound_line_id
@@ -1474,19 +1531,33 @@ router.delete('/outbound/:id', async (req, res) => {
     for (const row of retRows) {
       const itemId = parseInt(row.item_id, 10);
       if (!Number.isFinite(itemId)) continue;
+      const qr = Math.max(0, parseInt(row.qty_return, 10) || 0);
       const qe = Math.max(0, parseInt(row.qty_empty_recovered, 10) || 0);
-      if (qe > 0) {
-        let src = itemCache.get(itemId);
-        if (!src) {
-          const [srcRows] = await conn.query(
-            'SELECT id, inv_warehouse_id, name, dimensions FROM inv_items WHERE id = ? LIMIT 1',
-            [itemId]
-          );
-          if (!srcRows.length) throw new Error(`物料 #${itemId} 不存在，无法冲销空瓶回收`);
-          src = srcRows[0];
-          itemCache.set(itemId, src);
+      if (qr > 0) {
+        const [srcLock] = await conn.query('SELECT id, quantity_on_hand FROM inv_items WHERE id = ? FOR UPDATE', [itemId]);
+        if (!srcLock.length) throw new Error(`物料 #${itemId} 不存在，无法冲销归还入库`);
+        const srcOnHand = Number(srcLock[0].quantity_on_hand);
+        if (srcOnHand < qr) {
+          throw new Error(`物料 #${itemId} 当前库存 ${srcOnHand}，不足以冲销归还入库 ${qr}`);
         }
-        const emptyItemId = await ensureEmptyBottleItem(conn, src);
+        await conn.query('UPDATE inv_items SET quantity_on_hand = quantity_on_hand - ? WHERE id = ?', [qr, itemId]);
+      }
+      if (qe > 0) {
+        let emptyItemId = parseInt(row.empty_bottle_item_id, 10);
+        // 优先按归还明细中实际记录的空瓶物料扣减，避免因名称/规格变更导致扣错条目
+        if (!Number.isFinite(emptyItemId) || emptyItemId <= 0) {
+          let src = itemCache.get(itemId);
+          if (!src) {
+            const [srcRows] = await conn.query(
+              'SELECT id, inv_warehouse_id, name, dimensions FROM inv_items WHERE id = ? LIMIT 1',
+              [itemId]
+            );
+            if (!srcRows.length) throw new Error(`物料 #${itemId} 不存在，无法冲销空瓶回收`);
+            src = srcRows[0];
+            itemCache.set(itemId, src);
+          }
+          emptyItemId = await ensureEmptyBottleItem(conn, src);
+        }
         const [emptyLock] = await conn.query('SELECT id, quantity_on_hand FROM inv_items WHERE id = ? FOR UPDATE', [emptyItemId]);
         if (!emptyLock.length) throw new Error(`空瓶物料 #${emptyItemId} 不存在，无法冲销空瓶回收`);
         const emptyOnHand = Number(emptyLock[0].quantity_on_hand);
@@ -1598,6 +1669,10 @@ router.post('/outbound/:id/returns', async (req, res) => {
         [batchId, olId, qr, ql, qd, qk, qe, emptyBottleItemId]
       );
 
+      if (qr > 0) {
+        // 归还数量应回补到原物料库存（与出库扣减相反）
+        await conn.query('UPDATE inv_items SET quantity_on_hand = quantity_on_hand + ? WHERE id = ?', [qr, olRows[0].item_id]);
+      }
       if (qe > 0 && emptyBottleItemId) {
         await conn.query('UPDATE inv_items SET quantity_on_hand = quantity_on_hand + ? WHERE id = ?', [qe, emptyBottleItemId]);
       }
@@ -1676,68 +1751,80 @@ router.get('/outbound/:id/pdf', async (req, res) => {
       );
     }
 
+    const shippedAt = order.shipped_at ? new Date(order.shipped_at) : null;
+    const shippedDateCn =
+      shippedAt && !Number.isNaN(shippedAt.getTime())
+        ? `${shippedAt.getFullYear()}年${shippedAt.getMonth() + 1}月${shippedAt.getDate()}日`
+        : '—';
+
+    const warehouseLabel = whCount > 1 ? `多仓（${whCount}）` : `${order.brand_code || '—'}${order.region || ''}`;
+
+    const lineTableBody = [
+      [
+        { text: '物品名称', style: 'thCenter' },
+        { text: '数量', style: 'thCenter' },
+        { text: '规格/尺寸', style: 'thCenter' },
+        { text: '说明', style: 'thCenter' },
+      ],
+    ];
+    lines.forEach((ln) => {
+      lineTableBody.push([
+        { text: String(ln.item_name || ''), style: 'tdCenter' },
+        { text: String(ln.quantity || ''), style: 'tdCenter' },
+        { text: String(ln.item_dimensions || '—'), style: 'tdCenter' },
+        { text: String(ln.line_note || '—'), style: 'tdCenter' },
+      ]);
+    });
+
     const docDefinition = {
-      defaultStyle: { font: 'fangzhen', fontSize: 10 },
+      defaultStyle: { font: hasSystemUnicodeFont ? 'unicode' : 'fangzhen', fontSize: 10 },
       content: [
-        { text: '物品出库单', style: 'title', margin: [0, 0, 0, 12] },
-        {
-          columns: [
-            {
-              width: '*',
-              stack: [
-                { text: `单号：#${order.id}` },
-                {
-                  text: order.activity_year_label
-                    ? `关联场次年度：${order.activity_year_label}`
-                    : '物品库存：25/26 财年共用数据',
-                },
-              ],
-            },
-            {
-              width: '*',
-              stack: [
-                { text: `出库时间：${order.shipped_at ? String(order.shipped_at).slice(0, 19) : ''}` },
-                { text: `操作人：${order.operator || '—'}` },
-              ],
-            },
-          ],
-        },
-        { text: '\n' },
-        {
-          columns: [
-            {
-              width: '*',
-              stack: [
-                { text: `关联方式：${order.link_mode === 'standalone' ? '非项目' : '项目编号'}` },
-                ...(order.project_code ? [{ text: `项目编号：${order.project_code}` }] : []),
-                ...(order.purpose ? [{ text: `用途：${order.purpose}` }] : []),
-              ],
-            },
-            {
-              width: '*',
-              stack: [
-                { text: whCount > 1 ? `仓库：多仓（${whCount}）` : `品牌：${order.brand_code || ''} ｜ 区域：${order.region || ''}` },
-              ],
-            },
-          ],
-        },
-        { text: '\n收件信息', style: 'h2' },
+        { text: '物品出库单', style: 'title', margin: [0, 0, 0, 16] },
+        ...(order.project_code
+          ? [{ text: [{ text: '项目编号：', bold: true }, String(order.project_code)], margin: [0, 0, 0, 8] }]
+          : []),
+        { text: [{ text: '出库时间：', bold: true }, shippedDateCn], margin: [0, 0, 0, 8] },
+        { text: [{ text: '所属仓：', bold: true }, warehouseLabel], margin: [0, 0, 0, 18] },
+        { text: '收件信息', style: 'h2' },
         {
           stack: [
-            { text: `城市：${order.recipient_city || '—'}` },
-            { text: `地址：${order.recipient_address || '—'}` },
-            { text: `联系人：${order.contact_name || '—'}  ${order.contact_phone || ''}` },
-            { text: `物流：${order.logistics_method || '—'}` },
+            { text: [{ text: '城市：', bold: true }, `${order.recipient_city || '—'}`], margin: [0, 0, 0, 6] },
+            {
+              columns: [
+                { width: '45%', text: [{ text: '联系人：', bold: true }, `${order.contact_name || '—'}`] },
+                { width: '55%', text: [{ text: '联系电话：', bold: true }, `${order.contact_phone || '—'}`] },
+              ],
+              margin: [0, 0, 0, 6],
+            },
+            { text: [{ text: '地址：', bold: true }, `${order.recipient_address || '—'}`], margin: [0, 0, 0, 6] },
+            { text: [{ text: '物流方式：', bold: true }, `${order.logistics_method || '—'}`] },
           ],
         },
-        { text: '\n明细（按仓库）', style: 'h2' },
-        ...detailBlocks,
-        ...(order.remarks ? [{ text: `\n备注：${order.remarks}`, margin: [0, 12, 0, 0] }] : []),
+        { text: '\n物品明细：', style: 'h2' },
+        {
+          table: {
+            widths: ['42%', '18%', '18%', '22%'],
+            headerRows: 1,
+            body: lineTableBody,
+          },
+          layout: {
+            hLineWidth: () => 1,
+            vLineWidth: () => 1,
+            hLineColor: () => '#222',
+            vLineColor: () => '#222',
+            paddingTop: () => 8,
+            paddingBottom: () => 8,
+            paddingLeft: () => 6,
+            paddingRight: () => 6,
+          },
+        },
+        ...(order.remarks ? [{ text: `\n备注：${order.remarks}`, margin: [0, 10, 0, 0] }] : []),
       ],
       styles: {
-        title: { fontSize: 16, bold: true },
-        h2: { fontSize: 11, bold: true, margin: [0, 8, 0, 4] },
-        th: { bold: true },
+        title: { fontSize: 28, bold: true },
+        h2: { fontSize: 13, bold: true, margin: [0, 8, 0, 8] },
+        thCenter: { bold: true, alignment: 'center', fontSize: 11 },
+        tdCenter: { alignment: 'center', fontSize: 11 },
       },
     };
 
@@ -1745,7 +1832,11 @@ router.get('/outbound/:id/pdf', async (req, res) => {
     const urlResolver = new URLResolver(pdfVirtualFs);
     const printer = new PdfPrinter(pdfFonts, pdfVirtualFs, urlResolver);
     const pdfDoc = await printer.createPdfKitDocument(docDefinition);
-    const filenameEnc = encodeURIComponent(`出库单_${order.id}.pdf`);
+    const datePart = compactDateYYMMDD(order.shipped_at || order.created_at);
+    const brandPart = extractBrandFromProjectCode(order.project_code) || safeFilePart(order.brand_code) || '未知品牌';
+    const cityPart = safeFilePart(order.recipient_city) || '未知城市';
+    const finalBaseName = `${datePart || '000000'}${brandPart}${cityPart}出库单`;
+    const filenameEnc = encodeURIComponent(`${finalBaseName}.pdf`);
     const asDownload = req.query.download === '1' || req.query.download === 'true';
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader(

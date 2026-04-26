@@ -9,7 +9,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="style.css?v=20260421ledger-month-ui">
+  <link rel="stylesheet" href="style.css?v=20260422-worklog-v20260422.1">
   <!-- Chart.js -->
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
   <script src="https://unpkg.com/lucide@latest"></script>
@@ -41,10 +41,6 @@
           <span class="nav-group-chevron"><i data-lucide="chevron-down" style="width:14px;height:14px"></i></span>
         </button>
         <div class="nav-group-items">
-          <a class="nav-item active" data-page="dashboard" onclick="navigate('dashboard')">
-            <span class="nav-icon"><i data-lucide="layout-dashboard" style="width:16px;height:16px"></i></span>
-            <span class="nav-text">数据看板</span>
-          </a>
           <a class="nav-item" data-page="activities" onclick="navigate('activities')">
             <span class="nav-icon"><i data-lucide="clipboard-list" style="width:16px;height:16px"></i></span>
             <span class="nav-text">场次记录</span>
@@ -89,7 +85,7 @@
           </a>
           <a class="nav-item" data-page="reimbursement" onclick="navigate('reimbursement')">
             <span class="nav-icon"><i data-lucide="receipt" style="width:16px;height:16px"></i></span>
-            <span class="nav-text">报销登记</span>
+            <span class="nav-text">付款申请</span>
             <span class="nav-badge" id="badge-reimbursement">—</span>
           </a>
         </div>
@@ -123,6 +119,10 @@
           <span class="nav-group-chevron"><i data-lucide="chevron-down" style="width:14px;height:14px"></i></span>
         </button>
         <div class="nav-group-items">
+          <a class="nav-item" data-page="dashboard" id="navDashboard" onclick="navigate('dashboard')">
+            <span class="nav-icon"><i data-lucide="layout-dashboard" style="width:16px;height:16px"></i></span>
+            <span class="nav-text">数据看板</span>
+          </a>
           <a class="nav-item" data-page="users" id="navUsers" onclick="navigate('users')">
             <span class="nav-icon"><i data-lucide="users" style="width:16px;height:16px"></i></span>
             <span class="nav-text">用户管理</span>
@@ -138,7 +138,7 @@
     <!-- 底部：版本号 + 明暗主题图标 -->
     <div class="sidebar-footer">
       <div class="sidebar-footer-bar">
-        <span class="app-version" id="appVersion" title="应用版本">ver.2026.04.18</span>
+        <span class="app-version" id="appVersion" title="应用版本">ver.2026.04.22.1</span>
         <button type="button" class="theme-toggle-icon" id="themeToggleBtn" onclick="toggleTheme()" title="切换到亮色模式" aria-label="切换明暗主题"><svg xmlns="http://www.w3.org/2000/svg" width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg></button>
       </div>
     </div>
@@ -154,6 +154,7 @@
       </div>
       <div class="top-bar-right">
         <span class="year-badge" id="yearBadge">25年度</span>
+        <span class="year-badge" id="yearFrameHint" title="当前年框与场次数量">YF#— · 场次—</span>
         <span class="year-badge" id="authUserBadge" title="当前登录用户">—</span>
         <button type="button" class="btn btn-secondary btn-sm" id="changePasswordBtn" onclick="openChangePasswordModal()">修改密码</button>
         <button class="btn btn-secondary btn-sm" id="logoutBtn" onclick="logout()">退出登录</button>
@@ -198,7 +199,7 @@
           </div>
           <div class="form-group">
             <label class="form-label">城市 <span class="required">*</span></label>
-            <input type="text" class="form-control" id="actCity" placeholder="如：上海" oninput="genProjectCode()" required>
+            <input type="text" class="form-control" id="actCity" placeholder="如：上海" onchange="genProjectCode()" required>
           </div>
           <div class="form-group">
             <label class="form-label">品牌（根据年框编号自动识别）</label>
@@ -250,6 +251,18 @@
             <select class="form-control" id="actExecutor"></select>
           </div>
           <div class="form-group">
+            <label class="form-label">品牌大使</label>
+            <select class="form-control" id="actBrandAmbassador">
+              <option value="">请选择</option>
+              <option value="David">David</option>
+              <option value="Nancy">Nancy</option>
+              <option value="Carey">Carey</option>
+              <option value="Nina">Nina</option>
+              <option value="Benjamin">Benjamin</option>
+              <option value="Sam">Sam</option>
+            </select>
+          </div>
+          <div class="form-group">
             <label class="form-label">状态
               <button type="button" class="btn btn-xs btn-ghost" onclick="showLookupEditModal('activity_status')" title="编辑状态选项" style="margin-left:6px;font-size:11px">编辑</button>
             </label>
@@ -257,11 +270,20 @@
           </div>
           <div class="form-group form-full">
             <label class="form-label">项目编号（自动生成）</label>
-            <input type="text" class="form-control" id="actProjectCode" readonly style="background:var(--bg-primary);color:var(--text-muted)">
+            <div style="display:flex;gap:8px;align-items:center">
+              <input type="text" class="form-control" id="actProjectCode" readonly style="background:var(--bg-primary);color:var(--text-muted)">
+              <button type="button" class="btn btn-secondary btn-sm" onclick="genProjectCode()" title="重新生成项目编号" aria-label="重新生成项目编号">
+                <i data-lucide="refresh-cw" style="width:14px;height:14px"></i>
+              </button>
+            </div>
           </div>
           <div class="form-group form-full">
             <label class="form-label">备注</label>
             <textarea class="form-control" id="actRemarks" rows="2" placeholder="活动备注..."></textarea>
+          </div>
+          <div class="form-group form-full">
+            <label class="form-label">云相册地址</label>
+            <input type="text" class="form-control" id="actCloudAlbumUrl" placeholder="https://...">
           </div>
         </div>
       </form>
@@ -321,6 +343,18 @@
     <div class="modal-footer">
       <button type="button" class="btn btn-secondary" onclick="closeModal()">取消</button>
       <button type="button" class="btn btn-primary" onclick="saveCostFromModal2()">保存成本</button>
+    </div>
+  </div>
+
+  <div class="modal wide" id="modalCostDetail">
+    <div class="modal-header">
+      <span class="modal-title" id="costDetailModalTitle">成本详情</span>
+      <button type="button" class="modal-close" onclick="closeModal()">✕</button>
+    </div>
+    <div class="modal-body" id="costDetailContent"></div>
+    <div class="modal-footer">
+      <button type="button" class="btn btn-secondary" onclick="closeModal()">关闭</button>
+      <button type="button" class="btn btn-primary" id="costDetailEditBtn">修改成本</button>
     </div>
   </div>
 
@@ -600,15 +634,28 @@
 
   <div class="modal wide" id="modalReimbursement" style="max-width:720px" onclick="event.stopPropagation()">
     <div class="modal-header">
-      <span class="modal-title" id="modalReimbursementTitle">报销登记</span>
+      <span class="modal-title" id="modalReimbursementTitle">付款申请</span>
       <button type="button" class="modal-close" onclick="closeModal()">✕</button>
     </div>
     <div class="modal-body" id="modalReimbursementBody" style="max-height:76vh;overflow-y:auto"></div>
     <div class="modal-footer">
       <button type="button" class="btn btn-secondary" onclick="closeModal()">取消</button>
-      <button type="button" class="btn btn-secondary" onclick="reimbursementPrintCurrentForm()">打印预览</button>
-      <button type="button" class="btn btn-secondary" onclick="reimbursementDownloadCsvFromForm()">下载 CSV</button>
+      <button type="button" class="btn btn-secondary" onclick="reimbursementPrintCurrentForm()">PDF预览</button>
+      <button type="button" class="btn btn-secondary" onclick="reimbursementPreviewCsvFromForm()">CSV预览</button>
       <button type="button" class="btn btn-primary" onclick="saveReimbursementForm()">保存</button>
+    </div>
+  </div>
+
+  <div class="modal wide" id="modalReimbPreview" style="max-width:980px" onclick="event.stopPropagation()">
+    <div class="modal-header">
+      <span class="modal-title" id="modalReimbPreviewTitle">预览</span>
+      <button type="button" class="modal-close" onclick="closeModal()">✕</button>
+    </div>
+    <div class="modal-body" id="modalReimbPreviewBody" style="max-height:76vh;overflow:auto"></div>
+    <div class="modal-footer">
+      <button type="button" class="btn btn-secondary" onclick="closeModal()">关闭</button>
+      <button type="button" class="btn btn-secondary" id="reimbPreviewDownloadCsvBtn" onclick="reimbursementPreviewDownloadCsv()" style="display:none">下载 CSV</button>
+      <button type="button" class="btn btn-primary" id="reimbPreviewPrintPdfBtn" onclick="reimbursementPreviewPrintPdf()" style="display:none">打印 / 导出 PDF</button>
     </div>
   </div>
 
@@ -636,7 +683,7 @@
   </div>
 
   <!-- 物品出库：新建出库（表单在 #invOutboundModalBody 内动态填充） -->
-  <div class="modal wide inv-modal-ob" id="modalInvOutbound" style="max-width:720px" onclick="event.stopPropagation()">
+  <div class="modal wide inv-modal-ob" id="modalInvOutbound" style="max-width:1000px" onclick="event.stopPropagation()">
     <div class="modal-header">
       <span class="modal-title">新建物品出库</span>
       <button type="button" class="modal-close" onclick="closeModal()">✕</button>
@@ -741,6 +788,6 @@
   <!-- 全局 Toast -->
   <div class="toast-container" id="toastContainer"></div>
 
-  <script src="app.js?v=20260421ledger-month-ui"></script>
+  <script src="app.js?v=20260422-worklog-v20260422.1"></script>
 </body>
 </html>

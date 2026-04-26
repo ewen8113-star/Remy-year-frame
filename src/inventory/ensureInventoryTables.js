@@ -126,12 +126,37 @@ async function ensureInvReturnLinesEmptyBottleItemIdColumn(db) {
   }
 }
 
+let _invOutboundTrackingEnsured = false;
+async function ensureInvOutboundTrackingColumn(db) {
+  if (_invOutboundTrackingEnsured) return;
+  try {
+    const [tc] = await db.query(
+      `SELECT COUNT(*) AS c FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'inv_outbound_orders'`
+    );
+    if (!Number(tc[0].c)) return;
+    if (!(await columnExistsQuery(db, 'inv_outbound_orders', 'tracking_number'))) {
+      try {
+        await db.query('ALTER TABLE inv_outbound_orders ADD COLUMN tracking_number VARCHAR(100) NULL AFTER logistics_method');
+      } catch (e) {
+        if (!(e && (e.code === 'ER_DUP_FIELDNAME' || /Duplicate column name/i.test(String(e.message || ''))))) {
+          throw e;
+        }
+      }
+    }
+    _invOutboundTrackingEnsured = true;
+  } catch (e) {
+    console.error('inv_outbound_orders.tracking_number 补列失败:', e);
+    throw e;
+  }
+}
+
 async function ensureInventoryTables(db) {
   await ensureInvItemsCommonColumn(db);
   await ensureInvItemsStatsOverrideColumns(db);
   await ensureInvReturnLinesCustomerKeepColumn(db);
   await ensureInvReturnLinesEmptyRecoveredColumn(db);
   await ensureInvReturnLinesEmptyBottleItemIdColumn(db);
+  await ensureInvOutboundTrackingColumn(db);
   if (_ensured) return;
   if (_ensuring) return _ensuring;
   _ensuring = (async () => {
@@ -179,6 +204,7 @@ async function ensureInventoryTables(db) {
         contact_name VARCHAR(100),
         contact_phone VARCHAR(50),
         logistics_method VARCHAR(80),
+        tracking_number VARCHAR(100) NULL,
         status ENUM('shipped','closed') NOT NULL DEFAULT 'shipped',
         shipped_at DATETIME NULL,
         operator VARCHAR(100),

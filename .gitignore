@@ -6,3 +6,8 @@ version-history/
 imports/
 public/uploads/
 ~$*.xlsx
+
+Date Backup/
+Quote/
+*.xlsx
+.tmp_*

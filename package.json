@@ -1,6 +1,6 @@
 {
   "name": "remy-year-frame-api",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "人头马年框项目管理系统 API",
   "main": "src/server.js",
   "scripts": {
@@ -18,6 +18,8 @@
     "migrate:logistics-settlement-month": "node src/scripts/addLogisticsSettlementMonthColumn.js",
     "migrate:logistics-brand": "node src/scripts/addLogisticsBrandColumn.js",
     "migrate:activity-cost-details": "node src/scripts/addActivityCostDetailsColumn.js",
+    "migrate:activity-cloud-album": "node src/scripts/addActivityCloudAlbumUrlColumn.js",
+    "migrate:activity-brand-ambassador": "node src/scripts/addActivityBrandAmbassadorColumn.js",
     "migrate:activity-no-cost": "node src/scripts/addActivityNoCostColumn.js",
     "migrate:activity-period": "node src/scripts/addActivityPeriodColumn.js",
     "migrate:activity-region-belonging": "node src/scripts/addActivityRegionBelongingColumns.js",
@@ -32,6 +34,7 @@
     "migrate:prop-repairs-quoted-price": "node src/scripts/addPropRepairsQuotedPriceColumn.js",
     "migrate:reimbursement-v2": "node src/scripts/addReimbursementV2Columns.js",
     "migrate:reimbursement-brand": "node src/scripts/addReimbursementBrandColumn.js",
+    "migrate:reimbursement-payment-center": "node src/scripts/addReimbursementPaymentCenterColumns.js",
     "migrate:inventory": "node src/scripts/addInventoryTables.js",
     "import:inventory-excel": "node src/scripts/importInventoryItemsFromExcel.js",
     "import:inventory-material-2025-three": "node src/scripts/importMaterialThreeSheets2025.js",
@@ -42,15 +45,18 @@
     "migrate:users-auth": "node src/scripts/addUsersAuthTable.js",
     "verify:warehouse-db": "node src/scripts/verifyWarehouseDb.js",
     "script:set-all-activities-completed": "node src/scripts/setAllActivitiesStatusCompleted.js",
-    "script:sync-activity-region-belonging-excel": "node src/scripts/syncActivityRegionBelongingFromExcel.js"
+    "script:sync-activity-region-belonging-excel": "node src/scripts/syncActivityRegionBelongingFromExcel.js",
+    "export:inv-phd-east": "node src/scripts/exportInvPhdEastItems.js"
   },
   "dependencies": {
     "bcryptjs": "^3.0.2",
     "body-parser": "^1.20.2",
     "cors": "^2.8.5",
     "dotenv": "^16.3.1",
+    "exceljs": "^4.4.0",
     "express": "^4.18.2",
     "express-session": "^1.18.2",
+    "image-size": "^2.0.2",
     "multer": "^2.1.1",
     "mysql2": "^3.6.5",
     "pdfmake": "^0.3.7",
