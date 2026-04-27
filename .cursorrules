@@ -1,0 +1,152 @@
+# ============================================
+# 人头马年框项目管理系统 - Cursor Rules
+# ============================================
+
+## 项目概述
+
+人头马年框项目管理系统（Rémy Martin Year-Frame），用于管理品牌年度活动、仓储、物流、报销、酒品库存等全链路数据。
+
+## 技术栈
+
+- Runtime: Node.js 20 LTS
+- Backend: Express 4.18（REST API）
+- Database: MySQL 8.0 + mysql2（连接池，无 ORM，手写 SQL）
+- Frontend: 原生 HTML / JS / CSS（无框架、无构建工具、无 TypeScript）
+- Session: express-session（cookie 模式，非 JWT）
+- File Upload: multer
+- Excel: exceljs + xlsx
+- PDF: pdfmake + pdfmake-support-chinese-fonts
+- Env: dotenv
+- Deploy: PM2 + Nginx + Sealos DevBox
+
+## 目录结构
+
+```
+remy-year-frame/
+├── src/
+│   ├── server.js                  # 入口，端口 3088，监听 0.0.0.0
+│   ├── config/database.js         # mysql2 连接池，读 .env
+│   ├── middleware/auth.js         # requireAuth / requireRole / requireWriteAccess
+│   ├── routes/                    # API 路由（每个业务域一个文件）
+│   │   ├── activity.js            # 活动场次 CRUD
+│   │   ├── warehouse.js           # 仓储记录
+│   │   ├── logistics.js           # 物流记录
+│   │   ├── reimbursement.js       # 报销记录
+│   │   ├── inventory.js           # 物资库存（含图片上传、PDF 导出）
+│   │   ├── yearFrame.js           # 年框项目
+│   │   ├── wine.js                # 酒品目录
+│   │   ├── brand.js               # 品牌
+│   │   ├── dashboard.js           # 数据看板
+│   │   ├── cost.js                # 成本汇总
+│   │   ├── calendar.js            # 日历视图
+│   │   ├── backup.js              # 数据备份/恢复
+│   │   ├── materialPurchase.js    # 物料采购
+│   │   ├── propRepair.js          # 道具维修
+│   │   ├── auth.js                # 登录/登出
+│   │   ├── user.js                # 用户管理
+│   │   └── lookup.js              # 下拉选项管理
+│   ├── scripts/                   # 数据库迁移 & 一次性脚本
+│   ├── inventory/ensureInventoryTables.js
+│   └── wine/ensureWineCatalog.js
+├── public/
+│   ├── index.html                 # SPA 主页（侧边栏导航，所有模块内嵌）
+│   ├── app.js                     # 前端主逻辑（所有模块的 JS）
+│   ├── style.css                  # 全局样式
+│   ├── login.html / login.js      # 登录页
+│   ├── register.html / register.js # 注册页
+│   ├── version.json               # 前端版本号
+│   └── uploads/inventory/         # 物料图片上传目录（需持久化）
+├── init.sql                       # 数据库初始化（建表 + 初始数据）
+├── migrations/                    # SQL 迁移文件
+├── .env.example                   # 环境变量模板
+└── package.json
+```
+
+## 编码规范
+
+### 后端（Node.js / Express）
+
+- CommonJS 模块（`require` / `module.exports`），不用 ES Modules
+- 路由文件用 `express.Router()`，挂载到 `/api/{resource}`
+- 数据库操作用 `const db = require('../config/database')`，调用 `db.query()` 或 `db.execute()`
+- SQL 用模板字符串，参数用 `?` 占位符（mysql2 自动转义）
+- API 响应格式：成功 `{ data: ... }` / 失败 `{ error: '错误信息' }`
+- 错误处理：每个路由 handler 用 try/catch，catch 里 `res.status(500).json({ error: ... })`
+- 新增路由需在 `server.js` 中 `require` 并 `app.use('/api/xxx', routes)`
+- 所有 /api/* 路由（除 /api/auth 和 /api/health）自动经过 `requireAuth` 中间件
+- 写操作（POST/PUT/DELETE）自动经过 `requireWriteAccess`，要求 admin 角色
+- GET 请求无需 admin 权限，只要登录即可
+- 不使用 TypeScript、不使用 ORM、不使用 async/await 以外的并发模式
+
+### 前端（原生 HTML/JS/CSS）
+
+- 无框架、无构建工具、无 npm 依赖
+- 所有页面逻辑集中在 `public/app.js`，按模块用注释分区
+- 页面结构在 `public/index.html`，侧边栏导航切换不同模块的 section
+- 请求 API 用 `fetch()`，带凭证 `credentials: 'same-origin'`
+- 不引入 React / Vue / jQuery / Tailwind 等第三方前端库
+- CSS 在 `public/style.css`，使用 CSS 变量管理品牌色
+
+### 数据库
+
+- 数据库名：`remy_year_frame`
+- 所有环境配置走 `.env`，禁止硬编码数据库连接信息
+- 核心表：year_frames、activities、warehouse、logistics、reimbursements、inv_items、brand_inventory、wine_catalog、users、lookup_options
+- activities.status 允许值：pending / deferred / completed / cancelled
+- 区域字段统一用中文：东区、南区、北区、东南区
+- 新增字段用 `src/scripts/` 下的迁移脚本，命名格式 `add{Table}{Column}.js`
+- 迁移脚本要在 `package.json` 的 scripts 中注册 `migrate:xxx` 命令
+
+### 文件上传
+
+- 物料图片上传到 `public/uploads/inventory/`
+- 用 multer 处理，路由在 `src/routes/inventory.js`
+- DB 中 `image_urls` 字段存路径格式：`/uploads/inventory/filename.jpg`
+- 前端通过 Express static 访问：`/uploads/inventory/filename.jpg`
+
+### 环境变量
+
+参考 `.env.example`，必须包含：DB_HOST、DB_PORT、DB_USER、DB_PASSWORD、DB_NAME、PORT、SESSION_SECRET
+
+### 禁止事项
+
+- 不要引入前端框架（React/Vue/Angular/Svelte）
+- 不要引入 ORM（Sequelize/Prisma/TypeORM）
+- 不要改用 ES Modules（保持 CommonJS）
+- 不要把数据库连接信息硬编码在代码里
+- 不要删除 init.sql 中的初始数据插入语句
+- 不要修改 session 中间件的 cookie 配置（httpOnly + sameSite: lax + 生产 secure）
+- 新增迁移脚本必须幂等（用 IF NOT EXISTS / IF NOT EXISTS COLUMN 等模式）
+
+### API 路由约定
+
+- GET    /api/{resource}        列表（支持 query 参数筛选）
+- GET    /api/{resource}/:id     单条详情
+- POST   /api/{resource}         新建
+- PUT    /api/{resource}/:id     更新
+- DELETE /api/{resource}/:id     删除
+
+## 业务上下文
+
+- 人头马（Rémy Martin）是洋酒品牌，年框指年度框架合作合同
+- 系统管理的数据包括：活动场次（晚宴/品鉴/培训/婚宴/宴会）、酒品仓储出库、物流运输、费用报销
+- 成本计算涉及：服务费 12% + 税费 6%，按报价/成本计算
+- 仓储模块按月记录各区报价和成本，支持半年报价批量分摊到场次
+- 品牌线主要分：PHD（路易十三）、X.O、CLUB、REMY（VSOP）、RC（特级干邑）
+- 区域分为四大区：东区、南区、北区、东南区
+
+## 调试
+
+- 本地端口：3088
+- 健康检查：GET /api/health（无需认证）
+- 开发模式用 `npm run dev`（nodemon 热重载）
+- 前端静态资源已禁用缓存（no-store），修改后刷新即生效
+
+## HarmonyOS UI 统一规范（强制）
+
+- 项目后续所有新设计与 UI 调整，统一遵循 `HarmonyOS UI/README.md` 与 `HarmonyOS UI/INTERACTION_GUIDELINES.md`
+- 视觉层必须对齐 HarmonyOS 组件库语义（含 Light/Dark 对应关系），优先使用语义化 Token，不使用临时魔法值
+- 交互层必须覆盖组件状态机：normal/hover/focus/pressed/disabled（输入类额外覆盖 error）
+- 标题栏、搜索、输入、列表、菜单、弹层等高频组件，优先复用 HarmonyOS 交互结构，不随意改动信息架构
+- 在不改变现有技术栈前提下（原生 HTML/CSS/JS），实现效果和交互逻辑需与上述 HarmonyOS 规范保持一致
+- 如业务需求与规范冲突：先保业务正确性，再在实现中记录偏离点并尽量保持视觉与交互语义一致

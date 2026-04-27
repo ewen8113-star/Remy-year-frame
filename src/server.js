@@ -32,6 +32,11 @@ const app = express();
 const PORT = process.env.PORT || 3088;
 
 // 中间件
+if (process.env.NODE_ENV === 'production') {
+  // 部署在反向代理（如 Sealos Ingress）后，信任首层代理以正确识别 HTTPS，
+  // 否则 secure cookie 可能无法在登录后写入浏览器。
+  app.set('trust proxy', 1);
+}
 app.use(cors());
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));

@@ -156,6 +156,8 @@ let inventoryPageState = {
   outboundWarehousesCache: [],
   outboundCommonOrderByWarehouse: {},
   outboundCommonSearchByWarehouse: {},
+  outboundItemMetaByWarehouse: {},
+  outboundInlineOpen: false,
 };
 
 function invLoadCommonOrderStore() {
@@ -263,6 +265,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   navigate(currentPage);
   checkConnection();
   renderLucideIcons();
+  initHarmonyUiInteractions();
+  applyHarmonySurfaceAnimations(document);
 });
 
 document.addEventListener('click', (event) => {
@@ -597,6 +601,8 @@ function navigate(page) {
   document.getElementById('pageTitle').textContent = titles[page] || page;
 
   const container = document.getElementById('pageContainer');
+  container.classList.remove('harmony-page-ready');
+  container.classList.add('harmony-page-loading');
   container.innerHTML = '<div class="empty-state"><div class="skeleton skeleton-title"></div><div class="skeleton skeleton-card"></div><div class="skeleton skeleton-card"></div></div>';
 
   // 销毁旧图表
@@ -623,6 +629,9 @@ function navigate(page) {
     Promise.resolve(renders[page]()).finally(() => {
       renderLucideIcons();
       applyRoleUiGuards();
+      applyHarmonySurfaceAnimations(container);
+      container.classList.remove('harmony-page-loading');
+      container.classList.add('harmony-page-ready');
     });
   }
   expandSidebarGroupForPage(page);
@@ -691,6 +700,66 @@ function toggleSidebar() {
   document.getElementById('mainContent').classList.toggle('full-width');
 }
 
+function initHarmonyUiInteractions() {
+  if (window.__harmonyUiInteractionBound) return;
+  window.__harmonyUiInteractionBound = true;
+
+  const pressSelector = '.btn, .nav-item, .year-btn, .page-btn, .inv-tab, .inv-view-opt, .theme-toggle-icon, .nav-group-toggle';
+  const clearPressed = () => {
+    document.querySelectorAll('.is-pressed').forEach((el) => el.classList.remove('is-pressed'));
+  };
+
+  document.addEventListener('pointerdown', (event) => {
+    const target = event.target && typeof event.target.closest === 'function' ? event.target.closest(pressSelector) : null;
+    if (!target) return;
+    target.classList.add('is-pressed');
+  });
+
+  document.addEventListener('pointerup', clearPressed);
+  document.addEventListener('pointercancel', clearPressed);
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') clearPressed();
+  });
+
+  const inputSelector = '.form-control, .search-input, .filter-select';
+  const syncFieldErrorState = (field) => {
+    if (!field || !(field instanceof HTMLElement)) return;
+    if (!field.matches(inputSelector)) return;
+    const group = field.closest('.form-group');
+    const required = field.required || field.getAttribute('aria-required') === 'true';
+    const empty = String(field.value || '').trim() === '';
+    const invalid = required && empty;
+    field.classList.toggle('field-error', invalid);
+    if (group) group.classList.toggle('is-invalid', invalid);
+  };
+
+  document.addEventListener('focusout', (event) => {
+    const field = event.target;
+    syncFieldErrorState(field);
+  });
+
+  document.addEventListener('input', (event) => {
+    const field = event.target;
+    if (!(field instanceof HTMLElement) || !field.matches(inputSelector)) return;
+    if (field.classList.contains('field-error')) {
+      syncFieldErrorState(field);
+    }
+  });
+}
+
+function applyHarmonySurfaceAnimations(root = document) {
+  if (!root || typeof root.querySelectorAll !== 'function') return;
+  const selectors = '.stats-grid .stat-card, .chart-grid .chart-card, .card, .table-wrapper, .filter-bar, .toolbar';
+  const nodes = root.querySelectorAll(selectors);
+  nodes.forEach((el, index) => {
+    if (el.dataset.harmonyAnimated === '1') return;
+    el.dataset.harmonyAnimated = '1';
+    el.classList.add('harmony-enter');
+    const delay = Math.min(index * 28, 240);
+    el.style.setProperty('--h-delay', `${delay}ms`);
+  });
+}
+
 // ===== 主题 =====
 function toggleTheme() {
   const cur = document.documentElement.getAttribute('data-theme');
@@ -753,7 +822,9 @@ function showToast(msg, type = 'info') {
   const el = document.createElement('div');
   el.className = `toast ${type}`;
   el.innerHTML = `<span>${icons[type]}</span><span>${msg}</span>`;
-  document.getElementById('toastContainer').appendChild(el);
+  const toastContainer = document.getElementById('toastContainer');
+  toastContainer.appendChild(el);
+  applyHarmonySurfaceAnimations(toastContainer);
   renderLucideIcons();
   setTimeout(() => {
     el.style.animation = 'fadeOut 0.3s ease forwards';
@@ -768,12 +839,14 @@ const modalStack = [];
 function openModal(id) {
   const overlay = document.getElementById('modalOverlay');
   overlay.classList.add('active');
+  document.body.classList.add('modal-open');
   if (activeModal && activeModal !== id) {
     modalStack.push(activeModal);
   }
   const modal = document.getElementById(id);
   if (modal) {
     modal.classList.add('active');
+    applyHarmonySurfaceAnimations(modal);
     activeModal = id;
   }
 }
@@ -782,6 +855,7 @@ function closeModal() {
   const overlay = document.getElementById('modalOverlay');
   if (!activeModal) {
     overlay.classList.remove('active');
+    document.body.classList.remove('modal-open');
     return;
   }
   if (activeModal === 'modalInvItemEdit') {
@@ -808,6 +882,7 @@ function closeModal() {
   } else {
     activeModal = null;
     overlay.classList.remove('active');
+    document.body.classList.remove('modal-open');
   }
 }
 
@@ -8551,11 +8626,56 @@ function invBuildCommonRowsHtml(items, preset) {
           <td style="width:88px">
             <input type="number" class="form-control form-control-sm" id="invCommonQty_${id}" min="0" step="1" value="${qty}" placeholder="0" onchange="invOnOutboundCommonQty(${id})">
           </td>
-          <td><input type="text" class="form-control form-control-sm" id="invCommonNote_${id}" placeholder="行备注" value="${escapeHtml(note)}"></td>
+          <td><input type="text" class="form-control form-control-sm" id="invCommonNote_${id}" placeholder="行备注" value="${escapeHtml(note)}" oninput="invOnOutboundCommonNote(${id})"></td>
           <td style="width:36px;text-align:center"><span class="inv-common-drag-handle" title="按住拖动排序">···</span></td>
         </tr>`;
     })
     .join('');
+}
+
+function invBuildSelectedOutboundPreviewHtml() {
+  const whMap = new Map((inventoryPageState.outboundWarehousesCache || []).map((w) => [Number(w.id), w]));
+  const rows = [];
+  Object.keys(inventoryPageState.outboundCommonByWarehouse || {}).forEach((k) => {
+    const wid = Number(k);
+    if (!Number.isFinite(wid)) return;
+    const wh = whMap.get(wid);
+    const preset = inventoryPageState.outboundCommonByWarehouse[wid] || {};
+    Object.entries(preset).forEach(([itemId, p]) => {
+      const qty = p && p.checked ? Math.max(0, parseInt(p.quantity, 10) || 0) : 0;
+      if (qty < 1) return;
+      const meta = inventoryPageState.outboundItemMetaByWarehouse?.[wid]?.[itemId] || {};
+      rows.push({
+        warehouse: wh ? `${wh.brand_code} · ${wh.region}` : `仓库#${wid}`,
+        name: meta.name || `物料#${itemId}`,
+        dimensions: meta.dimensions || '—',
+        quantity: qty,
+        note: p && p.line_note ? String(p.line_note).trim() : '',
+      });
+    });
+  });
+  if (!rows.length) {
+    return '<div class="empty-state" style="margin:0">暂未选择物品。请在左侧勾选并填写数量。</div>';
+  }
+  return `
+    <div class="table-wrapper inv-ob-preview-table-wrap">
+      <table class="data-table inv-outbound-table inv-ob-preview-table">
+        <thead><tr><th>仓库</th><th>物料</th><th>规格</th><th style="width:84px">数量</th><th>备注</th></tr></thead>
+        <tbody>
+          ${rows
+            .map(
+              (row) => `<tr>
+                <td>${escapeHtml(row.warehouse)}</td>
+                <td>${escapeHtml(row.name)}</td>
+                <td>${escapeHtml(row.dimensions)}</td>
+                <td>${row.quantity}</td>
+                <td>${escapeHtml(row.note || '—')}</td>
+              </tr>`
+            )
+            .join('')}
+        </tbody>
+      </table>
+    </div>`;
 }
 
 function invBuildExtraLineRowsHtml(items, lines) {
@@ -8582,11 +8702,9 @@ function invBuildExtraLineRowsHtml(items, lines) {
 
 function invBuildOutboundModalMarkup(warehouses, items, of, modalOpts) {
   modalOpts = modalOpts || {};
-  const lines = inventoryPageState.outboundLines || [];
   const commonPreset =
     modalOpts.commonPreset != null ? modalOpts.commonPreset : inventoryPageState.outboundEditCommonPreset;
   const commonRows = invBuildCommonRowsHtml(items, commonPreset);
-  const lineRows = invBuildExtraLineRowsHtml(items, lines);
   const editOrderId = modalOpts.editOrderId;
   const submitLabel = editOrderId ? '保存修改' : '确认出库';
   const whButtons = `
@@ -8601,105 +8719,116 @@ function invBuildOutboundModalMarkup(warehouses, items, of, modalOpts) {
   const whKey = String(Number(inventoryPageState.warehouseId || 0) || 'global');
   const commonSearch = String((inventoryPageState.outboundCommonSearchByWarehouse || {})[whKey] || '');
   const hintMsg = String(of.hint_msg || '').trim();
-  const extraItemOptions = items
-    .map((it) => `<option value="${escapeHtml(`${it.name} [#${it.id}] (余${it.quantity_on_hand})`)}"></option>`)
-    .join('');
+  const selectedPreview = invBuildSelectedOutboundPreviewHtml();
   return `
     <div class="inv-ob-modal-form">
       <input type="hidden" id="invOutboundEditOrderId" value="${editOrderId ? String(editOrderId) : ''}">
       <input type="hidden" id="invWarehouseSelect" value="${inventoryPageState.warehouseId || ''}">
-      <div class="inv-ob-modal-row">
-        <div class="form-group inv-ob-field-short inv-ob-field-purpose">
-          <label class="form-label">用途</label>
-          <select class="form-control" id="invLinkMode" onchange="inventoryPageState.linkMode=this.value;inventoryPageState.outboundForm.linkMode=this.value;invToggleLinkMode()">
-            <option value="activity" ${linkMode !== 'standalone' ? 'selected' : ''}>活动用</option>
-            <option value="standalone" ${linkMode === 'standalone' ? 'selected' : ''}>非活动用</option>
-          </select>
-        </div>
-        <div class="form-group inv-ob-field-mid inv-ob-field-project" id="invProjectWrap">
-          <label class="form-label">项目编号（活动用）</label>
-          <div class="inv-project-combobox">
-            <input type="text" class="form-control" id="invProjectCode" placeholder="与场次一致" autocomplete="off" value="${escapeHtml(of.project_code || '')}" onfocus="invOpenProjectSuggestionList()" onblur="invOnProjectInputBlur()" oninput="invOnProjectInput(this.value)" onkeydown="invHandleProjectInputKeydown(event)">
-            <button type="button" class="inv-project-trigger" onclick="invToggleProjectSuggestionList()" aria-label="展开项目编号建议"></button>
-            <div class="inv-project-menu" id="invProjectMenu" style="display:none"></div>
+      <div class="inv-ob-layout">
+        <section class="inv-ob-pane inv-ob-pane-left">
+          <div class="inv-ob-pane-card">
+            <h4 class="inv-ob-pane-title">仓库与物品</h4>
+            <div class="form-group inv-ob-field-full">
+              <label class="form-label">仓库</label>
+              ${whButtons}
+            </div>
+            <div class="inv-ob-common-tools">
+              <input type="text" class="form-control form-control-sm" id="invCommonSearch" placeholder="搜索仓库物品（名称/规格）" value="${escapeHtml(commonSearch)}" oninput="invOnCommonSearchInput(this.value)">
+            </div>
+            <div class="table-wrapper inv-outbound-table-wrap inv-ob-items-table-wrap">
+              <table class="data-table inv-outbound-table">
+                <thead><tr><th style="width:42px">选</th><th>物料</th><th style="width:56px">库存</th><th style="width:88px">数量</th><th>备注</th><th style="width:36px">序</th></tr></thead>
+                <tbody id="invObCommonTbody">${commonRows}</tbody>
+              </table>
+            </div>
           </div>
-          <span class="form-hint" id="invHintMsg" style="${hintMsg ? 'display:block;margin-top:4px' : 'display:none;margin-top:0'}">${escapeHtml(hintMsg)}</span>
-        </div>
-        <div class="form-group inv-ob-field-short inv-ob-field-logistics">
-          <label class="form-label">物流方式</label>
-          <select class="form-control" id="invLogistics">${INV_LOGISTICS_OPTS.map((x) => `<option value="${x}" ${(of.logistics_method || INV_LOGISTICS_OPTS[0]) === x ? 'selected' : ''}>${x}</option>`).join('')}</select>
-        </div>
-        <div class="form-group inv-ob-field-mid inv-ob-field-tracking">
-          <label class="form-label">物流单号</label>
-          <input type="text" class="form-control" id="invTrackingNo" placeholder="顺丰请填写单号" value="${escapeHtml(of.tracking_number || '')}">
-        </div>
-      </div>
-      <div class="inv-ob-modal-row" id="invPurposeWrap" style="display:none">
-        <div class="form-group inv-ob-field-mid">
-          <label class="form-label">非活动信息 <span class="required">*</span></label>
-          <input type="text" class="form-control" id="invPurpose" placeholder="如：内部调拨/赞助寄样/办公使用" value="${escapeHtml(of.purpose || '')}">
-          <span class="form-hint">保存后会自动生成一条物流成本记录（费用默认 0，后续可补填），计入年框总成本。</span>
-        </div>
-      </div>
-      <div class="inv-ob-modal-row">
-        <div class="form-group inv-ob-field-short">
-          <label class="form-label">收件城市</label>
-          <input type="text" class="form-control" id="invRecvCity" value="${escapeHtml(of.recipient_city || '')}">
-        </div>
-        <div class="form-group inv-ob-field-short">
-          <label class="form-label">联系人</label>
-          <input type="text" class="form-control" id="invContactName" value="${escapeHtml(of.contact_name || '')}">
-        </div>
-        <div class="form-group inv-ob-field-short">
-          <label class="form-label">联系电话</label>
-          <input type="text" class="form-control" id="invContactPhone" value="${escapeHtml(of.contact_phone || '')}">
-        </div>
-      </div>
-      <div class="inv-ob-modal-row inv-ob-modal-row-full">
-        <div class="form-group inv-ob-field-full">
-          <label class="form-label">收件地址</label>
-          <input type="text" class="form-control" id="invRecvAddr" value="${escapeHtml(of.recipient_address || '')}">
-        </div>
-      </div>
-      <div class="inv-ob-modal-row inv-ob-modal-row-full">
-        <div class="form-group inv-ob-field-full">
-          <label class="form-label">备注</label>
-          <input type="text" class="form-control" id="invObRemarks" value="${escapeHtml(of.remarks || '')}">
-        </div>
-      </div>
-      <div class="inv-ob-modal-row inv-ob-modal-row-full">
-        <div class="form-group inv-ob-field-full">
-          <label class="form-label">仓库</label>
-          ${whButtons}
-          <span class="form-hint">可切换仓库继续添加物料，提交时会按仓库分别生成出库单。</span>
-        </div>
+        </section>
+
+        <section class="inv-ob-pane inv-ob-pane-right">
+          <div class="inv-ob-pane-card inv-ob-pane-top">
+            <h4 class="inv-ob-pane-title">出库单基本信息</h4>
+            <div class="inv-ob-modal-row">
+              <div class="form-group inv-ob-field-short inv-ob-field-purpose">
+                <label class="form-label">用途</label>
+                <select class="form-control" id="invLinkMode" onchange="inventoryPageState.linkMode=this.value;inventoryPageState.outboundForm.linkMode=this.value;invToggleLinkMode()">
+                  <option value="activity" ${linkMode !== 'standalone' ? 'selected' : ''}>活动用</option>
+                  <option value="standalone" ${linkMode === 'standalone' ? 'selected' : ''}>非活动用</option>
+                </select>
+              </div>
+              <div class="form-group inv-ob-field-mid inv-ob-field-project" id="invProjectWrap">
+                <label class="form-label">项目编号（活动用）</label>
+                <div class="inv-project-combobox">
+                  <input type="text" class="form-control" id="invProjectCode" placeholder="与场次一致" autocomplete="off" value="${escapeHtml(of.project_code || '')}" onfocus="invOpenProjectSuggestionList()" onblur="invOnProjectInputBlur()" oninput="invOnProjectInput(this.value)" onkeydown="invHandleProjectInputKeydown(event)">
+                  <button type="button" class="inv-project-trigger" onclick="invToggleProjectSuggestionList()" aria-label="展开项目编号建议"></button>
+                  <div class="inv-project-menu" id="invProjectMenu" style="display:none"></div>
+                </div>
+                <span class="form-hint" id="invHintMsg" style="${hintMsg ? 'display:block;margin-top:4px' : 'display:none;margin-top:0'}">${escapeHtml(hintMsg)}</span>
+              </div>
+              <div class="form-group inv-ob-field-short inv-ob-field-logistics">
+                <label class="form-label">物流方式</label>
+                <select class="form-control" id="invLogistics">${INV_LOGISTICS_OPTS.map((x) => `<option value="${x}" ${(of.logistics_method || INV_LOGISTICS_OPTS[0]) === x ? 'selected' : ''}>${x}</option>`).join('')}</select>
+              </div>
+              <div class="form-group inv-ob-field-mid inv-ob-field-tracking">
+                <label class="form-label">物流单号</label>
+                <input type="text" class="form-control" id="invTrackingNo" placeholder="顺丰请填写单号" value="${escapeHtml(of.tracking_number || '')}">
+              </div>
+            </div>
+            <div class="inv-ob-modal-row" id="invPurposeWrap" style="display:none">
+              <div class="form-group inv-ob-field-mid">
+                <label class="form-label">非活动信息 <span class="required">*</span></label>
+                <input type="text" class="form-control" id="invPurpose" placeholder="如：内部调拨/赞助寄样/办公使用" value="${escapeHtml(of.purpose || '')}">
+                <span class="form-hint">保存后会自动生成一条物流成本记录（费用默认 0，后续可补填），计入年框总成本。</span>
+              </div>
+            </div>
+            <div class="inv-ob-modal-row">
+              <div class="form-group inv-ob-field-short">
+                <label class="form-label">收件城市</label>
+                <input type="text" class="form-control" id="invRecvCity" value="${escapeHtml(of.recipient_city || '')}">
+              </div>
+              <div class="form-group inv-ob-field-short">
+                <label class="form-label">联系人</label>
+                <input type="text" class="form-control" id="invContactName" value="${escapeHtml(of.contact_name || '')}">
+              </div>
+              <div class="form-group inv-ob-field-short">
+                <label class="form-label">联系电话</label>
+                <input type="text" class="form-control" id="invContactPhone" value="${escapeHtml(of.contact_phone || '')}">
+              </div>
+            </div>
+            <div class="inv-ob-modal-row inv-ob-modal-row-full">
+              <div class="form-group inv-ob-field-full">
+                <label class="form-label">收件地址</label>
+                <input type="text" class="form-control" id="invRecvAddr" value="${escapeHtml(of.recipient_address || '')}">
+              </div>
+            </div>
+            <div class="inv-ob-modal-row inv-ob-modal-row-full">
+              <div class="form-group inv-ob-field-full">
+                <label class="form-label">备注</label>
+                <input type="text" class="form-control" id="invObRemarks" value="${escapeHtml(of.remarks || '')}">
+              </div>
+            </div>
+            <div class="inv-outbound-actions inv-outbound-actions-inline">
+              <button type="button" class="btn btn-primary" onclick="invSubmitOutbound()">${submitLabel}</button>
+            </div>
+          </div>
+
+          <div class="inv-ob-pane-card inv-ob-pane-bottom">
+            <div class="inv-ob-selected-head">
+              <h4 class="inv-ob-pane-title">已选物品（只读）</h4>
+              <span class="form-hint">左侧勾选并填写数量后，此处自动汇总展示</span>
+            </div>
+            <div id="invObSelectedPreview">${selectedPreview}</div>
+          </div>
+        </section>
       </div>
       <input type="hidden" id="invActivityId" value="${escapeHtml(String(of.activity_id || ''))}">
-      <datalist id="invExtraItemList">${extraItemOptions}</datalist>
-      <h4 class="inv-outbound-section-title">常用物料 <span style="font-weight:400;color:var(--text-muted);font-size:12px">（勾选并填数量）</span></h4>
-      <div class="inv-ob-common-tools">
-        <input type="text" class="form-control form-control-sm" id="invCommonSearch" placeholder="输入关键词筛选常用物料..." value="${escapeHtml(commonSearch)}" oninput="invOnCommonSearchInput(this.value)">
-      </div>
-      <div class="table-wrapper inv-outbound-table-wrap">
-        <table class="data-table inv-outbound-table">
-          <thead><tr><th style="width:42px">选</th><th>物料</th><th style="width:56px">库存</th><th style="width:88px">数量</th><th>行备注</th><th style="width:36px">序</th></tr></thead>
-          <tbody id="invObCommonTbody">${commonRows}</tbody>
-        </table>
-      </div>
-      <div class="inv-outbound-section-head">
-        <h4 class="inv-outbound-section-title">其他物料 <span style="font-weight:400;color:var(--text-muted);font-size:12px">（非常用或额外数量）</span></h4>
-        <button type="button" class="btn btn-secondary btn-sm" onclick="invAddOutboundRow()">+ 添加其他物料</button>
-      </div>
-      <div class="table-wrapper inv-outbound-table-wrap">
-        <table class="data-table inv-outbound-table">
-          <thead><tr><th>物料</th><th style="width:88px">数量</th><th>说明</th><th style="width:56px"></th></tr></thead>
-          <tbody id="invObExtraTbody">${lineRows || '<tr><td colspan="4" style="color:var(--text-muted);font-size:13px">点击下方添加一行</td></tr>'}</tbody>
-        </table>
-      </div>
-      <div class="inv-outbound-actions">
-        <button type="button" class="btn btn-primary" onclick="invSubmitOutbound()">${submitLabel}</button>
-      </div>
     </div>`;
+}
+
+function invRefreshSelectedPreview() {
+  const el = document.getElementById('invObSelectedPreview');
+  if (!el) return;
+  invSaveCurrentWarehouseDraftFromModal();
+  el.innerHTML = invBuildSelectedOutboundPreviewHtml();
 }
 
 function invSnapshotCommonPresetFromDom() {
@@ -8747,8 +8876,17 @@ async function invRefreshOutboundModalLineTables() {
       items = [];
     }
   }
+  const whNum = Number(whId || 0);
+  if (whNum > 0) {
+    inventoryPageState.outboundItemMetaByWarehouse[whNum] = {};
+    (Array.isArray(items) ? items : []).forEach((it) => {
+      inventoryPageState.outboundItemMetaByWarehouse[whNum][String(it.id)] = {
+        name: it.name || '',
+        dimensions: it.dimensions || '',
+      };
+    });
+  }
   const commonTbody = document.getElementById('invObCommonTbody');
-  const extraTbody = document.getElementById('invObExtraTbody');
   if (commonTbody) {
     if (inventoryPageState.editOutboundOrderId) {
       const snap = invSnapshotCommonPresetFromDom();
@@ -8760,11 +8898,7 @@ async function invRefreshOutboundModalLineTables() {
     const preset = inventoryPageState.outboundEditCommonPreset;
     commonTbody.innerHTML = invBuildCommonRowsHtml(items, preset);
   }
-  if (extraTbody) {
-    const lines = inventoryPageState.outboundLines || [];
-    extraTbody.innerHTML =
-      invBuildExtraLineRowsHtml(items, lines) || '<tr><td colspan="4" style="color:var(--text-muted);font-size:13px">点击下方添加一行</td></tr>';
-  }
+  invRefreshSelectedPreview();
 }
 
 /** 仅重绘「其他物料」表格，避免刷新常用物料行导致勾选丢失 */
@@ -8824,6 +8958,7 @@ async function invOpenOutboundModal() {
     inventoryPageState.outboundLinesByWarehouse = {};
     inventoryPageState.outboundCommonByWarehouse = {};
     inventoryPageState.outboundCommonSearchByWarehouse = {};
+    inventoryPageState.outboundItemMetaByWarehouse = {};
     inventoryPageState.outboundForm = {
       linkMode: 'activity',
       project_code: '',
@@ -8866,6 +9001,13 @@ async function invOpenOutboundModal() {
     const curWh = Number(inventoryPageState.warehouseId || 0);
     inventoryPageState.outboundLinesByWarehouse[curWh] = [];
     inventoryPageState.outboundCommonByWarehouse[curWh] = {};
+    inventoryPageState.outboundItemMetaByWarehouse[curWh] = {};
+    (Array.isArray(items) ? items : []).forEach((it) => {
+      inventoryPageState.outboundItemMetaByWarehouse[curWh][String(it.id)] = {
+        name: it.name || '',
+        dimensions: it.dimensions || '',
+      };
+    });
     if (!body) return;
     body.innerHTML = invBuildOutboundModalMarkup(warehouses, items, of);
     await invFillInvProjectDatalist();
@@ -8881,6 +9023,61 @@ async function invOpenOutboundModal() {
     console.error('invOpenOutboundModal failed:', e);
     showToast(e?.message || '打开新建出库失败', 'error');
     closeModal();
+  }
+}
+
+async function invToggleOutboundInlineForm(forceOpen) {
+  const nextOpen = typeof forceOpen === 'boolean' ? forceOpen : !inventoryPageState.outboundInlineOpen;
+  if (!nextOpen) {
+    inventoryPageState.outboundInlineOpen = false;
+    await renderInventory();
+    return;
+  }
+  try {
+    inventoryPageState.editOutboundOrderId = null;
+    inventoryPageState.outboundEditCommonPreset = null;
+    inventoryPageState.outboundLines = [];
+    inventoryPageState.outboundLinesByWarehouse = {};
+    inventoryPageState.outboundCommonByWarehouse = {};
+    inventoryPageState.outboundCommonSearchByWarehouse = {};
+    inventoryPageState.outboundItemMetaByWarehouse = {};
+    inventoryPageState.outboundForm = {
+      linkMode: 'activity',
+      project_code: '',
+      purpose: '',
+      activity_id: '',
+      recipient_city: '',
+      recipient_address: '',
+      contact_name: '',
+      contact_phone: '',
+      logistics_method: INV_LOGISTICS_OPTS[0],
+      tracking_number: '',
+      remarks: '',
+      hint_msg: '',
+    };
+    let warehouses = [];
+    try {
+      warehouses = await api('GET', '/inventory/warehouses');
+    } catch (e) {
+      showToast(e.message || '加载仓库失败', 'error');
+      return;
+    }
+    if (!warehouses.length) {
+      showToast('暂无仓库，请先在库存统计中新建仓库', 'warning');
+      return;
+    }
+    if (!inventoryPageState.warehouseId || !warehouses.some((w) => w.id === inventoryPageState.warehouseId)) {
+      inventoryPageState.warehouseId = warehouses[0].id;
+    }
+    inventoryPageState.outboundWarehousesCache = warehouses.slice();
+    const curWh = Number(inventoryPageState.warehouseId || 0);
+    inventoryPageState.outboundLinesByWarehouse[curWh] = [];
+    inventoryPageState.outboundCommonByWarehouse[curWh] = {};
+    inventoryPageState.outboundInlineOpen = true;
+    await renderInventory();
+  } catch (e) {
+    console.error('invToggleOutboundInlineForm failed:', e);
+    showToast(e?.message || '打开页内新建出库失败', 'error');
   }
 }
 
@@ -9470,7 +9667,26 @@ async function renderInventory() {
     } catch (_) {
       allOrders = [];
     }
-    panelHtml = invRenderOutboundOrderTable(Array.isArray(allOrders) ? allOrders : []);
+    let inlineFormHtml = '';
+    if (inventoryPageState.outboundInlineOpen) {
+      let currentItems = [];
+      try {
+        currentItems = await api('GET', `/inventory/items?inv_warehouse_id=${inventoryPageState.warehouseId}`);
+      } catch (_) {
+        currentItems = [];
+      }
+      inlineFormHtml = `
+        <div class="card inv-ob-inline-shell">
+          <div class="card-header inv-ob-inline-shell-head">
+            <h3>新建物品出库</h3>
+            <button type="button" class="btn btn-secondary btn-sm" onclick="invToggleOutboundInlineForm(false)">收起</button>
+          </div>
+          <div class="card-body">
+            ${invBuildOutboundModalMarkup(warehouses, Array.isArray(currentItems) ? currentItems : [], inventoryPageState.outboundForm || {})}
+          </div>
+        </div>`;
+    }
+    panelHtml = `${inlineFormHtml}${invRenderOutboundOrderTable(Array.isArray(allOrders) ? allOrders : [])}`;
   } else if (invPage === 'inbound') {
     let openOrders = [];
     try {
@@ -9562,7 +9778,7 @@ async function renderInventory() {
       <div class="inv-out-page-head-main">
         <span class="form-hint" style="margin:0">按项目编号汇总已出库记录；<strong>出库日期</strong>按发货时间，无则按创建时间。主数据请在 <strong>库存统计</strong> 维护。</span>
       </div>
-      <button type="button" class="btn btn-primary btn-sm" onclick="invOpenOutboundModal()">新建出库</button>
+      <button type="button" class="btn btn-primary btn-sm" onclick="invToggleOutboundInlineForm()">${inventoryPageState.outboundInlineOpen ? '收起新建' : '新建出库'}</button>
     </div>`;
 
   const inboundOpsToolbar = `<div class="inv-toolbar"></div>`;
@@ -9668,6 +9884,7 @@ function invOnOutboundCommonCk(itemId) {
   if (!ck || !q) return;
   if (ck.checked && (parseInt(q.value, 10) || 0) < 1) q.value = 1;
   if (!ck.checked) q.value = 0;
+  invRefreshSelectedPreview();
 }
 
 function invOnOutboundCommonQty(itemId) {
@@ -9677,6 +9894,12 @@ function invOnOutboundCommonQty(itemId) {
   const n = Math.max(0, parseInt(q.value, 10) || 0);
   q.value = n;
   if (ck) ck.checked = n > 0;
+  invRefreshSelectedPreview();
+}
+
+function invOnOutboundCommonNote(itemId) {
+  if (!Number.isFinite(Number(itemId))) return;
+  invRefreshSelectedPreview();
 }
 
 function invPatchOutboundLine(idx, key, val) {
@@ -9709,6 +9932,7 @@ function invOnCommonSearchInput(val) {
     .then((items) => {
       const preset = inventoryPageState.outboundEditCommonPreset;
       commonTbody.innerHTML = invBuildCommonRowsHtml(Array.isArray(items) ? items : [], preset);
+      invRefreshSelectedPreview();
     })
     .catch(() => {});
 }
@@ -9746,6 +9970,7 @@ function invMoveCommonItem(itemId, step) {
     .then((items) => {
       const preset = inventoryPageState.outboundEditCommonPreset;
       commonTbody.innerHTML = invBuildCommonRowsHtml(Array.isArray(items) ? items : [], preset);
+      invRefreshSelectedPreview();
     })
     .catch(() => {});
 }
@@ -9792,6 +10017,7 @@ function invCommonDrop(event, targetItemId) {
     .then((items) => {
       const preset = inventoryPageState.outboundEditCommonPreset;
       commonTbody.innerHTML = invBuildCommonRowsHtml(Array.isArray(items) ? items : [], preset);
+      invRefreshSelectedPreview();
     })
     .catch(() => {});
 }
@@ -9836,6 +10062,7 @@ function invRemoveOutboundRow(idx) {
 }
 
 async function invSubmitOutbound() {
+  const isInlineMode = !!document.querySelector('.inv-ob-inline-shell');
   const ws = document.getElementById('invWarehouseSelect');
   const whId = ws ? parseInt(ws.value, 10) || null : inventoryPageState.warehouseId;
   if (ws && Number.isFinite(whId)) inventoryPageState.warehouseId = whId;
@@ -9923,6 +10150,7 @@ async function invSubmitOutbound() {
       inventoryPageState.outboundLines = [];
       inventoryPageState.outboundLinesByWarehouse = {};
       inventoryPageState.outboundCommonByWarehouse = {};
+      inventoryPageState.outboundItemMetaByWarehouse = {};
       inventoryPageState.outboundForm = {
         linkMode: 'activity',
         project_code: '',
@@ -9939,7 +10167,8 @@ async function invSubmitOutbound() {
       };
       inventoryPageState.linkMode = 'activity';
       inventoryPageState.tab = 'outbound';
-      closeModal();
+      if (!isInlineMode) closeModal();
+      inventoryPageState.outboundInlineOpen = false;
       invSetOutboundModalTitle(false);
       document.getElementById('invOutboundModalBody') && (document.getElementById('invOutboundModalBody').innerHTML = '');
       updateBadges();
@@ -10004,6 +10233,7 @@ async function invSubmitOutbound() {
     inventoryPageState.outboundLines = [];
     inventoryPageState.outboundLinesByWarehouse = {};
     inventoryPageState.outboundCommonByWarehouse = {};
+    inventoryPageState.outboundItemMetaByWarehouse = {};
     inventoryPageState.outboundForm = {
       linkMode: 'activity',
       project_code: '',
@@ -10020,7 +10250,8 @@ async function invSubmitOutbound() {
     };
     inventoryPageState.linkMode = 'activity';
     inventoryPageState.tab = 'outbound';
-    closeModal();
+    if (!isInlineMode) closeModal();
+    inventoryPageState.outboundInlineOpen = false;
     invSetOutboundModalTitle(false);
     document.getElementById('invOutboundModalBody') && (document.getElementById('invOutboundModalBody').innerHTML = '');
     updateBadges();

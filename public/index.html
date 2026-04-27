@@ -9,7 +9,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="style.css?v=20260422-worklog-v20260422.1">
+  <link rel="stylesheet" href="style.css?v=20260426-harmony-v5">
   <!-- Chart.js -->
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
   <script src="https://unpkg.com/lucide@latest"></script>
@@ -184,17 +184,13 @@
       <p class="modal-activity-lead">请填写场次信息；标注 <span class="required">*</span> 为必填。保存后可在场次记录中查看与筛选。</p>
       <form id="activityForm" onsubmit="saveActivity(event)">
         <input type="hidden" id="actId">
-        <div class="form-grid">
+        <div class="form-grid activity-form-grid-3col">
           <div class="form-group">
-            <label class="form-label">年框编号 <span class="required">*</span>
-              <button type="button" class="btn btn-xs btn-ghost" onclick="showLookupEditModal('activity_year_frame_code')" title="编辑年框编号选项" style="margin-left:6px;font-size:11px">编辑</button>
-            </label>
+            <label class="form-label">年框编号 <span class="required">*</span></label>
             <select class="form-control" id="actYearFrameCode" onchange="syncActivityBrandFromYearFrameCode();genProjectCode()"></select>
           </div>
           <div class="form-group">
-            <label class="form-label">活动类型 <span class="required">*</span>
-              <button type="button" class="btn btn-xs btn-ghost" onclick="showLookupEditModal('activity_type')" title="编辑活动类型选项" style="margin-left:6px;font-size:11px">编辑</button>
-            </label>
+            <label class="form-label">活动类型 <span class="required">*</span></label>
             <select class="form-control" id="actActivityType" onchange="genProjectCode()"></select>
           </div>
           <div class="form-group">
@@ -208,12 +204,9 @@
           <div class="form-group">
             <label class="form-label">活动日期</label>
             <input type="date" class="form-control activity-form-date" id="actDate" onchange="genProjectCode()" title="场次实际举办日期">
-            <span class="form-hint">按场次实际举办日选择；用于排期与统计。</span>
           </div>
           <div class="form-group">
-            <label class="form-label">时段
-              <button type="button" class="btn btn-xs btn-ghost" onclick="showLookupEditModal('activity_period')" title="编辑时段选项" style="margin-left:6px;font-size:11px">编辑</button>
-            </label>
+            <label class="form-label">时段</label>
             <select class="form-control" id="actPeriod"></select>
           </div>
           <div class="form-group">
@@ -221,15 +214,11 @@
             <input type="text" class="form-control" id="actClient" placeholder="酒吧/经销商等" title="酒吧/经销商等">
           </div>
           <div class="form-group">
-            <label class="form-label">区域
-              <button type="button" class="btn btn-xs btn-ghost" onclick="showLookupEditModal('activity_region')" title="编辑区域选项" style="margin-left:6px;font-size:11px">编辑</button>
-            </label>
+            <label class="form-label">区域</label>
             <select class="form-control" id="actRegion"></select>
           </div>
           <div class="form-group">
-            <label class="form-label">归属
-              <button type="button" class="btn btn-xs btn-ghost" onclick="showLookupEditModal('activity_belonging')" title="编辑归属选项" style="margin-left:6px;font-size:11px">编辑</button>
-            </label>
+            <label class="form-label">归属</label>
             <select class="form-control" id="actBelonging"></select>
           </div>
           <div class="form-group">
@@ -245,9 +234,7 @@
             <input type="number" class="form-control" id="actGuestCount" placeholder="0">
           </div>
           <div class="form-group">
-            <label class="form-label">执行人员
-              <button type="button" class="btn btn-xs btn-ghost" onclick="showLookupEditModal('activity_executor')" title="编辑执行人员选项" style="margin-left:6px;font-size:11px">编辑</button>
-            </label>
+            <label class="form-label">执行人员</label>
             <select class="form-control" id="actExecutor"></select>
           </div>
           <div class="form-group">
@@ -263,9 +250,7 @@
             </select>
           </div>
           <div class="form-group">
-            <label class="form-label">状态
-              <button type="button" class="btn btn-xs btn-ghost" onclick="showLookupEditModal('activity_status')" title="编辑状态选项" style="margin-left:6px;font-size:11px">编辑</button>
-            </label>
+            <label class="form-label">状态</label>
             <select class="form-control" id="actStatus"></select>
           </div>
           <div class="form-group form-full">
@@ -788,6 +773,6 @@
   <!-- 全局 Toast -->
   <div class="toast-container" id="toastContainer"></div>
 
-  <script src="app.js?v=20260422-worklog-v20260422.1"></script>
+  <script src="app.js?v=20260426-harmony-v5"></script>
 </body>
 </html>
