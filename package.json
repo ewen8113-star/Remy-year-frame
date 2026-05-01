@@ -22,6 +22,7 @@
     "migrate:activity-brand-ambassador": "node src/scripts/addActivityBrandAmbassadorColumn.js",
     "migrate:activity-no-cost": "node src/scripts/addActivityNoCostColumn.js",
     "migrate:activity-period": "node src/scripts/addActivityPeriodColumn.js",
+    "migrate:activity-is-virtual": "node src/scripts/addActivityIsVirtualColumn.js",
     "migrate:activity-region-belonging": "node src/scripts/addActivityRegionBelongingColumns.js",
     "migrate:backfill-activity-belonging": "node src/scripts/backfillActivityBelongingFromProjectCode.js",
     "migrate:fix-activity-status-lookup": "node src/scripts/fixActivityStatusLookupDoneToCompleted.js",
@@ -46,6 +47,7 @@
     "verify:warehouse-db": "node src/scripts/verifyWarehouseDb.js",
     "script:set-all-activities-completed": "node src/scripts/setAllActivitiesStatusCompleted.js",
     "script:sync-activity-region-belonging-excel": "node src/scripts/syncActivityRegionBelongingFromExcel.js",
+    "script:sync-inv-item-catalog": "node src/scripts/syncInvItemCatalogFromWarehouses.js",
     "export:inv-phd-east": "node src/scripts/exportInvPhdEastItems.js"
   },
   "dependencies": {

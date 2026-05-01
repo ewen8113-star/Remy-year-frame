@@ -71,8 +71,18 @@ async function resolveActivityStatusForWrite(raw) {
 // 获取活动列表
 router.get('/', async (req, res) => {
   try {
-    const { yearFrameId, activityType, city, brand, status, sortBy = 'date', sortOrder = 'DESC' } = req.query;
-    
+    const {
+      yearFrameId,
+      activityType,
+      city,
+      brand,
+      status,
+      sortBy = 'date',
+      sortOrder = 'DESC',
+      isVirtual,
+      region,
+    } = req.query;
+
     let sql = `
       SELECT a.*, yf.year as year_frame_name
       FROM activities a
@@ -80,10 +90,20 @@ router.get('/', async (req, res) => {
       WHERE 1=1
     `;
     const params = [];
-    
+
+    if (String(isVirtual) === '1') {
+      sql += ' AND COALESCE(a.is_virtual, 0) = 1';
+    } else {
+      sql += ' AND COALESCE(a.is_virtual, 0) = 0';
+    }
+
     if (yearFrameId) {
       sql += ' AND a.year_frame_id = ?';
       params.push(yearFrameId);
+    }
+    if (region) {
+      sql += " AND TRIM(COALESCE(a.region, '')) = ?";
+      params.push(String(region).trim());
     }
     if (activityType) {
       sql += ' AND a.activity_type = ?';
@@ -148,22 +168,27 @@ router.post('/', async (req, res) => {
     const {
       year_frame_id, year_frame_code, project_code, activity_type,
       city, brand, client, client_name, venue, date, period, region, belonging, guest_count,
-      quoted_price, executor, brand_ambassador, remarks, wine_details, cloud_album_url, cloudAlbumUrl
+      quoted_price, executor, brand_ambassador, remarks, wine_details, cloud_album_url, cloudAlbumUrl,
+      is_virtual,
     } = req.body;
     const cloudAlbumUrlFinal = String(cloud_album_url != null ? cloud_album_url : cloudAlbumUrl || '').trim() || null;
     const brandAmbassadorFinal = String(brand_ambassador || '').trim() || null;
-    
-    const finalStatus = maybeAutoCompleteStatusByDate('pending', date);
+    const virtualFlag = req.body && (is_virtual === 1 || is_virtual === true || String(is_virtual) === '1') ? 1 : 0;
+
+    const finalStatus =
+      virtualFlag === 1 ? 'pending' : maybeAutoCompleteStatusByDate('pending', date);
     const [result] = await db.query(`
       INSERT INTO activities (
         year_frame_id, year_frame_code, project_code, activity_type,
         city, brand, client, client_name, venue, date, period, region, belonging, guest_count,
-        quoted_price, executor, brand_ambassador, status, remarks, wine_details, cloud_album_url
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        quoted_price, executor, brand_ambassador, status, remarks, wine_details, cloud_album_url,
+        is_virtual
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `, [
       year_frame_id, year_frame_code, project_code, activity_type,
       city, brand, client, client_name, venue, date, period || '日常', region || null, belonging || null, guest_count,
-      quoted_price, executor, brandAmbassadorFinal, finalStatus, remarks, JSON.stringify(wine_details || {}), cloudAlbumUrlFinal
+      quoted_price, executor, brandAmbassadorFinal, finalStatus, remarks, JSON.stringify(wine_details || {}), cloudAlbumUrlFinal,
+      virtualFlag,
     ]);
     
     res.json({ id: result.insertId, message: '创建成功' });
@@ -231,7 +256,8 @@ router.put('/:id', async (req, res) => {
       'remarks',
       'wine_details',
       'cost_details',
-      'cloud_album_url'
+      'cloud_album_url',
+      'is_virtual',
     ];
 
     const keys = Object.keys(req.body || {}).filter(
@@ -246,6 +272,7 @@ router.put('/:id', async (req, res) => {
     const params = keys.map((k) => {
       if (k === 'wine_details' || k === 'cost_details') return JSON.stringify(req.body[k] || {});
       if (k === 'no_cost') return req.body[k] ? 1 : 0;
+      if (k === 'is_virtual') return req.body[k] ? 1 : 0;
       return req.body[k];
     });
 
@@ -286,6 +313,7 @@ router.post('/auto-complete-overdue', async (req, res) => {
       UPDATE activities
       SET status = 'completed'
       WHERE status = 'pending'
+        AND COALESCE(is_virtual, 0) = 0
         AND date IS NOT NULL
         AND date < CURDATE()
     `;

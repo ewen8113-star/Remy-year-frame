@@ -40,6 +40,16 @@ let currentPage = localStorage.getItem('remy_currentPage') || 'dashboard';
 let currentUser = null;
 let currentUserRole = 'operator';
 let activitiesState = { page: 1, search: '', type: '', period: '', region: '', belonging: '', brand: '', year: '', month: '', sortOrder: 'DESC', data: [], total: 0 };
+/** 虚拟场次（东南区预估报价 / 预存口径）；列表与场次记录同源 is_virtual=1 */
+let virtualActivitiesState = {
+  page: 1,
+  search: '',
+  brand: '',
+  region: '东南区',
+  sortOrder: 'DESC',
+  data: [],
+  total: 0,
+};
 /** activity_belonging：存储值 → 显示名（与场次页筛选项同源） */
 let actBelongingLabelByValue = {};
 let materialPageState = { filterBrandId: '', mergeFilter: 'all' };
@@ -88,7 +98,7 @@ let warehouseState = { data: [], selectedIds: new Set() };
 let logisticsMergeFilter = 'all';
 let logisticsSortState = { key: 'shipping_date', dir: 'desc' };
 let warehouseMergeFilter = 'all';
-/** 物资模块：库存统计=主数据；出库页为逐单列表；入库页 tab=returns */
+  /** 物资模块：库存管理=主数据；出库页为逐单列表；入库页 tab=returns */
 let inventoryPageState = {
   tab: 'items',
   warehouseId: null,
@@ -121,15 +131,15 @@ let inventoryPageState = {
     } catch (_) { /* ignore */ }
     return 'cards';
   })(),
-  /** 库存统计页：仓库物料 / 酒品目录 / 空瓶回收（与仓库卡片同排） */
+  /** 库存管理页：仓库物料 / 酒品目录 / 空瓶回收 / 物品目录（与仓库卡片同排） */
   stockMasterView: (() => {
     try {
       const v = localStorage.getItem('remy_stockMasterView');
-      if (v === 'wine' || v === 'warehouse' || v === 'empty') return v;
+      if (v === 'wine' || v === 'warehouse' || v === 'empty' || v === 'item-catalog') return v;
     } catch (_) { /* ignore */ }
     return 'warehouse';
   })(),
-  /** 库存统计·各仓库物料清单筛选（酒品目录 / 空瓶回收不使用） */
+  /** 库存管理·各仓库物料清单筛选（酒品目录 / 空瓶回收不使用） */
   itemsListFilter: (() => {
     try {
       const v = localStorage.getItem('remy_invItemsListFilter');
@@ -158,6 +168,8 @@ let inventoryPageState = {
   outboundCommonSearchByWarehouse: {},
   outboundItemMetaByWarehouse: {},
   outboundInlineOpen: false,
+  /** 新建出库左侧列表：common=仅常用 | uncommon=仅非常用 */
+  outboundListFilter: 'common',
 };
 
 function invLoadCommonOrderStore() {
@@ -236,6 +248,11 @@ function invRenderLedgerMonthSelectHtml(selectedYm, range) {
 }
 
 let invAddWineModalState = {
+  catalog: [],
+  warehouses: [],
+  warehouseId: null,
+};
+let invAddItemCatalogModalState = {
   catalog: [],
   warehouses: [],
   warehouseId: null,
@@ -572,7 +589,7 @@ function navigate(page) {
     page = 'inventory';
   }
   if (page === 'inventory' && !hasWriteAccess()) {
-    showToast('仅管理员可维护库存统计（仓库与物料主数据）', 'warning');
+    showToast('仅管理员可维护库存管理（仓库与物料主数据）', 'warning');
     page = 'inv-outbound';
   }
   currentPage = page;
@@ -585,11 +602,12 @@ function navigate(page) {
   const titles = {
     dashboard: '数据看板',
     activities: '场次记录',
+    'virtual-activities': '虚拟场次',
     calendar: '排期日历',
     cost: '活动成本',
     logistics: '物流成本',
     warehouse: '仓储成本',
-    inventory: '库存统计',
+    inventory: '库存管理',
     'inv-outbound': '物品出库',
     'inv-inbound': '物品入库',
     material: '物料采购',
@@ -612,6 +630,7 @@ function navigate(page) {
   const renders = {
     dashboard: renderDashboard,
     activities: renderActivities,
+    'virtual-activities': renderVirtualActivities,
     calendar: renderCalendar,
     cost: renderCost,
     logistics: renderLogistics,
@@ -642,6 +661,7 @@ function expandSidebarGroupForPage(page) {
   const map = {
     dashboard: 'sys',
     activities: 'rec',
+    'virtual-activities': 'rec',
     calendar: 'rec',
     cost: 'cost',
     warehouse: 'cost',
@@ -874,6 +894,14 @@ function closeModal() {
       inventoryPageState.returnOrderId = null;
     }
   }
+  if (activeModal === 'modalActivity') {
+    const m = document.getElementById('modalActivity');
+    if (m) m.classList.remove('modal-activity--virtual');
+    const vh = document.getElementById('actIsVirtual');
+    if (vh) vh.value = '0';
+    const cityEl = document.getElementById('actCity');
+    if (cityEl) cityEl.setAttribute('required', 'required');
+  }
   const cur = document.getElementById(activeModal);
   if (cur) cur.classList.remove('active');
   const prev = modalStack.length ? modalStack.pop() : null;
@@ -1019,15 +1047,18 @@ function typeColor(type) {
 // ===== 更新 badge 数量 =====
 async function updateBadges() {
   try {
-    const qs = currentYearFrameId ? `?yearFrameId=${currentYearFrameId}` : '';
-    const [acts, logs, wars, materials, propRepairs, reimbs, wines] = await Promise.all([
+    const qs = currentYearFrameId ? `?yearFrameId=${currentYearFrameId}&isVirtual=0` : '?isVirtual=0';
+    const vqs = currentYearFrameId ? `?yearFrameId=${currentYearFrameId}&isVirtual=1` : '?isVirtual=1';
+    const [acts, vacts, logs, wars, materials, propRepairs, reimbs, wines, itemCatalog] = await Promise.all([
       api('GET', `/activities${qs}`),
+      api('GET', `/activities${vqs}`),
       api('GET', `/logistics${qs}`),
       api('GET', `/warehouse${qs}`),
       api('GET', `/material-purchases${qs}`),
       api('GET', `/prop-repairs${qs}`),
       api('GET', `/reimbursements${qs}`),
       api('GET', '/wine/catalog'),
+      api('GET', '/inventory/item-catalog'),
     ]);
     let invOpen = 0;
     try {
@@ -1037,6 +1068,8 @@ async function updateBadges() {
       invOpen = 0;
     }
     document.getElementById('badge-activities').textContent = acts.length || 0;
+    const vb = document.getElementById('badge-virtual-activities');
+    if (vb) vb.textContent = Array.isArray(vacts) ? vacts.length : 0;
     updateYearFrameHint(Array.isArray(acts) ? acts.length : 0);
     document.getElementById('badge-logistics').textContent = logs.length || 0;
     document.getElementById('badge-warehouse').textContent = wars.length || 0;
@@ -1053,6 +1086,13 @@ async function updateBadges() {
       wineBadgeCatalog.textContent = n ? `${n} 条` : '—';
       wineBadgeCatalog.style.color = n ? 'var(--text-secondary)' : 'var(--text-muted)';
       wineBadgeCatalog.title = n ? `酒品目录 ${n} 条（主数据，不含分仓库存）` : '暂无目录项';
+    }
+    const itemCatalogBadge = document.getElementById('badge-item-catalog');
+    if (itemCatalogBadge) {
+      const c = Array.isArray(itemCatalog) ? itemCatalog.length : 0;
+      itemCatalogBadge.textContent = c ? `${c} 条` : '—';
+      itemCatalogBadge.style.color = c ? 'var(--text-secondary)' : 'var(--text-muted)';
+      itemCatalogBadge.title = c ? `物品目录 ${c} 条（全局主数据）` : '暂无目录项';
     }
     const invInBadge = document.getElementById('badge-inv-inbound');
     if (invInBadge) {
@@ -1168,7 +1208,6 @@ function buildDashboardCalendarMonth(monthKey, side) {
       .join(' ');
     cells.push(`<button type="button" class="${cls}" data-date="${dateStr}" onmouseenter="setDashboardDateHover('${dateStr}')" onclick="pickDashboardDate('${dateStr}')">${day}</button>`);
   }
-  const hintMsg = String(of.hint_msg || '').trim();
   return `
     <div class="dashboard-date-month">
       <div class="dashboard-date-month-head">
@@ -2554,7 +2593,7 @@ async function loadActivities() {
       console.warn('自动完结过期场次失败（忽略，不阻断列表加载）', e);
     }
 
-    let qs = `?sortBy=activity_date&sortOrder=${activitiesState.sortOrder}`;
+    let qs = `?sortBy=activity_date&sortOrder=${activitiesState.sortOrder}&isVirtual=0`;
     if (currentYearFrameId) qs += `&yearFrameId=${currentYearFrameId}`;
     if (activitiesState.type) qs += `&activityType=${activitiesState.type}`;
     if (activitiesState.brand) qs += `&brand=${encodeURIComponent(activitiesState.brand)}`;
@@ -2713,6 +2752,7 @@ async function deleteActivity(id) {
     showToast('活动已删除', 'success');
     closeModal();
     if (currentPage === 'activities') loadActivities();
+    else if (currentPage === 'virtual-activities') loadVirtualActivities();
     else if (currentPage === 'calendar' && typeof window._calYear === 'number') drawCalendar(window._calYear, window._calMonth);
     else if (currentPage === 'cost') renderCost();
     else loadActivities();
@@ -2725,6 +2765,285 @@ async function deleteActivity(id) {
 function goActPage(p) {
   activitiesState.page = p;
   loadActivities();
+}
+
+/* -------- 虚拟场次（is_virtual=1，默认东南区、分品牌预存统计）-------- */
+const VIRTUAL_BRAND_STAT_ORDER = ['PHD', 'X.O', 'CLUB', 'REMY', 'RC'];
+
+function aggregateVirtualQuotedByBrand(rows) {
+  const byBrand = {};
+  let total = 0;
+  (rows || []).forEach((r) => {
+    const q = Number(r.quoted_price) || 0;
+    total += q;
+    const b = String(r.brand || '').trim() || '未填';
+    byBrand[b] = (byBrand[b] || 0) + q;
+  });
+  return { byBrand, total };
+}
+
+function formatVirtualBrandStatCards(agg) {
+  const { byBrand, total } = agg;
+  const seen = new Set();
+  const parts = [];
+  VIRTUAL_BRAND_STAT_ORDER.forEach((b) => {
+    if (byBrand[b] == null) return;
+    seen.add(b);
+    const v = byBrand[b];
+    parts.push(
+      `<div class="virtual-prepaid-card">
+        <div class="vpc-label">${escapeHtml(b)}</div>
+        <div class="vpc-value">¥${roundMoney2(v).toFixed(2)}</div>
+      </div>`
+    );
+  });
+  Object.keys(byBrand)
+    .filter((b) => !seen.has(b))
+    .sort()
+    .forEach((b) => {
+      const v = byBrand[b];
+      parts.push(
+        `<div class="virtual-prepaid-card">
+          <div class="vpc-label">${escapeHtml(b)}</div>
+          <div class="vpc-value">¥${roundMoney2(v).toFixed(2)}</div>
+        </div>`
+      );
+    });
+  parts.push(
+    `<div class="virtual-prepaid-card virtual-prepaid-total">
+      <div class="vpc-label">预存报价合计</div>
+      <div class="vpc-value">¥${roundMoney2(total).toFixed(2)}</div>
+    </div>`
+  );
+  return `<div class="virtual-prepaid-strip">${parts.join('')}</div>`;
+}
+
+let virtualSearchTimer = null;
+function debounceVirtualSearch() {
+  clearTimeout(virtualSearchTimer);
+  virtualSearchTimer = setTimeout(() => {
+    virtualActivitiesState.search = document.getElementById('virtActSearch')?.value || '';
+    virtualActivitiesState.page = 1;
+    loadVirtualActivities();
+  }, 400);
+}
+
+function filterVirtualActivities() {
+  virtualActivitiesState.brand = document.getElementById('virtActBrand')?.value || '';
+  virtualActivitiesState.region = document.getElementById('virtActRegion')?.value ?? '';
+  virtualActivitiesState.page = 1;
+  loadVirtualActivities();
+}
+
+function resetVirtualFilters() {
+  virtualActivitiesState.brand = '';
+  virtualActivitiesState.region = '东南区';
+  virtualActivitiesState.search = '';
+  virtualActivitiesState.page = 1;
+  const s = document.getElementById('virtActSearch');
+  if (s) s.value = '';
+  const b = document.getElementById('virtActBrand');
+  if (b) b.value = '';
+  const r = document.getElementById('virtActRegion');
+  if (r) r.value = '东南区';
+  loadVirtualActivities();
+}
+
+function toggleVirtualSortOrder() {
+  virtualActivitiesState.sortOrder = virtualActivitiesState.sortOrder === 'DESC' ? 'ASC' : 'DESC';
+  const icon = document.getElementById('virtSortIcon');
+  if (icon) icon.textContent = virtualActivitiesState.sortOrder === 'DESC' ? '↓' : '↑';
+  loadVirtualActivities();
+}
+
+function goVirtPage(p) {
+  virtualActivitiesState.page = p;
+  loadVirtualActivities();
+}
+
+async function renderVirtualActivities() {
+  const container = document.getElementById('pageContainer');
+  virtualActivitiesState.page = 1;
+
+  container.innerHTML = `
+    <div class="virtual-page-hint">
+      虚拟场次用于<strong>报价预估</strong>，不计入<strong>排期日历</strong>与数据看板活动统计。
+      下方<strong>预存报价合计</strong>为当前筛选条件下各品牌报价之和（年框编号对应品牌条线，可覆盖多个品牌）。
+    </div>
+    <div class="toolbar">
+      <div class="toolbar-left">
+        <input type="text" class="search-input" id="virtActSearch" placeholder="搜索客户/项目编号..." oninput="debounceVirtualSearch()" value="${escapeHtml(virtualActivitiesState.search)}">
+        <select class="filter-select" id="virtActRegion" onchange="filterVirtualActivities()">
+          <option value="">全部区域</option>
+        </select>
+        <select class="filter-select" id="virtActBrand" onchange="filterVirtualActivities()">
+          <option value="">全部品牌</option>
+        </select>
+        <button type="button" class="btn btn-secondary btn-sm" onclick="resetVirtualFilters()">重置筛选</button>
+        <button class="btn btn-secondary btn-sm" onclick="toggleVirtualSortOrder()">
+          日期 <span id="virtSortIcon">${virtualActivitiesState.sortOrder === 'DESC' ? '↓' : '↑'}</span>
+        </button>
+      </div>
+      <div class="toolbar-right">
+        <button class="btn btn-primary btn-sm" onclick="showVirtualActivityModal()">+ 新建虚拟场次</button>
+      </div>
+    </div>
+    <div id="virtualPrepaidStats"></div>
+    <div id="virtActTable"></div>
+    <div id="virtActPagination"></div>
+  `;
+
+  try {
+    const regions = await api('GET', '/lookups?category=activity_region');
+    const regionSel = document.getElementById('virtActRegion');
+    if (regionSel) {
+      const keep = virtualActivitiesState.region;
+      regionSel.innerHTML =
+        '<option value="">全部区域</option>' +
+        (regions || [])
+          .map(
+            (r) =>
+              `<option value="${escapeHtml(String(r.value))}">${escapeHtml(String(r.label || r.value))}</option>`
+          )
+          .join('');
+      if (keep !== '' && [...regionSel.options].some((o) => o.value === keep)) regionSel.value = keep;
+      else if (keep === '') regionSel.value = '';
+      else regionSel.value = '东南区';
+      virtualActivitiesState.region = regionSel.value;
+    }
+  } catch (e) {
+    console.warn('虚拟场次区域筛选项加载失败', e);
+  }
+  const virtBrandSel = document.getElementById('virtActBrand');
+  if (virtBrandSel) {
+    const keep = virtualActivitiesState.brand;
+    virtBrandSel.innerHTML =
+      '<option value="">全部品牌</option>' +
+      FIXED_BRAND_CODES.map((code) => `<option value="${code}">${code}</option>`).join('');
+    if (keep && FIXED_BRAND_CODES.includes(keep)) virtBrandSel.value = keep;
+  }
+  await loadVirtualActivities();
+}
+
+async function loadVirtualActivities() {
+  const container = document.getElementById('virtActTable');
+  const statsEl = document.getElementById('virtualPrepaidStats');
+  if (!container) return;
+
+  container.innerHTML = '<div style="text-align:center;padding:30px;color:var(--text-muted)">加载中...</div>';
+
+  try {
+    let qs = `?sortBy=activity_date&sortOrder=${virtualActivitiesState.sortOrder}&isVirtual=1`;
+    if (currentYearFrameId) qs += `&yearFrameId=${currentYearFrameId}`;
+    const regionVal = document.getElementById('virtActRegion')?.value ?? virtualActivitiesState.region;
+    if (regionVal) qs += `&region=${encodeURIComponent(regionVal)}`;
+    if (virtualActivitiesState.brand) qs += `&brand=${encodeURIComponent(virtualActivitiesState.brand)}`;
+
+    const data = await api('GET', `/activities${qs}`);
+
+    let filtered = data || [];
+    if (virtualActivitiesState.search) {
+      const kw = virtualActivitiesState.search.toLowerCase();
+      filtered = filtered.filter(
+        (a) =>
+          (a.city || '').toLowerCase().includes(kw) ||
+          (a.client || '').toLowerCase().includes(kw) ||
+          (a.client_name || '').toLowerCase().includes(kw) ||
+          (a.project_code || '').toLowerCase().includes(kw)
+      );
+    }
+
+    virtualActivitiesState.data = filtered;
+
+    const agg = aggregateVirtualQuotedByBrand(filtered);
+    if (statsEl) statsEl.innerHTML = formatVirtualBrandStatCards(agg);
+
+    const pageSize = 50;
+    const total = filtered.length;
+    const totalPages = Math.ceil(total / pageSize);
+    const start = (virtualActivitiesState.page - 1) * pageSize;
+    const pageData = filtered.slice(start, start + pageSize);
+
+    const grouped = {};
+    pageData.forEach((a) => {
+      const d = new Date(a.date || a.activity_date);
+      const key = Number.isNaN(d.getTime()) ? '未定日期' : `${d.getFullYear()}年${d.getMonth() + 1}月`;
+      if (!grouped[key]) grouped[key] = [];
+      grouped[key].push(a);
+    });
+
+    const vth = 'position:sticky;top:0;z-index:20;background:var(--bg-input);box-shadow:0 1px 0 var(--border);';
+    let html = `<div class="table-wrapper" style="max-height:min(60vh,calc(100vh - 260px));overflow:auto;position:relative;"><table class="data-table act-table-sticky-head virtual-activities-table">
+      <thead><tr>
+        <th style="${vth}">日期</th><th style="${vth}">项目编号</th><th style="${vth}">品牌</th><th style="${vth}">区域</th><th style="${vth}">客户</th>
+        <th style="${vth}">类型</th><th class="numeric" style="${vth}">报价</th><th style="${vth}">备注</th><th style="${vth}">操作</th>
+      </tr></thead><tbody>`;
+
+    Object.entries(grouped).forEach(([month, acts]) => {
+      html += `<tr><td colspan="9" class="group-title">${month}（${acts.length}条）</td></tr>`;
+      acts.forEach((a) => {
+        html += `
+          <tr onclick="showVirtualActivityDetail(${a.id})" style="cursor:pointer">
+            <td>${fmtDateShort(a.date || a.activity_date)}</td>
+            <td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px" title="${escapeHtml(String(a.project_code || ''))}">${escapeHtml(String(a.project_code || '—'))}</td>
+            <td><span class="badge badge-${brandColor(a.brand)}">${escapeHtml(String(a.brand || '—'))}</span></td>
+            <td style="font-size:11px;color:var(--text-secondary)">${escapeHtml(String(a.region || '—'))}</td>
+            <td style="max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px">${escapeHtml(String(a.client || a.client_name || '—'))}</td>
+            <td><span class="badge badge-${typeColor(a.activity_type)}">${escapeHtml(String(a.activity_type || '—'))}</span></td>
+            <td class="numeric"><span class="amount amount-revenue">${fmtMoney(a.quoted_price)}</span></td>
+            <td style="max-width:160px;font-size:11px;color:var(--text-secondary)">${escapeHtml(String(a.remarks || '').slice(0, 80))}${String(a.remarks || '').length > 80 ? '…' : ''}</td>
+            <td onclick="event.stopPropagation()">
+              <div style="display:flex;gap:4px;flex-wrap:wrap">
+                <button class="btn btn-secondary btn-sm" onclick="showVirtualActivityModal(${a.id})">编辑</button>
+                <button type="button" class="btn btn-danger btn-sm activity-row-remove-btn" onclick="openRemoveVirtualActivityDialog(${a.id})">删除</button>
+              </div>
+            </td>
+          </tr>`;
+      });
+    });
+
+    html += `</tbody></table></div>`;
+    container.innerHTML = html;
+    renderLucideIcons();
+
+    const pgEl = document.getElementById('virtActPagination');
+    if (pgEl) {
+      pgEl.innerHTML = renderPagination(
+        virtualActivitiesState.page,
+        totalPages,
+        total,
+        'goVirtPage'
+      );
+    }
+  } catch (err) {
+    container.innerHTML = `<div class="empty-state"><div class="empty-icon"><i data-lucide="triangle-alert" style="width:20px;height:20px"></i></div><div class="empty-title">加载失败</div><div class="empty-sub">${escapeHtml(err.message)}</div></div>`;
+    renderLucideIcons();
+  }
+}
+
+function openRemoveVirtualActivityDialog(activityId) {
+  const hid = document.getElementById('removeActivityTargetId');
+  if (hid) hid.value = String(activityId);
+  const hint = document.getElementById('removeActivityConfirmHint');
+  if (hint) {
+    const row = (virtualActivitiesState.data || []).find((x) => Number(x.id) === Number(activityId));
+    if (row) {
+      const parts = [
+        row.project_code && String(row.project_code).trim(),
+        row.client || row.client_name,
+        row.date || row.activity_date ? fmtDateShort(row.date || row.activity_date) : '',
+      ].filter(Boolean);
+      hint.textContent = parts.length ? `虚拟场次 · ${parts.join(' · ')}` : `虚拟场次 ID：${activityId}`;
+    } else {
+      hint.textContent = `虚拟场次 ID：${activityId}`;
+    }
+  }
+  openModal('modalActivityDeleteConfirm');
+  renderLucideIcons();
+}
+
+function showVirtualActivityDetail(id) {
+  showActivityDetail(id, { virtualContext: true });
 }
 
 function renderPagination(current, total, count, fn) {
@@ -2897,7 +3216,8 @@ async function quickUpdateActivityStatus(id, status) {
     showToast('状态已更新', 'success');
   } catch (err) {
     showToast('状态更新失败: ' + err.message, 'error');
-    loadActivities();
+    if (currentPage === 'virtual-activities') loadVirtualActivities();
+    else loadActivities();
   }
 }
 
@@ -3047,9 +3367,20 @@ async function reactivateLookupOption(id) {
   }
 }
 
-// 打开新建/编辑弹窗
-async function showActivityModal(id = null) {
+// 打开新建/编辑弹窗；opts.virtual 为 true 时为虚拟场次（精简字段、默认东南区）
+async function showActivityModal(id = null, opts = {}) {
+  const modEl = document.getElementById('modalActivity');
+  const leadEl = document.getElementById('modalActivityLead');
+  const virtHidden = document.getElementById('actIsVirtual');
+  if (virtHidden) virtHidden.value = '0';
+  if (modEl) modEl.classList.remove('modal-activity--virtual');
+
   document.getElementById('modalActivityTitle').textContent = id ? '编辑活动' : '新建活动';
+  if (leadEl && !id) {
+    leadEl.innerHTML =
+      '请填写场次信息；标注 <span class="required">*</span> 为必填。保存后可在场次记录中查看与筛选。';
+  }
+
   document.getElementById('actId').value = id || '';
 
   let a = null;
@@ -3060,6 +3391,11 @@ async function showActivityModal(id = null) {
       showToast('加载活动数据失败', 'error');
       return;
     }
+  }
+
+  let isVirtualModal = !!(opts && opts.virtual);
+  if (a && (Number(a.is_virtual) === 1 || a.is_virtual === true)) {
+    isVirtualModal = true;
   }
 
   const lookupSnap = a
@@ -3115,7 +3451,30 @@ async function showActivityModal(id = null) {
 
   syncActivityBrandFromYearFrameCode();
 
+  if (isVirtualModal) {
+    if (virtHidden) virtHidden.value = '1';
+    if (modEl) modEl.classList.add('modal-activity--virtual');
+    document.getElementById('modalActivityTitle').textContent = id ? '编辑虚拟场次' : '新建虚拟场次';
+    if (leadEl) {
+      leadEl.innerHTML =
+        '<strong>虚拟场次</strong>用于报价预估与<strong>预存费用</strong>统计，<strong>不会出现在排期日历</strong>。当前业务为<strong>东南区</strong>客户；通过不同<strong>年框编号</strong>区分品牌条线（可多品牌）。';
+    }
+    const regEl = document.getElementById('actRegion');
+    if (!id && regEl && [...regEl.options].some((o) => o.value === '东南区')) {
+      regEl.value = '东南区';
+    }
+    const cityEl = document.getElementById('actCity');
+    if (cityEl) cityEl.removeAttribute('required');
+  } else {
+    const cityEl = document.getElementById('actCity');
+    if (cityEl) cityEl.setAttribute('required', 'required');
+  }
+
   openModal('modalActivity');
+}
+
+function showVirtualActivityModal(editId = null) {
+  return showActivityModal(editId, { virtual: true });
 }
 
 function toggleWineSection() {
@@ -3237,6 +3596,7 @@ async function syncActivityWineUsageRecords(activityId, activityBody) {
 
 async function saveActivity() {
   const id = document.getElementById('actId').value;
+  const isVirt = document.getElementById('actIsVirtual')?.value === '1';
   const brandAmbassadorEl = document.getElementById('actBrandAmbassador');
   const brandAmbassadorVal = brandAmbassadorEl ? String(brandAmbassadorEl.value || '').trim() : '';
   const body = {
@@ -3260,6 +3620,7 @@ async function saveActivity() {
     status: document.getElementById('actStatus').value,
     remarks: document.getElementById('actRemarks').value,
     cloud_album_url: normalizeCloudAlbumUrl(document.getElementById('actCloudAlbumUrl').value) || null,
+    is_virtual: isVirt ? 1 : 0,
   };
 
   try {
@@ -3267,33 +3628,41 @@ async function saveActivity() {
     let successMsg = '';
     if (id) {
       await api('PUT', `/activities/${id}`, body);
-      successMsg = '活动已更新';
+      successMsg = isVirt ? '虚拟场次已更新' : '活动已更新';
     } else {
       const created = await api('POST', '/activities', body);
       activityId = Number(created?.id || created?.data?.id || 0);
       // Defensive fallback: some environments may return message-only payload.
       if (!activityId && body.project_code) {
-        const rows = await api('GET', `/activities?yearFrameId=${encodeURIComponent(body.year_frame_id)}`);
+        const vq = body.is_virtual ? '&isVirtual=1' : '&isVirtual=0';
+        const rows = await api(
+          'GET',
+          `/activities?yearFrameId=${encodeURIComponent(body.year_frame_id)}${vq}`
+        );
         const matched = (rows || [])
           .filter((r) => String(r.project_code || '').trim() === String(body.project_code || '').trim())
           .sort((a, b) => Number(b.id || 0) - Number(a.id || 0))[0];
         activityId = Number(matched?.id || 0);
       }
-      successMsg = '活动已创建';
+      successMsg = isVirt ? '虚拟场次已创建' : '活动已创建';
     }
-    let ambassadorSavedLabel = '未填写';
-    if (activityId > 0) {
-      try {
-        const latest = await api('GET', `/activities/${activityId}`);
-        ambassadorSavedLabel = String(latest?.brand_ambassador || '').trim() || '未填写';
-      } catch (_) {
-        // 读回失败时不影响主流程，仍按本地值给提示
-        ambassadorSavedLabel = brandAmbassadorVal || '未填写';
+    if (isVirt) {
+      showToast(successMsg, 'success');
+    } else {
+      let ambassadorSavedLabel = '未填写';
+      if (activityId > 0) {
+        try {
+          const latest = await api('GET', `/activities/${activityId}`);
+          ambassadorSavedLabel = String(latest?.brand_ambassador || '').trim() || '未填写';
+        } catch (_) {
+          ambassadorSavedLabel = brandAmbassadorVal || '未填写';
+        }
       }
+      showToast(`${successMsg} · 品牌大使：${ambassadorSavedLabel}`, 'success');
     }
-    showToast(`${successMsg} · 品牌大使：${ambassadorSavedLabel}`, 'success');
     closeModal();
-    loadActivities();
+    if (currentPage === 'virtual-activities') loadVirtualActivities();
+    else loadActivities();
     void updateBadges();
   } catch (err) {
     showToast('保存失败: ' + err.message, 'error');
@@ -3368,17 +3737,23 @@ function activityDetailRowHtml(label, innerHtml) {
 
 function mergeActivityBelongingFromListRow(detail, id) {
   if (pickActivityBelonging(detail)) return detail;
-  const fromList = (activitiesState.data || []).find((x) => String(x.id) === String(id));
+  const fromList =
+    (activitiesState.data || []).find((x) => String(x.id) === String(id)) ||
+    (virtualActivitiesState.data || []).find((x) => String(x.id) === String(id));
   if (!fromList) return detail;
   const listBel = displayActivityBelongingValue(fromList);
   if (!listBel) return detail;
   return { ...detail, belonging: listBel };
 }
 
-async function showActivityDetail(id) {
+async function showActivityDetail(id, opts = {}) {
   try {
     const raw = await api('GET', `/activities/${encodeURIComponent(id)}?cb=${Date.now()}`);
     const a = mergeActivityBelongingFromListRow(raw, id);
+    const isVirt =
+      !!(opts && opts.virtualContext) ||
+      Number(a.is_virtual) === 1 ||
+      a.is_virtual === true;
     await ensureBelongingLabelMap();
     const belRaw = displayActivityBelongingValue(a);
     const belLabel = belRaw ? belongingLabelForValue(belRaw) : '';
@@ -3399,7 +3774,13 @@ async function showActivityDetail(id) {
     const titleEl = document.getElementById('activityDetailModalTitle');
     if (titleEl) {
       const pc = a.project_code ? String(a.project_code).trim() : '';
-      titleEl.textContent = pc ? `活动详情 · ${pc}` : '活动详情';
+      titleEl.textContent = isVirt
+        ? pc
+          ? `虚拟场次 · ${pc}`
+          : '虚拟场次详情'
+        : pc
+          ? `活动详情 · ${pc}`
+          : '活动详情';
     }
 
     content.innerHTML = `
@@ -3410,6 +3791,7 @@ async function showActivityDetail(id) {
             <div class="activity-detail-hero-date">${escapeHtml(fmtDate(a.date || a.activity_date))}</div>
           </div>
           <div class="activity-detail-hero-meta">
+            ${isVirt ? `<span class="badge badge-blue">虚拟场次</span>` : ''}
             <span><strong style="color:var(--text-primary)">${escapeHtml(a.city || '—')}</strong></span>
             <span class="badge badge-${brandColor(a.brand)}">${escapeHtml(a.brand || '—')}</span>
             <span class="badge badge-${typeColor(a.activity_type)}">${escapeHtml(a.activity_type || '—')}</span>
@@ -3447,9 +3829,13 @@ async function showActivityDetail(id) {
             ? `<div class="activity-detail-remarks activity-detail-block"><h4>备注</h4><p>${escapeHtml(a.remarks)}</p></div>`
             : ''
         }
-        <div class="activity-detail-actions">
+        ${
+          !isVirt
+            ? `<div class="activity-detail-actions">
           <button type="button" class="btn btn-success btn-sm" onclick="closeModal();setTimeout(()=>showCostFill(${id}),100)"><i data-lucide="wallet" style="width:13px;height:13px"></i>填写成本</button>
-        </div>
+        </div>`
+            : `<div class="activity-detail-block" style="margin-top:12px;font-size:12px;color:var(--text-secondary)">此为虚拟预估场次，不参与排期日历；报价计入上方「虚拟场次」页预存统计。</div>`
+        }
       </div>
     `;
 
@@ -3457,7 +3843,7 @@ async function showActivityDetail(id) {
     if (editBtn) {
       editBtn.onclick = () => {
         closeModal();
-        setTimeout(() => showActivityModal(id), 100);
+        setTimeout(() => (isVirt ? showVirtualActivityModal(id) : showActivityModal(id)), 100);
       };
     }
 
@@ -3847,9 +4233,11 @@ async function renderCost() {
 
   try {
     await ensureBelongingLabelMap();
+    let qsAct = '?isVirtual=0';
+    if (currentYearFrameId) qsAct += `&yearFrameId=${currentYearFrameId}`;
     const qs = currentYearFrameId ? `?yearFrameId=${currentYearFrameId}` : '';
     const [activities, reimbursements] = await Promise.all([
-      api('GET', `/activities${qs}`),
+      api('GET', `/activities${qsAct}`),
       api('GET', `/reimbursements${qs}`),
     ]);
     const { reimbByAct } = buildReimbByActivityMap(reimbursements);
@@ -4643,7 +5031,7 @@ const logisticsProjectIndex = {
 };
 
 async function ensureActivityProjectIndex() {
-  let qs = '?sortBy=date&sortOrder=DESC';
+  let qs = '?sortBy=date&sortOrder=DESC&isVirtual=0';
   if (currentYearFrameId) qs += `&yearFrameId=${currentYearFrameId}`;
   const acts = await api('GET', `/activities${qs}`);
   const codes = (acts || [])
@@ -4782,7 +5170,7 @@ function toggleLogSpecialCar() {
   } else {
     track.disabled = false;
     express.disabled = false;
-    track.placeholder = '顺丰请填写单号';
+    track.placeholder = '顺丰单号可后续补填';
   }
 }
 
@@ -4820,10 +5208,7 @@ async function saveLogistics() {
     showToast('勾选月结后请填写月份', 'error');
     return;
   }
-  if (!monthlySettlementFinal && !isSpecialCar && expressCompany === '顺丰' && !String(trackingNumber || '').trim()) {
-    showToast('顺丰发货请填写单号；若为包车请勾选“专车”', 'error');
-    return;
-  }
+  // 顺丰单号允许后补：先创建记录，后续再到物流模块补录
   const body = {
     year_frame_id: currentYearFrameId || 1,
     logistics_company: logisticsCompany,
@@ -5399,12 +5784,20 @@ async function renderBackup() {
 async function exportData() {
   try {
     const qs = currentYearFrameId ? `?yearFrameId=${currentYearFrameId}` : '';
-    const [activities, logistics, warehouse, reimbursements] = await Promise.all([
-      api('GET', `/activities${qs}`),
+    let qsReal = '?isVirtual=0';
+    let qsVirt = '?isVirtual=1';
+    if (currentYearFrameId) {
+      qsReal += `&yearFrameId=${currentYearFrameId}`;
+      qsVirt += `&yearFrameId=${currentYearFrameId}`;
+    }
+    const [activitiesReal, activitiesVirtual, logistics, warehouse, reimbursements] = await Promise.all([
+      api('GET', `/activities${qsReal}`),
+      api('GET', `/activities${qsVirt}`),
       api('GET', `/logistics${qs}`),
       api('GET', `/warehouse${qs}`),
       api('GET', `/reimbursements${qs}`),
     ]);
+    const activities = [...(activitiesReal || []), ...(activitiesVirtual || [])];
     const data = { exportTime: new Date().toISOString(), year: currentYear, activities, logistics, warehouse, reimbursements };
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
@@ -6248,7 +6641,7 @@ async function showReimbursementModal(record) {
     if (!reimbursementPageState.activities.length) {
       reimbursementPageState.activities = await api(
         'GET',
-        `/activities?yearFrameId=${currentYearFrameId}&sortBy=date&sortOrder=DESC`
+        `/activities?yearFrameId=${currentYearFrameId}&sortBy=date&sortOrder=DESC&isVirtual=0`
       );
     }
   } catch (e) {
@@ -6614,7 +7007,7 @@ async function renderReimbursements() {
     const qs = `?yearFrameId=${currentYearFrameId}`;
     const [rows, acts] = await Promise.all([
       api('GET', `/reimbursements${qs}`),
-      api('GET', `/activities?yearFrameId=${currentYearFrameId}&sortBy=date&sortOrder=DESC`),
+      api('GET', `/activities?yearFrameId=${currentYearFrameId}&sortBy=date&sortOrder=DESC&isVirtual=0`),
     ]);
     reimbursementPageState.rows = rows;
     reimbursementPageState.activities = acts;
@@ -7127,7 +7520,7 @@ async function wcWineCatalogImageUpload() {
   }
 }
 
-/** 兼容旧入口：酒品目录已并入「库存统计」与仓库同排卡片 */
+/** 兼容旧入口：酒品目录已并入「库存管理」与仓库同排卡片 */
 async function renderWine() {
   navigate('wine');
 }
@@ -7189,7 +7582,13 @@ async function loadWineCatalogPage() {
       </div>`;
     renderLucideIcons();
   } catch (e) {
-    host.innerHTML = `<div style="color:var(--danger);padding:16px">加载失败：${escapeHtml(e.message || '')}</div>`;
+    const msg = String(e && e.message ? e.message : '');
+    if (/\b404\b/.test(msg)) {
+      host.innerHTML =
+        '<div class="empty-state">暂无物品目录。点击上方「同步目录（PHD/X.O/CLUB）」即可生成首批目录数据。</div>';
+      return;
+    }
+    host.innerHTML = `<div style="color:var(--danger);padding:16px">加载失败：${escapeHtml(msg || '')}</div>`;
   }
 }
 
@@ -7307,6 +7706,277 @@ async function deleteWineCatalogItem(id) {
     updateBadges();
   } catch (e) {
     showToast(e.message || '删除失败', 'error');
+  }
+}
+
+function invCatalogKey(name, dimensions) {
+  return `${String(name || '').trim()}@@${String(dimensions || '').trim()}`;
+}
+
+async function loadItemCatalogPage() {
+  const host = document.getElementById('itemCatalogListHost');
+  const statsEl = document.getElementById('itemCatalogStats');
+  if (!host) return;
+  try {
+    const rows = await api('GET', '/inventory/item-catalog');
+    const safeRows = Array.isArray(rows) ? rows : [];
+    if (statsEl) {
+      statsEl.innerHTML = `
+        <div class="stat-card" style="min-width:180px">
+          <div class="stat-label">目录条数</div>
+          <div class="stat-value">${safeRows.length}</div>
+        </div>`;
+    }
+    if (!safeRows.length) {
+      host.innerHTML =
+        '<div class="empty-state">暂无物品目录。点击上方「同步目录（PHD/X.O/CLUB）」生成目录主数据。</div>';
+      renderLucideIcons();
+      return;
+    }
+    host.innerHTML = `
+      <div class="table-wrapper act-table-scroll-wrap">
+        <table class="data-table act-table-sticky-head">
+          <thead>
+            <tr>
+              <th style="width:72px">图</th>
+              <th>名称</th>
+              <th>规格</th>
+              <th>来源品牌</th>
+              <th>来源区域</th>
+              <th style="width:88px">常用</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${safeRows
+              .map((r) => {
+                const img =
+                  Array.isArray(r.image_urls) && r.image_urls[0]
+                    ? `<img src="${escapeHtml(r.image_urls[0])}" alt="" style="width:56px;height:56px;object-fit:contain;border-radius:6px;background:var(--bg-primary)">`
+                    : '<span style="color:var(--text-muted);font-size:12px">—</span>';
+                return `<tr>
+                  <td>${img}</td>
+                  <td style="font-weight:600">${escapeHtml(r.name || '—')}</td>
+                  <td>${escapeHtml(r.dimensions || '—')}</td>
+                  <td>${escapeHtml(r.source_brands || '—')}</td>
+                  <td>${escapeHtml(r.source_regions || '—')}</td>
+                  <td>${r.is_common ? '<span class="badge badge-accent">常用</span>' : '<span class="badge badge-gray">—</span>'}</td>
+                </tr>`;
+              })
+              .join('')}
+          </tbody>
+        </table>
+      </div>`;
+    renderLucideIcons();
+  } catch (e) {
+    const msg = String(e && e.message ? e.message : '');
+    if (/\b404\b/.test(msg)) {
+      host.innerHTML =
+        '<div class="empty-state">当前后端进程未加载“物品目录”接口（404）。请重启后端后重试；重启前你也可以先在服务器执行脚本 <code>npm run script:sync-inv-item-catalog</code>。</div>';
+      return;
+    }
+    host.innerHTML = `<div style="color:var(--danger);padding:16px">加载失败：${escapeHtml(msg || '')}</div>`;
+  }
+}
+
+async function invSyncItemCatalogFromWarehouses() {
+  if (!hasWriteAccess()) {
+    showToast('仅管理员可同步物品目录', 'warning');
+    return;
+  }
+  try {
+    const ret = await api('POST', '/inventory/item-catalog/sync-from-warehouses', {});
+    showToast(`同步完成：新增 ${ret.inserted || 0}，更新 ${ret.updated || 0}`, 'success');
+    await loadItemCatalogPage();
+    updateBadges();
+  } catch (e) {
+    const msg = String(e && e.message ? e.message : '');
+    if (/\b404\b/.test(msg)) {
+      showToast('同步接口未生效（404）：请重启后端服务后再点同步', 'warning');
+      return;
+    }
+    showToast(msg || '同步失败', 'error');
+  }
+}
+
+async function invOpenAddItemCatalogModal() {
+  if (!hasWriteAccess()) {
+    showToast('仅管理员可从目录添加物品', 'warning');
+    return;
+  }
+  const whId = Number(inventoryPageState.warehouseId || 0);
+  if (!whId) {
+    showToast('请先点击仓库卡片', 'warning');
+    return;
+  }
+  const body = document.getElementById('invAddItemCatalogModalBody');
+  if (!body) return;
+  body.innerHTML = '<div style="padding:8px;color:var(--text-muted)">加载物品目录中...</div>';
+  openModal('modalInvAddItemCatalog');
+  try {
+    const [catalog, warehouses] = await Promise.all([
+      api('GET', '/inventory/item-catalog'),
+      api('GET', '/inventory/warehouses'),
+    ]);
+    invAddItemCatalogModalState.catalog = Array.isArray(catalog) ? catalog : [];
+    invAddItemCatalogModalState.warehouses = Array.isArray(warehouses) ? warehouses : [];
+    invAddItemCatalogModalState.warehouseId = whId;
+    invAddItemCatalogModalState.search = '';
+    if (!invAddItemCatalogModalState.warehouses.some((w) => Number(w.id) === whId)) {
+      invAddItemCatalogModalState.warehouseId = Number(invAddItemCatalogModalState.warehouses[0]?.id || 0) || null;
+    }
+    await invRenderAddItemCatalogModalContent();
+  } catch (e) {
+    body.innerHTML = `<div style="padding:8px;color:var(--danger)">加载失败：${escapeHtml(e.message || '')}</div>`;
+  }
+}
+
+async function invRenderAddItemCatalogModalContent() {
+  const body = document.getElementById('invAddItemCatalogModalBody');
+  if (!body) return;
+  const whId = Number(invAddItemCatalogModalState.warehouseId || 0);
+  if (!whId) {
+    body.innerHTML = '<div style="padding:8px;color:var(--text-muted)">暂无可用仓库，请先创建仓库。</div>';
+    return;
+  }
+  const wh = (invAddItemCatalogModalState.warehouses || []).find((w) => Number(w.id) === whId);
+  const items = await api('GET', `/inventory/items?inv_warehouse_id=${whId}`);
+  const exists = new Set((items || []).map((it) => invCatalogKey(it.name, it.dimensions)));
+  const rows = (invAddItemCatalogModalState.catalog || []).map((c) => {
+    const key = invCatalogKey(c.name, c.dimensions);
+    const already = exists.has(key);
+    const img =
+      Array.isArray(c.image_urls) && c.image_urls[0]
+        ? `<img src="${escapeHtml(c.image_urls[0])}" alt="" style="width:40px;height:40px;object-fit:contain;border-radius:6px;background:var(--bg-primary)">`
+        : '<span style="color:var(--text-muted)">—</span>';
+    const searchText = [c.name, c.dimensions, c.source_brands, c.source_regions]
+      .map((x) => String(x || '').trim().toLowerCase())
+      .filter(Boolean)
+      .join(' ');
+    return `
+      <tr data-catalog-id="${c.id}" data-search="${escapeHtml(searchText)}">
+        <td>${img}</td>
+        <td style="font-weight:600">${escapeHtml(c.name || '—')}</td>
+        <td>${escapeHtml(c.dimensions || '—')}</td>
+        <td>${escapeHtml(c.source_brands || '—')}</td>
+        <td style="text-align:center">
+          ${already ? `<span style="font-size:12px;color:var(--text-muted)">已在仓库</span>` : `<input type="checkbox" class="inv-add-item-catalog-ck" data-catalog-id="${c.id}">`}
+        </td>
+        <td style="width:100px">
+          ${already ? '<span style="color:var(--text-muted);font-size:12px">—</span>' : `<input type="number" class="form-control inv-add-item-catalog-qty" data-catalog-id="${c.id}" min="0" step="1" value="0" placeholder="0">`}
+        </td>
+      </tr>`;
+  });
+  const whOpts = (invAddItemCatalogModalState.warehouses || [])
+    .map((w) => `<option value="${w.id}" ${Number(w.id) === whId ? 'selected' : ''}>${escapeHtml(`${invWarehouseBrandDisplay(w) || ''} · ${w.region || ''}${w.label ? ` · ${w.label}` : ''}`)}</option>`)
+    .join('');
+  body.innerHTML = `
+    <div class="form-group" style="margin-bottom:10px">
+      <label class="form-label">目标仓库</label>
+      <select class="form-control" id="invAddItemCatalogWarehouse" onchange="invOnAddItemCatalogWarehouseChange(this.value)">
+        ${whOpts}
+      </select>
+    </div>
+    <div class="form-hint" style="margin:0 0 10px">
+      当前仓库：<strong>${escapeHtml(wh ? `${invWarehouseBrandDisplay(wh)} · ${wh.region}` : `#${whId}`)}</strong>。从目录选择物料加入仓库；数量可填 0，后续再调整。
+    </div>
+    <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px">
+      <button type="button" class="btn btn-secondary btn-xs" onclick="invAddItemCatalogToggleAll(true)">全选可添加</button>
+      <button type="button" class="btn btn-secondary btn-xs" onclick="invAddItemCatalogToggleAll(false)">全不选</button>
+      <input
+        type="text"
+        class="form-control"
+        id="invAddItemCatalogSearch"
+        value="${escapeHtml(invAddItemCatalogModalState.search || '')}"
+        placeholder="搜索名称/规格/来源品牌"
+        style="margin-left:auto;max-width:280px"
+        oninput="invFilterAddItemCatalogRows(this.value)"
+      >
+    </div>
+    <div class="table-wrapper" style="max-height:52vh;overflow:auto">
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th style="width:52px">图</th>
+            <th>名称</th>
+            <th>规格</th>
+            <th>来源品牌</th>
+            <th style="width:96px;text-align:center">加入</th>
+            <th style="width:110px">初始数量</th>
+          </tr>
+        </thead>
+        <tbody>${rows.join('')}</tbody>
+      </table>
+    </div>
+  `;
+  invFilterAddItemCatalogRows(invAddItemCatalogModalState.search || '');
+}
+
+function invFilterAddItemCatalogRows(keyword) {
+  const kw = String(keyword || '').trim().toLowerCase();
+  invAddItemCatalogModalState.search = kw;
+  document.querySelectorAll('#invAddItemCatalogModalBody tbody tr[data-search]').forEach((tr) => {
+    const hay = String(tr.getAttribute('data-search') || '').toLowerCase();
+    tr.style.display = !kw || hay.includes(kw) ? '' : 'none';
+  });
+}
+
+async function invOnAddItemCatalogWarehouseChange(warehouseId) {
+  const id = parseInt(warehouseId, 10);
+  if (!Number.isFinite(id)) return;
+  invAddItemCatalogModalState.warehouseId = id;
+  const body = document.getElementById('invAddItemCatalogModalBody');
+  if (body) body.innerHTML = '<div style="padding:8px;color:var(--text-muted)">切换仓库中...</div>';
+  try {
+    await invRenderAddItemCatalogModalContent();
+  } catch (e) {
+    if (body) body.innerHTML = `<div style="padding:8px;color:var(--danger)">加载失败：${escapeHtml(e.message || '')}</div>`;
+  }
+}
+
+function invAddItemCatalogToggleAll(checked) {
+  document.querySelectorAll('.inv-add-item-catalog-ck').forEach((el) => {
+    el.checked = !!checked;
+  });
+}
+
+async function invSubmitAddItemCatalogToWarehouse() {
+  if (!hasWriteAccess()) {
+    showToast('仅管理员可从目录添加物品', 'warning');
+    return;
+  }
+  const whId = Number(
+    document.getElementById('invAddItemCatalogWarehouse')?.value || invAddItemCatalogModalState.warehouseId || inventoryPageState.warehouseId || 0,
+  );
+  if (!whId) {
+    showToast('请先选择仓库', 'warning');
+    return;
+  }
+  const picked = [];
+  document.querySelectorAll('.inv-add-item-catalog-ck:checked').forEach((ck) => {
+    const catalogId = parseInt(ck.dataset.catalogId, 10);
+    if (!Number.isFinite(catalogId) || catalogId <= 0) return;
+    const qtyEl = document.querySelector(`.inv-add-item-catalog-qty[data-catalog-id="${catalogId}"]`);
+    const q = parseInt(qtyEl?.value, 10);
+    picked.push({ catalog_id: catalogId, quantity: Number.isFinite(q) && q >= 0 ? q : 0 });
+  });
+  if (!picked.length) {
+    showToast('请先勾选要添加的物料', 'warning');
+    return;
+  }
+  try {
+    const ret = await api('POST', '/inventory/items/from-item-catalog', {
+      inv_warehouse_id: whId,
+      items: picked,
+    });
+    inventoryPageState.warehouseId = whId;
+    showToast(
+      `已添加 ${ret.inserted || 0} 条；已存在 ${ret.skipped_existing || 0} 条`,
+      'success',
+    );
+    closeModal();
+    await renderInventory();
+  } catch (e) {
+    showToast(e.message || '添加失败', 'error');
   }
 }
 
@@ -8065,20 +8735,44 @@ function invStatQty(n) {
   return Number.isFinite(v) ? v : 0;
 }
 
+function invWarehouseBrandDisplay(w) {
+  const code = String(w?.brand_code || '').trim().toUpperCase();
+  const region = String(w?.region || '').trim();
+  if (code === 'X.O' && (region === '北区' || region === '南区')) {
+    return region;
+  }
+  return String(w?.brand_code || '').trim();
+}
+
+function invReorderWarehouseCards(warehouses) {
+  const arr = Array.isArray(warehouses) ? warehouses.slice() : [];
+  const northIdx = arr.findIndex((w) => String(w?.region || '') === '北区');
+  const clubEastIdx = arr.findIndex(
+    (w) => String(w?.brand_code || '').toUpperCase() === 'CLUB' && String(w?.region || '') === '东区',
+  );
+  if (northIdx >= 0 && clubEastIdx >= 0 && northIdx !== clubEastIdx) {
+    const tmp = arr[northIdx];
+    arr[northIdx] = arr[clubEastIdx];
+    arr[clubEastIdx] = tmp;
+  }
+  return arr;
+}
+
 function invRenderWarehouseCardsHtml(warehouses, selectedId) {
   if (!warehouses.length) {
     return '<div class="empty-state inv-wh-cards-empty">暂无仓库。请由管理员在数据库或迁移脚本中维护仓库。</div>';
   }
+  const orderedWarehouses = invReorderWarehouseCards(warehouses);
   const sid = selectedId != null ? Number(selectedId) : null;
   return `
     <div class="inv-warehouse-cards" role="list" aria-label="选择仓库">
-      ${warehouses
+      ${orderedWarehouses
         .map((w) => {
           const active = sid != null && Number(w.id) === sid;
           const label = w.label ? `<div class="inv-wh-card-label">${escapeHtml(w.label)}</div>` : '';
           return `
         <button type="button" class="inv-wh-card ${active ? 'active' : ''}" data-wh-id="${w.id}" onclick="invSelectWarehouse(${w.id})" role="listitem">
-          <div class="inv-wh-card-brand">${escapeHtml(w.brand_code)}</div>
+          <div class="inv-wh-card-brand">${escapeHtml(invWarehouseBrandDisplay(w))}</div>
           <div class="inv-wh-card-region">${escapeHtml(w.region)}</div>
           ${label}
         </button>`;
@@ -8087,21 +8781,28 @@ function invRenderWarehouseCardsHtml(warehouses, selectedId) {
     </div>`;
 }
 
-/** 库存统计页：四仓 + 酒品目录 + 空瓶回收（与仓库同排） */
+/** 库存管理页：四仓 + 酒品目录 + 物品目录 + 空瓶回收（与仓库同排） */
 function invRenderStockMasterCardsHtml(warehouses, selectedWarehouseId, stockMasterView) {
+  const orderedWarehouses = invReorderWarehouseCards(warehouses);
   const smv =
-    stockMasterView === 'wine' ? 'wine' : stockMasterView === 'empty' ? 'empty' : 'warehouse';
+    stockMasterView === 'wine'
+      ? 'wine'
+      : stockMasterView === 'empty'
+        ? 'empty'
+        : stockMasterView === 'item-catalog'
+          ? 'item-catalog'
+          : 'warehouse';
   const sid = selectedWarehouseId != null ? Number(selectedWarehouseId) : null;
   const whButtons =
-    warehouses.length === 0
+    orderedWarehouses.length === 0
       ? ''
-      : warehouses
+      : orderedWarehouses
           .map((w) => {
             const active = smv === 'warehouse' && sid != null && Number(w.id) === sid;
             const label = w.label ? `<div class="inv-wh-card-label">${escapeHtml(w.label)}</div>` : '';
             return `
         <button type="button" class="inv-wh-card ${active ? 'active' : ''}" data-wh-id="${w.id}" onclick="invSelectWarehouse(${w.id})" role="listitem">
-          <div class="inv-wh-card-brand">${escapeHtml(w.brand_code)}</div>
+          <div class="inv-wh-card-brand">${escapeHtml(invWarehouseBrandDisplay(w))}</div>
           <div class="inv-wh-card-region">${escapeHtml(w.region)}</div>
           ${label}
         </button>`;
@@ -8114,6 +8815,13 @@ function invRenderStockMasterCardsHtml(warehouses, selectedWarehouseId, stockMas
           <div class="inv-wh-card-region">品牌 · 规格 · 图片</div>
           <div class="inv-wh-card-label" id="badge-wine-catalog">—</div>
         </button>`;
+  const itemCatalogActive = smv === 'item-catalog';
+  const itemCatalogCard = `
+        <button type="button" class="inv-wh-card inv-wh-card-item-catalog ${itemCatalogActive ? 'active' : ''}" onclick="invSelectStockMasterView('item-catalog')" role="listitem" title="物品目录（全局主数据）">
+          <div class="inv-wh-card-brand">物品目录</div>
+          <div class="inv-wh-card-region">物料主数据</div>
+          <div class="inv-wh-card-label" id="badge-item-catalog">—</div>
+        </button>`;
   const emptyActive = smv === 'empty';
   const emptyCard = `
         <button type="button" class="inv-wh-card inv-wh-card-empty ${emptyActive ? 'active' : ''}" onclick="invSelectStockMasterView('empty')" role="listitem" title="各仓库空瓶回收库存">
@@ -8121,10 +8829,11 @@ function invRenderStockMasterCardsHtml(warehouses, selectedWarehouseId, stockMas
           <div class="inv-wh-card-region">按仓查看 · 结算</div>
           <div class="inv-wh-card-label" aria-hidden="true">&nbsp;</div>
         </button>`;
-  if (!warehouses.length) {
+  if (!orderedWarehouses.length) {
     return `
     <div class="inv-warehouse-cards" role="list" aria-label="选择酒品目录或空瓶回收">
       ${wineCard}
+      ${itemCatalogCard}
       ${emptyCard}
     </div>`;
   }
@@ -8132,12 +8841,13 @@ function invRenderStockMasterCardsHtml(warehouses, selectedWarehouseId, stockMas
     <div class="inv-warehouse-cards" role="list" aria-label="选择仓库、酒品目录或空瓶回收">
       ${whButtons}
       ${wineCard}
+      ${itemCatalogCard}
       ${emptyCard}
     </div>`;
 }
 
 function invSelectStockMasterView(mode) {
-  if (mode !== 'wine' && mode !== 'empty') return;
+  if (mode !== 'wine' && mode !== 'empty' && mode !== 'item-catalog') return;
   inventoryPageState.stockMasterView = mode;
   try {
     localStorage.setItem('remy_stockMasterView', mode);
@@ -8349,7 +9059,7 @@ async function invOpenEmptyBottleTraceModal(itemId) {
   renderLucideIcons();
 }
 
-/** 兼容旧入口：空瓶回收已并入「库存统计」与仓库同排卡片 */
+/** 兼容旧入口：空瓶回收已并入「库存管理」与仓库同排卡片 */
 async function renderEmptyBottleRecovery() {
   navigate('inv-empty');
 }
@@ -8366,31 +9076,34 @@ async function invOpenItemDetail(itemId) {
   try {
     const it = await api('GET', `/inventory/items/${id}`);
     const urls = Array.isArray(it.image_urls) ? it.image_urls.filter(Boolean) : [];
+    // 控制弹窗高度：主图用固定高度，减少滚动查阅
     const main = urls[0]
-      ? `<img src="${escapeHtml(urls[0])}" alt="" style="width:100%;aspect-ratio:4/3;object-fit:contain;object-position:center;border-radius:8px;background:var(--bg-secondary);border:1px solid var(--border)">`
-      : `<div style="width:100%;aspect-ratio:4/3;border-radius:8px;background:var(--bg-secondary);display:flex;align-items:center;justify-content:center;color:var(--text-muted)">暂无图片</div>`;
+      ? `<img src="${escapeHtml(urls[0])}" alt="" style="width:240px;max-width:100%;height:155px;object-fit:contain;object-position:center;border-radius:8px;background:var(--bg-secondary);border:1px solid var(--border)">`
+      : `<div style="width:240px;max-width:100%;height:155px;border-radius:8px;background:var(--bg-secondary);display:flex;align-items:center;justify-content:center;color:var(--text-muted);border:1px solid var(--border)">暂无图片</div>`;
     const thumbs =
       urls.length > 1
-        ? `<div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:10px">
+        ? `<div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:10px;max-width:240px;max-height:86px;overflow:hidden">
             ${urls
-              .slice(1, 13)
+              .slice(1, 9)
               .map(
                 (u) =>
-                  `<img src="${escapeHtml(u)}" alt="" style="width:64px;height:64px;object-fit:contain;object-position:center;border-radius:6px;border:1px solid var(--border);background:var(--bg-secondary)">`,
+                  `<img src="${escapeHtml(u)}" alt="" style="width:46px;height:46px;object-fit:contain;object-position:center;border-radius:6px;border:1px solid var(--border);background:var(--bg-secondary)">`,
               )
               .join('')}
           </div>`
         : '';
     body.innerHTML = `
-      <div style="display:grid;gap:12px">
-        <div>${main}${thumbs}</div>
-        <div style="display:grid;grid-template-columns:110px 1fr;gap:8px 12px;font-size:14px;line-height:1.6">
+      <div style="display:grid;grid-template-columns:280px 1fr;gap:12px;align-items:start">
+        <div style="display:flex;flex-direction:column;gap:10px;align-items:flex-start">
+          ${main}${thumbs}
+        </div>
+        <div style="display:grid;grid-template-columns:96px 1fr;gap:7px 12px;font-size:13px;line-height:1.55">
           <div style="color:var(--text-muted)">名称</div><div style="font-weight:700">${escapeHtml(it.name || '—')}</div>
           <div style="color:var(--text-muted)">规格</div><div>${escapeHtml(it.dimensions || '—')}</div>
           <div style="color:var(--text-muted)">库存</div><div><span class="${invStockClass(it)}">${escapeHtml(String(it.quantity_on_hand ?? 0))}</span></div>
           <div style="color:var(--text-muted)">累计出库</div><div>${escapeHtml(String(invStatQty(it.total_outbound)))}</div>
           <div style="color:var(--text-muted)">损坏 / 丢失</div><div>${escapeHtml(String(invStatQty(it.total_damaged)))} / ${escapeHtml(String(invStatQty(it.total_lost)))}</div>
-          <div style="color:var(--text-muted)">备注</div><div>${escapeHtml(it.description || '—')}</div>
+          <div style="color:var(--text-muted)">备注</div><div style="word-break:break-word">${escapeHtml(it.description || '—')}</div>
         </div>
       </div>
     `;
@@ -8471,7 +9184,7 @@ function invEnsureTabForPage(invPage) {
 async function invFillInvProjectDatalist() {
   if (!currentYearFrameId) return;
   try {
-    const actList = await api('GET', `/activities?yearFrameId=${currentYearFrameId}`);
+    const actList = await api('GET', `/activities?yearFrameId=${currentYearFrameId}&isVirtual=0`);
     invSetOutboundProjectOptions(actList);
   } catch (_) { /* ignore */ }
 }
@@ -8575,59 +9288,110 @@ function invPickProjectSuggestionFromBtn(btn) {
   void invApplyProjectHint();
 }
 
+function invSeedOutboundItemMetaFromItems(warehouseId, items) {
+  const whNum = Number(warehouseId || 0);
+  if (!whNum || !Array.isArray(items)) return;
+  inventoryPageState.outboundItemMetaByWarehouse[whNum] =
+    inventoryPageState.outboundItemMetaByWarehouse[whNum] || {};
+  items.forEach((it) => {
+    if (!it || it.id == null) return;
+    inventoryPageState.outboundItemMetaByWarehouse[whNum][String(it.id)] = {
+      name: it.name || '',
+      dimensions: it.dimensions || '',
+    };
+  });
+}
+
+function invSetOutboundListFilter(mode) {
+  if (mode !== 'common' && mode !== 'uncommon') return;
+  invSaveCurrentWarehouseDraftFromModal();
+  inventoryPageState.outboundListFilter = mode;
+  const b1 = document.getElementById('invObFilterCommon');
+  const b2 = document.getElementById('invObFilterUncommon');
+  if (b1) {
+    b1.classList.toggle('btn-primary', mode === 'common');
+    b1.classList.toggle('btn-secondary', mode !== 'common');
+  }
+  if (b2) {
+    b2.classList.toggle('btn-primary', mode === 'uncommon');
+    b2.classList.toggle('btn-secondary', mode !== 'uncommon');
+  }
+  void invRefreshOutboundModalLineTables();
+}
+
 function invBuildCommonRowsHtml(items, preset) {
   const P = preset || {};
   const whId = Number(inventoryPageState.warehouseId || 0);
   const key = String(whId || 'global');
   const q = String((inventoryPageState.outboundCommonSearchByWarehouse || {})[key] || '').trim().toLowerCase();
-  const commonItemsRaw = items.filter(invItemIsCommon);
-  const orderIdsStored = ((inventoryPageState.outboundCommonOrderByWarehouse || {})[key] || [])
-    .map((x) => Number(x))
-    .filter((x) => Number.isFinite(x));
-  const allCommonIds = commonItemsRaw.map((it) => Number(it.id));
-  const orderIds = [...orderIdsStored.filter((id) => allCommonIds.includes(id)), ...allCommonIds.filter((id) => !orderIdsStored.includes(id))];
-  inventoryPageState.outboundCommonOrderByWarehouse[key] = orderIds;
-  const rank = new Map(orderIds.map((id, idx) => [id, idx]));
-  const commonItems = commonItemsRaw
-    .slice()
-    .sort((a, b) => {
+  const listFilter = inventoryPageState.outboundListFilter || 'common';
+  const poolRaw = Array.isArray(items) ? items.slice() : [];
+  let pool = poolRaw;
+  if (listFilter === 'common') pool = poolRaw.filter(invItemIsCommon);
+  else if (listFilter === 'uncommon') pool = poolRaw.filter((it) => !invItemIsCommon(it));
+
+  let sortedPool;
+  if (listFilter === 'common') {
+    const orderIdsStored = ((inventoryPageState.outboundCommonOrderByWarehouse || {})[key] || [])
+      .map((x) => Number(x))
+      .filter((x) => Number.isFinite(x));
+    const allCommonIds = pool.map((it) => Number(it.id));
+    const orderIds = [...orderIdsStored.filter((id) => allCommonIds.includes(id)), ...allCommonIds.filter((id) => !orderIdsStored.includes(id))];
+    inventoryPageState.outboundCommonOrderByWarehouse[key] = orderIds;
+    const rank = new Map(orderIds.map((id, idx) => [id, idx]));
+    sortedPool = pool.slice().sort((a, b) => {
       const ra = rank.has(Number(a.id)) ? rank.get(Number(a.id)) : Number.MAX_SAFE_INTEGER;
       const rb = rank.has(Number(b.id)) ? rank.get(Number(b.id)) : Number.MAX_SAFE_INTEGER;
       if (ra !== rb) return ra - rb;
       return String(a.name || '').localeCompare(String(b.name || ''), 'zh-Hans-CN');
-    })
-    .filter((it) => {
-      if (!q) return true;
-      const text = `${it.name || ''} ${it.dimensions || ''}`.toLowerCase();
-      return text.includes(q);
     });
-  if (!commonItems.length) {
-    return '<tr><td colspan="6" style="color:var(--text-muted);font-size:13px">暂无常用物料。请在「库存统计」中设为常用，或添加物料时勾选「常用物料」。</td></tr>';
+  } else {
+    sortedPool = pool.slice().sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''), 'zh-Hans-CN'));
   }
-  return commonItems
+
+  const filteredItems = sortedPool.filter((it) => {
+    if (!q) return true;
+    const text = `${it.name || ''} ${it.dimensions || ''}`.toLowerCase();
+    return text.includes(q);
+  });
+
+  if (!filteredItems.length) {
+    const emptyMsg =
+      listFilter === 'common'
+        ? '暂无常用物料。可切换到「非常用」或请管理员将物料设为常用。'
+        : listFilter === 'uncommon'
+          ? '暂无非常用物料。可切换到「常用」查看常用列表。'
+          : '暂无物料。';
+    return `<tr><td colspan="6" style="color:var(--text-muted);font-size:13px">${emptyMsg}</td></tr>`;
+  }
+  return filteredItems
     .map((it) => {
       const id = it.id;
-      const p = P[id];
+      const p = P[id] != null ? P[id] : P[String(id)];
       const qty = p && p.quantity != null ? Math.max(0, parseInt(p.quantity, 10) || 0) : 0;
       const checked = qty > 0;
       const note = p && p.line_note != null ? String(p.line_note) : '';
       return `
         <tr data-inv-common-row data-item-id="${id}" draggable="true" ondragstart="invCommonDragStart(event, ${id})" ondragover="invCommonDragOver(event)" ondrop="invCommonDrop(event, ${id})" ondragend="invCommonDragEnd(event)">
-          <td style="width:42px;text-align:center">
+          <td class="inv-ob-col-select">
             <div class="inv-common-select-wrap">
               <input type="checkbox" id="invCommonCk_${id}" class="inv-outbound-common-ck" ${checked ? 'checked' : ''} onchange="invOnOutboundCommonCk(${id})">
             </div>
           </td>
-          <td>
-            <div style="font-weight:600;font-size:13px">${escapeHtml(it.name)}</div>
-            <div style="font-size:11px;color:var(--text-muted)">${escapeHtml((it.dimensions || '—').slice(0, 40))}</div>
+          <td class="inv-ob-col-material">
+            <div class="inv-ob-name-block">
+              <div class="inv-ob-name-line">
+                <span class="inv-ob-name-text">${escapeHtml(it.name)}</span>
+              </div>
+              <div class="inv-ob-name-dim">${escapeHtml((it.dimensions || '—').slice(0, 40))}</div>
+            </div>
           </td>
-          <td style="width:64px;font-size:13px" class="${invStockClass(it)}">${it.quantity_on_hand}</td>
-          <td style="width:88px">
+          <td class="inv-ob-col-stock ${invStockClass(it)}">${it.quantity_on_hand}</td>
+          <td class="inv-ob-col-qty">
             <input type="number" class="form-control form-control-sm" id="invCommonQty_${id}" min="0" step="1" value="${qty}" placeholder="0" onchange="invOnOutboundCommonQty(${id})">
           </td>
-          <td><input type="text" class="form-control form-control-sm" id="invCommonNote_${id}" placeholder="行备注" value="${escapeHtml(note)}" oninput="invOnOutboundCommonNote(${id})"></td>
-          <td style="width:36px;text-align:center"><span class="inv-common-drag-handle" title="按住拖动排序">···</span></td>
+          <td class="inv-ob-col-note"><input type="text" class="form-control form-control-sm" id="invCommonNote_${id}" placeholder="行备注" value="${escapeHtml(note)}" oninput="invOnOutboundCommonNote(${id})"></td>
+          <td class="inv-ob-col-sort"><span class="inv-common-drag-handle" title="按住拖动排序">···</span></td>
         </tr>`;
     })
     .join('');
@@ -8644,10 +9408,14 @@ function invBuildSelectedOutboundPreviewHtml() {
     Object.entries(preset).forEach(([itemId, p]) => {
       const qty = p && p.checked ? Math.max(0, parseInt(p.quantity, 10) || 0) : 0;
       if (qty < 1) return;
-      const meta = inventoryPageState.outboundItemMetaByWarehouse?.[wid]?.[itemId] || {};
+      const idKey = String(itemId);
+      const meta =
+        inventoryPageState.outboundItemMetaByWarehouse?.[wid]?.[idKey] ||
+        inventoryPageState.outboundItemMetaByWarehouse?.[wid]?.[itemId] ||
+        {};
       rows.push({
-        warehouse: wh ? `${wh.brand_code} · ${wh.region}` : `仓库#${wid}`,
-        name: meta.name || `物料#${itemId}`,
+        warehouse: wh ? `${invWarehouseBrandDisplay(wh)} · ${wh.region}` : `仓库#${wid}`,
+        name: meta.name || `物料#${idKey}`,
         dimensions: meta.dimensions || '—',
         quantity: qty,
         note: p && p.line_note ? String(p.line_note).trim() : '',
@@ -8702,6 +9470,7 @@ function invBuildExtraLineRowsHtml(items, lines) {
 
 function invBuildOutboundModalMarkup(warehouses, items, of, modalOpts) {
   modalOpts = modalOpts || {};
+  invSeedOutboundItemMetaFromItems(inventoryPageState.warehouseId, items);
   const commonPreset =
     modalOpts.commonPreset != null ? modalOpts.commonPreset : inventoryPageState.outboundEditCommonPreset;
   const commonRows = invBuildCommonRowsHtml(items, commonPreset);
@@ -8711,13 +9480,14 @@ function invBuildOutboundModalMarkup(warehouses, items, of, modalOpts) {
     <div class="inv-ob-warehouse-buttons">
       ${warehouses
         .map(
-          (w) => `<button type="button" class="btn btn-sm inv-ob-wh-btn ${w.id === inventoryPageState.warehouseId ? 'btn-primary' : 'btn-secondary'}" data-wh-id="${w.id}" onclick="invOnModalWarehouseChange(${w.id})">${escapeHtml(w.brand_code)} · ${escapeHtml(w.region)}</button>`,
+          (w) => `<button type="button" class="btn btn-sm inv-ob-wh-btn ${w.id === inventoryPageState.warehouseId ? 'btn-primary' : 'btn-secondary'}" data-wh-id="${w.id}" onclick="invOnModalWarehouseChange(${w.id})">${escapeHtml(invWarehouseBrandDisplay(w))} · ${escapeHtml(w.region)}</button>`,
         )
         .join('')}
     </div>`;
   const linkMode = of.linkMode === 'standalone' ? 'standalone' : 'activity';
   const whKey = String(Number(inventoryPageState.warehouseId || 0) || 'global');
   const commonSearch = String((inventoryPageState.outboundCommonSearchByWarehouse || {})[whKey] || '');
+  const listFlt = inventoryPageState.outboundListFilter || 'common';
   const hintMsg = String(of.hint_msg || '').trim();
   const selectedPreview = invBuildSelectedOutboundPreviewHtml();
   return `
@@ -8727,17 +9497,20 @@ function invBuildOutboundModalMarkup(warehouses, items, of, modalOpts) {
       <div class="inv-ob-layout">
         <section class="inv-ob-pane inv-ob-pane-left">
           <div class="inv-ob-pane-card">
-            <h4 class="inv-ob-pane-title">仓库与物品</h4>
-            <div class="form-group inv-ob-field-full">
-              <label class="form-label">仓库</label>
+            <div class="inv-ob-wh-row">
+              <h4 class="inv-ob-pane-title inv-ob-wh-title">仓库</h4>
               ${whButtons}
             </div>
-            <div class="inv-ob-common-tools">
-              <input type="text" class="form-control form-control-sm" id="invCommonSearch" placeholder="搜索仓库物品（名称/规格）" value="${escapeHtml(commonSearch)}" oninput="invOnCommonSearchInput(this.value)">
+            <div class="inv-ob-items-toolbar">
+              <div class="inv-ob-filter-btns" role="group" aria-label="常用筛选">
+                <button type="button" id="invObFilterCommon" class="btn btn-xs ${listFlt === 'common' ? 'btn-primary' : 'btn-secondary'}" onclick="invSetOutboundListFilter('common')">常用</button>
+                <button type="button" id="invObFilterUncommon" class="btn btn-xs ${listFlt === 'uncommon' ? 'btn-primary' : 'btn-secondary'}" onclick="invSetOutboundListFilter('uncommon')">非常用</button>
+              </div>
+              <input type="text" class="form-control form-control-sm inv-ob-search-inline" id="invCommonSearch" placeholder="搜索名称/规格" value="${escapeHtml(commonSearch)}" oninput="invOnCommonSearchInput(this.value)">
             </div>
             <div class="table-wrapper inv-outbound-table-wrap inv-ob-items-table-wrap">
               <table class="data-table inv-outbound-table">
-                <thead><tr><th style="width:42px">选</th><th>物料</th><th style="width:56px">库存</th><th style="width:88px">数量</th><th>备注</th><th style="width:36px">序</th></tr></thead>
+                <thead><tr><th class="inv-ob-col-select">选</th><th class="inv-ob-col-material">物料</th><th class="inv-ob-col-stock">库存</th><th class="inv-ob-col-qty">数量</th><th class="inv-ob-col-note">备注</th><th class="inv-ob-col-sort">序</th></tr></thead>
                 <tbody id="invObCommonTbody">${commonRows}</tbody>
               </table>
             </div>
@@ -8764,20 +9537,17 @@ function invBuildOutboundModalMarkup(warehouses, items, of, modalOpts) {
                 </div>
                 <span class="form-hint" id="invHintMsg" style="${hintMsg ? 'display:block;margin-top:4px' : 'display:none;margin-top:0'}">${escapeHtml(hintMsg)}</span>
               </div>
+              <div class="form-group inv-ob-field-mid inv-ob-field-purpose-detail" id="invPurposeWrap" style="display:none">
+                <label class="form-label">发货说明 <span class="required">*</span></label>
+                <input type="text" class="form-control" id="invPurpose" placeholder="如：内部调拨/赞助寄样/办公使用" value="${escapeHtml(of.purpose || '')}">
+              </div>
               <div class="form-group inv-ob-field-short inv-ob-field-logistics">
                 <label class="form-label">物流方式</label>
                 <select class="form-control" id="invLogistics">${INV_LOGISTICS_OPTS.map((x) => `<option value="${x}" ${(of.logistics_method || INV_LOGISTICS_OPTS[0]) === x ? 'selected' : ''}>${x}</option>`).join('')}</select>
               </div>
               <div class="form-group inv-ob-field-mid inv-ob-field-tracking">
                 <label class="form-label">物流单号</label>
-                <input type="text" class="form-control" id="invTrackingNo" placeholder="顺丰请填写单号" value="${escapeHtml(of.tracking_number || '')}">
-              </div>
-            </div>
-            <div class="inv-ob-modal-row" id="invPurposeWrap" style="display:none">
-              <div class="form-group inv-ob-field-mid">
-                <label class="form-label">非活动信息 <span class="required">*</span></label>
-                <input type="text" class="form-control" id="invPurpose" placeholder="如：内部调拨/赞助寄样/办公使用" value="${escapeHtml(of.purpose || '')}">
-                <span class="form-hint">保存后会自动生成一条物流成本记录（费用默认 0，后续可补填），计入年框总成本。</span>
+                <input type="text" class="form-control" id="invTrackingNo" placeholder="物流单号可后续补填" value="${escapeHtml(of.tracking_number || '')}">
               </div>
             </div>
             <div class="inv-ob-modal-row">
@@ -8851,8 +9621,16 @@ function invSnapshotCommonPresetFromDom() {
 
 function invSaveCurrentWarehouseDraftFromModal() {
   const whId = Number(inventoryPageState.warehouseId || 0);
-  if (!whId || inventoryPageState.editOutboundOrderId) return;
-  inventoryPageState.outboundCommonByWarehouse[whId] = invSnapshotCommonPresetFromDom();
+  if (!whId) return;
+  // NOTE:
+  // 常用/非常用切换时，DOM 里只包含当前筛选下可见的行。
+  // 这里必须与既有草稿合并，避免“切换筛选后之前已勾选物料被清空”。
+  const prevPreset = inventoryPageState.outboundCommonByWarehouse[whId] || {};
+  const domSnapshot = invSnapshotCommonPresetFromDom();
+  inventoryPageState.outboundCommonByWarehouse[whId] = {
+    ...prevPreset,
+    ...domSnapshot,
+  };
   inventoryPageState.outboundLinesByWarehouse[whId] = Array.isArray(inventoryPageState.outboundLines)
     ? inventoryPageState.outboundLines.map((x) => ({ ...x }))
     : [];
@@ -8860,7 +9638,7 @@ function invSaveCurrentWarehouseDraftFromModal() {
 
 function invLoadWarehouseDraftToModal(warehouseId) {
   const whId = Number(warehouseId || 0);
-  if (!whId || inventoryPageState.editOutboundOrderId) return;
+  if (!whId) return;
   const lines = inventoryPageState.outboundLinesByWarehouse[whId];
   inventoryPageState.outboundLines = Array.isArray(lines) ? lines.map((x) => ({ ...x })) : [];
   inventoryPageState.outboundEditCommonPreset = inventoryPageState.outboundCommonByWarehouse[whId] || null;
@@ -8959,6 +9737,7 @@ async function invOpenOutboundModal() {
     inventoryPageState.outboundCommonByWarehouse = {};
     inventoryPageState.outboundCommonSearchByWarehouse = {};
     inventoryPageState.outboundItemMetaByWarehouse = {};
+    inventoryPageState.outboundListFilter = 'common';
     inventoryPageState.outboundForm = {
       linkMode: 'activity',
       project_code: '',
@@ -8983,7 +9762,7 @@ async function invOpenOutboundModal() {
       return;
     }
     if (!warehouses.length) {
-      showToast('暂无仓库，请先在库存统计中新建仓库', 'warning');
+      showToast('暂无仓库，请先在库存管理中新建仓库', 'warning');
       closeModal();
       return;
     }
@@ -9030,6 +9809,8 @@ async function invToggleOutboundInlineForm(forceOpen) {
   const nextOpen = typeof forceOpen === 'boolean' ? forceOpen : !inventoryPageState.outboundInlineOpen;
   if (!nextOpen) {
     inventoryPageState.outboundInlineOpen = false;
+    inventoryPageState.editOutboundOrderId = null;
+    inventoryPageState.outboundEditCommonPreset = null;
     await renderInventory();
     return;
   }
@@ -9041,6 +9822,7 @@ async function invToggleOutboundInlineForm(forceOpen) {
     inventoryPageState.outboundCommonByWarehouse = {};
     inventoryPageState.outboundCommonSearchByWarehouse = {};
     inventoryPageState.outboundItemMetaByWarehouse = {};
+    inventoryPageState.outboundListFilter = 'common';
     inventoryPageState.outboundForm = {
       linkMode: 'activity',
       project_code: '',
@@ -9063,7 +9845,7 @@ async function invToggleOutboundInlineForm(forceOpen) {
       return;
     }
     if (!warehouses.length) {
-      showToast('暂无仓库，请先在库存统计中新建仓库', 'warning');
+      showToast('暂无仓库，请先在库存管理中新建仓库', 'warning');
       return;
     }
     if (!inventoryPageState.warehouseId || !warehouses.some((w) => w.id === inventoryPageState.warehouseId)) {
@@ -9415,15 +10197,22 @@ async function invOpenOutboundOrderDetail(orderId) {
 
 async function invOpenOutboundEditModal(orderId) {
   try {
+    const inlineEdit = currentPage === 'inv-outbound';
     const body = document.getElementById('invOutboundModalBody');
-    if (body) body.innerHTML = '<div class="empty-state">加载中...</div>';
-    openModal('modalInvOutbound');
+    if (!inlineEdit) {
+      if (body) body.innerHTML = '<div class="empty-state">加载中...</div>';
+      openModal('modalInvOutbound');
+    } else {
+      inventoryPageState.outboundInlineOpen = true;
+      inventoryPageState.editOutboundOrderId = orderId;
+      await renderInventory();
+    }
     let det;
     try {
       det = await api('GET', `/inventory/outbound/${orderId}`);
     } catch (e) {
       showToast(e.message || '加载失败', 'error');
-      closeModal();
+      if (!inlineEdit) closeModal();
       return;
     }
     const o = det.order;
@@ -9432,18 +10221,18 @@ async function invOpenOutboundEditModal(orderId) {
       warehouses = await api('GET', '/inventory/warehouses');
     } catch (e) {
       showToast(e.message || '加载仓库失败', 'error');
-      closeModal();
+      if (!inlineEdit) closeModal();
       return;
     }
     if (!warehouses.length) {
-      showToast('暂无仓库，请先在库存统计中新建仓库', 'warning');
-      closeModal();
+      showToast('暂无仓库，请先在库存管理中新建仓库', 'warning');
+      if (!inlineEdit) closeModal();
       return;
     }
     inventoryPageState.warehouseId = o.inv_warehouse_id;
     if (!warehouses.some((w) => w.id === inventoryPageState.warehouseId)) {
       showToast('该出库单关联的仓库不存在', 'error');
-      closeModal();
+      if (!inlineEdit) closeModal();
       return;
     }
     let items = [];
@@ -9452,37 +10241,30 @@ async function invOpenOutboundEditModal(orderId) {
     } catch (_) {
       items = [];
     }
-    const itemById = new Map(items.map((it) => [it.id, it]));
     const commonPreset = {};
-    const extraParts = [];
     for (const ln of det.lines || []) {
-      const it = itemById.get(ln.item_id);
-      if (it && invItemIsCommon(it)) {
-        const qty = Number(ln.quantity) || 0;
-        const note = (ln.line_note && String(ln.line_note).trim()) || '';
-        const prev = commonPreset[ln.item_id];
-        if (!prev) {
-          commonPreset[ln.item_id] = { checked: qty > 0, quantity: qty, line_note: note };
-        } else {
-          prev.quantity += qty;
-          const merged = [prev.line_note, note].filter(Boolean).join('；');
-          prev.line_note = merged;
-          prev.checked = prev.quantity > 0;
-        }
+      const qty = Number(ln.quantity) || 0;
+      const note = (ln.line_note && String(ln.line_note).trim()) || '';
+      const prev = commonPreset[ln.item_id];
+      if (!prev) {
+        commonPreset[ln.item_id] = { checked: qty > 0, quantity: qty, line_note: note };
       } else {
-        extraParts.push({
-          item_id: ln.item_id,
-          quantity: ln.quantity,
-          line_note: ln.line_note || '',
-        });
+        prev.quantity += qty;
+        const merged = [prev.line_note, note].filter(Boolean).join('；');
+        prev.line_note = merged;
+        prev.checked = prev.quantity > 0;
       }
     }
-    inventoryPageState.outboundLines = invMergeOutboundLines(extraParts);
+    inventoryPageState.outboundLines = [];
     inventoryPageState.editOutboundOrderId = orderId;
     inventoryPageState.outboundEditCommonPreset = commonPreset;
     inventoryPageState.outboundLinesByWarehouse = {};
-    inventoryPageState.outboundCommonByWarehouse = {};
+    inventoryPageState.outboundCommonByWarehouse = {
+      [Number(o.inv_warehouse_id)]: commonPreset,
+    };
     inventoryPageState.outboundWarehousesCache = warehouses.slice();
+    inventoryPageState.outboundListFilter = 'common';
+    inventoryPageState.outboundInlineOpen = inlineEdit;
 
     const of = inventoryPageState.outboundForm;
     of.linkMode = o.link_mode === 'standalone' ? 'standalone' : 'activity';
@@ -9499,25 +10281,29 @@ async function invOpenOutboundEditModal(orderId) {
     of.hint_msg = '';
     inventoryPageState.linkMode = of.linkMode;
 
-    if (!body) return;
-    body.innerHTML = invBuildOutboundModalMarkup(warehouses, items, of, {
-      editOrderId: orderId,
-      commonPreset,
-    });
-    invSetOutboundModalTitle(true);
-    await invFillInvProjectDatalist();
-    const lmEl = document.getElementById('invLinkMode');
-    if (lmEl) {
-      lmEl.value = of.linkMode !== 'standalone' ? 'activity' : 'standalone';
-      inventoryPageState.linkMode = lmEl.value;
-      of.linkMode = lmEl.value;
-      invToggleLinkMode();
+    if (inlineEdit) {
+      await renderInventory();
+    } else {
+      if (!body) return;
+      body.innerHTML = invBuildOutboundModalMarkup(warehouses, items, of, {
+        editOrderId: orderId,
+        commonPreset,
+      });
+      invSetOutboundModalTitle(true);
+      await invFillInvProjectDatalist();
+      const lmEl = document.getElementById('invLinkMode');
+      if (lmEl) {
+        lmEl.value = of.linkMode !== 'standalone' ? 'activity' : 'standalone';
+        inventoryPageState.linkMode = lmEl.value;
+        of.linkMode = lmEl.value;
+        invToggleLinkMode();
+      }
     }
     renderLucideIcons();
   } catch (e) {
     console.error('invOpenOutboundEditModal failed:', e);
     showToast(e?.message || '打开编辑出库失败', 'error');
-    closeModal();
+    if (currentPage !== 'inv-outbound') closeModal();
   }
 }
 
@@ -9601,7 +10387,8 @@ async function renderInventory() {
   const gridToggleTitle = invGridViewToggleTitle(itemsViewMode);
   const masterIsWine = invPage === 'master' && inventoryPageState.stockMasterView === 'wine';
   const masterIsEmpty = invPage === 'master' && inventoryPageState.stockMasterView === 'empty';
-  const masterIsWarehouse = invPage === 'master' && !masterIsWine && !masterIsEmpty;
+  const masterIsItemCatalog = invPage === 'master' && inventoryPageState.stockMasterView === 'item-catalog';
+  const masterIsWarehouse = invPage === 'master' && !masterIsWine && !masterIsEmpty && !masterIsItemCatalog;
 
   let displayItems = items;
   if (masterIsWarehouse) {
@@ -9649,6 +10436,17 @@ async function renderInventory() {
           <div style="color:var(--text-muted);padding:20px;text-align:center">加载中...</div>
         </div>
       </div>`;
+    } else if (masterIsItemCatalog) {
+      panelHtml = `
+      <div class="stats-row" id="itemCatalogStats" style="margin-bottom:16px"></div>
+      <div class="card">
+        <div class="card-header">
+          <h3><i data-lucide="library" style="width:14px;height:14px;vertical-align:-2px;margin-right:6px"></i>目录列表</h3>
+        </div>
+        <div class="card-body" id="itemCatalogListHost">
+          <div style="color:var(--text-muted);padding:20px;text-align:center">加载中...</div>
+        </div>
+      </div>`;
     } else if (masterIsEmpty) {
       let emptyGroups = [];
       try {
@@ -9669,6 +10467,8 @@ async function renderInventory() {
     }
     let inlineFormHtml = '';
     if (inventoryPageState.outboundInlineOpen) {
+      const inlineEditId = parseInt(inventoryPageState.editOutboundOrderId, 10);
+      const isEditingInline = Number.isFinite(inlineEditId);
       let currentItems = [];
       try {
         currentItems = await api('GET', `/inventory/items?inv_warehouse_id=${inventoryPageState.warehouseId}`);
@@ -9678,11 +10478,14 @@ async function renderInventory() {
       inlineFormHtml = `
         <div class="card inv-ob-inline-shell">
           <div class="card-header inv-ob-inline-shell-head">
-            <h3>新建物品出库</h3>
+            <h3>${isEditingInline ? `编辑物品出库 #${inlineEditId}` : '新建物品出库'}</h3>
             <button type="button" class="btn btn-secondary btn-sm" onclick="invToggleOutboundInlineForm(false)">收起</button>
           </div>
           <div class="card-body">
-            ${invBuildOutboundModalMarkup(warehouses, Array.isArray(currentItems) ? currentItems : [], inventoryPageState.outboundForm || {})}
+            ${invBuildOutboundModalMarkup(warehouses, Array.isArray(currentItems) ? currentItems : [], inventoryPageState.outboundForm || {}, isEditingInline ? {
+              editOrderId: inlineEditId,
+              commonPreset: inventoryPageState.outboundCommonByWarehouse[Number(inventoryPageState.warehouseId)] || inventoryPageState.outboundEditCommonPreset || null,
+            } : {})}
           </div>
         </div>`;
     }
@@ -9748,7 +10551,8 @@ async function renderInventory() {
     </div>
     <div class="inv-toolbar inv-toolbar-master">
       <button type="button" class="btn btn-primary btn-sm inv-admin-only" onclick="invOpenNewItemModal()" ${inventoryPageState.warehouseId ? '' : 'disabled'}>添加物料</button>
-      <button type="button" class="btn btn-secondary btn-sm inv-admin-only" onclick="invOpenAddWineModal()" ${inventoryPageState.warehouseId ? '' : 'disabled'}>添加酒品</button>
+      <button type="button" class="btn btn-secondary btn-sm inv-admin-only" onclick="invOpenAddItemCatalogModal()" ${inventoryPageState.warehouseId ? '' : 'disabled'}>物品目录</button>
+      <button type="button" class="btn btn-secondary btn-sm inv-admin-only" onclick="invOpenAddWineModal()" ${inventoryPageState.warehouseId ? '' : 'disabled'}>酒品目录</button>
       <span class="form-hint" style="flex:1;min-width:200px;margin:0">仓库与物料为 <strong>25/26 财年共用</strong>；仓库增删请由管理员在库表或脚本中维护。按项目编号匹配场次时请先选左侧年度。</span>
     </div>`;
   const masterToolbarWine = `
@@ -9766,9 +10570,19 @@ async function renderInventory() {
     <div class="inv-toolbar inv-toolbar-master inv-toolbar-empty-ledger">
       <span class="form-hint" style="flex:1;min-width:200px;margin:0">空瓶回收仅作查看与追溯，列表为各仓当前库存。</span>
     </div>`;
+  const masterToolbarItemCatalog = `
+    <div class="inv-master-warehouse-block">
+      ${invRenderStockMasterCardsHtml(warehouses, inventoryPageState.warehouseId, inventoryPageState.stockMasterView)}
+    </div>
+    <div class="inv-toolbar inv-toolbar-master">
+      <button type="button" class="btn btn-primary btn-sm inv-admin-only" onclick="invSyncItemCatalogFromWarehouses()">同步目录（PHD/X.O/CLUB）</button>
+      <span class="form-hint" style="flex:1;min-width:200px;margin:0">物品目录按名称+规格去重，用于后续新建北区/南区仓库时快速选品导入。</span>
+    </div>`;
   const masterToolbar =
     invPage === 'master' && inventoryPageState.stockMasterView === 'wine'
       ? masterToolbarWine
+      : invPage === 'master' && inventoryPageState.stockMasterView === 'item-catalog'
+        ? masterToolbarItemCatalog
       : invPage === 'master' && inventoryPageState.stockMasterView === 'empty'
         ? masterToolbarEmpty
         : masterToolbarWh;
@@ -9776,7 +10590,7 @@ async function renderInventory() {
   const outboundPageHeader = `
     <div class="inv-out-page-head">
       <div class="inv-out-page-head-main">
-        <span class="form-hint" style="margin:0">按项目编号汇总已出库记录；<strong>出库日期</strong>按发货时间，无则按创建时间。主数据请在 <strong>库存统计</strong> 维护。</span>
+        <span class="form-hint" style="margin:0">按项目编号汇总已出库记录；<strong>出库日期</strong>按发货时间，无则按创建时间。主数据请在 <strong>库存管理</strong> 维护。</span>
       </div>
       <button type="button" class="btn btn-primary btn-sm" onclick="invToggleOutboundInlineForm()">${inventoryPageState.outboundInlineOpen ? '收起新建' : '新建出库'}</button>
     </div>`;
@@ -9786,7 +10600,7 @@ async function renderInventory() {
   const tabsMasterTools = [itemsFilterHtml, viewToggleHtml].filter(Boolean).join('');
   const tabsBarMaster = `
     <div class="inv-tabs-bar">
-      <span class="inv-page-lead">${masterIsWine ? '酒品目录' : masterIsEmpty ? '空瓶回收' : '物料清单'}</span>
+      <span class="inv-page-lead">${masterIsWine ? '酒品目录' : masterIsItemCatalog ? '物品目录' : masterIsEmpty ? '空瓶回收' : '物料清单'}</span>
       ${tabsMasterTools ? `<div class="inv-tabs-bar-tools">${tabsMasterTools}</div>` : ''}
     </div>`;
 
@@ -9800,7 +10614,20 @@ async function renderInventory() {
     invPage === 'master' ? masterToolbar : invPage === 'outbound' ? outboundPageHeader : inboundOpsToolbar;
   const tabsBarHtml = invPage === 'master' ? tabsBarMaster : invPage === 'outbound' ? '' : tabsBarInbound;
 
-  container.innerHTML = `
+  container.innerHTML =
+    invPage === 'master'
+      ? `
+    <section class="inv-master-layout">
+      <div class="inv-master-sticky-head">
+        ${toolbarHtml}
+        ${tabsBarHtml}
+      </div>
+      <div class="inv-master-scroll-body">
+        ${panelHtml}
+      </div>
+    </section>
+  `
+      : `
     ${toolbarHtml}
     ${tabsBarHtml}
     ${panelHtml}
@@ -9812,10 +10639,16 @@ async function renderInventory() {
       updateBadges();
     } catch (_) { /* ignore */ }
   }
+  if (invPage === 'master' && inventoryPageState.stockMasterView === 'item-catalog') {
+    try {
+      await loadItemCatalogPage();
+      updateBadges();
+    } catch (_) { /* ignore */ }
+  }
 
     try {
       if (yfId) {
-        const actList = await api('GET', `/activities?yearFrameId=${yfId}`);
+        const actList = await api('GET', `/activities?yearFrameId=${yfId}&isVirtual=0`);
         invSetOutboundProjectOptions(actList);
       }
     } catch (_) { /* ignore */ }
@@ -9930,14 +10763,17 @@ function invOnCommonSearchInput(val) {
   if (!wh) return;
   api('GET', `/inventory/items?inv_warehouse_id=${wh}`)
     .then((items) => {
+      const arr = Array.isArray(items) ? items : [];
+      invSeedOutboundItemMetaFromItems(wh, arr);
       const preset = inventoryPageState.outboundEditCommonPreset;
-      commonTbody.innerHTML = invBuildCommonRowsHtml(Array.isArray(items) ? items : [], preset);
+      commonTbody.innerHTML = invBuildCommonRowsHtml(arr, preset);
       invRefreshSelectedPreview();
     })
     .catch(() => {});
 }
 
 function invMoveCommonItem(itemId, step) {
+  invSaveCurrentWarehouseDraftFromModal();
   const whId = Number(inventoryPageState.warehouseId || 0);
   const key = String(whId || 'global');
   inventoryPageState.outboundCommonOrderByWarehouse = inventoryPageState.outboundCommonOrderByWarehouse || {};
@@ -9968,8 +10804,12 @@ function invMoveCommonItem(itemId, step) {
   if (!wh) return;
   api('GET', `/inventory/items?inv_warehouse_id=${wh}`)
     .then((items) => {
-      const preset = inventoryPageState.outboundEditCommonPreset;
-      commonTbody.innerHTML = invBuildCommonRowsHtml(Array.isArray(items) ? items : [], preset);
+      const arr = Array.isArray(items) ? items : [];
+      invSeedOutboundItemMetaFromItems(wh, arr);
+      const preset = inventoryPageState.editOutboundOrderId
+        ? inventoryPageState.outboundEditCommonPreset
+        : inventoryPageState.outboundCommonByWarehouse[Number(wh)] || null;
+      commonTbody.innerHTML = invBuildCommonRowsHtml(arr, preset);
       invRefreshSelectedPreview();
     })
     .catch(() => {});
@@ -9992,6 +10832,7 @@ function invCommonDragOver(event) {
 
 function invCommonDrop(event, targetItemId) {
   event.preventDefault();
+  invSaveCurrentWarehouseDraftFromModal();
   const targetId = Number(targetItemId);
   const sourceId = Number(invCommonDraggingItemId);
   if (!Number.isFinite(sourceId) || !Number.isFinite(targetId) || sourceId === targetId) return;
@@ -10015,8 +10856,12 @@ function invCommonDrop(event, targetItemId) {
   if (!wh) return;
   api('GET', `/inventory/items?inv_warehouse_id=${wh}`)
     .then((items) => {
-      const preset = inventoryPageState.outboundEditCommonPreset;
-      commonTbody.innerHTML = invBuildCommonRowsHtml(Array.isArray(items) ? items : [], preset);
+      const arr = Array.isArray(items) ? items : [];
+      invSeedOutboundItemMetaFromItems(wh, arr);
+      const preset = inventoryPageState.editOutboundOrderId
+        ? inventoryPageState.outboundEditCommonPreset
+        : inventoryPageState.outboundCommonByWarehouse[Number(wh)] || null;
+      commonTbody.innerHTML = invBuildCommonRowsHtml(arr, preset);
       invRefreshSelectedPreview();
     })
     .catch(() => {});
@@ -10090,10 +10935,6 @@ async function invSubmitOutbound() {
     showToast('请填写非活动信息', 'warning');
     return;
   }
-  if (String(baseBody.logistics_method || '') === '顺丰' && !String(baseBody.tracking_number || '').trim()) {
-    showToast('顺丰发货请填写单号', 'warning');
-    return;
-  }
   const editHidden = document.getElementById('invOutboundEditOrderId');
   const editIdRaw = editHidden && editHidden.value ? editHidden.value : inventoryPageState.editOutboundOrderId;
   const editId = parseInt(editIdRaw, 10);
@@ -10128,15 +10969,7 @@ async function invSubmitOutbound() {
   }
   const combinedLines = invMergeOutboundLines(mergedAllLines);
   if (Number.isFinite(editId)) {
-    const fromCommon = invCollectCommonOutboundLines();
-    const fromExtra = (inventoryPageState.outboundLines || [])
-      .filter((l) => l.item_id && l.quantity > 0)
-      .map((l) => ({
-        item_id: parseInt(l.item_id, 10),
-        quantity: parseInt(l.quantity, 10),
-        line_note: l.line_note || null,
-      }));
-    const lines = invMergeOutboundLines([...fromCommon, ...fromExtra]);
+    const lines = combinedLines;
     if (!whId || !lines.length) {
       showToast('请至少在当前仓库填写出库明细', 'warning');
       return;
@@ -10408,14 +11241,12 @@ function invItemModalFormHtml(opts) {
           <input type="number" class="form-control" id="invEditItemDamagedOverride" min="0" step="1" value="${escapeHtml(
             dmgVal
           )}" placeholder="归还汇总 ${aggDmg}" title="与归还汇总一致可不存覆盖；填 0 表示强制为 0；整格清空表示仍按归还汇总">
-          <div class="form-hint">默认与当前展示一致。改为 <strong>0</strong> 请填数字 0（不要只清空）。整格清空表示取消手工覆盖，仍按归还汇总（${aggDmg}）。</div>
         </div>
         <div class="form-group">
           <label class="form-label">丢失（累计）</label>
           <input type="number" class="form-control" id="invEditItemLostOverride" min="0" step="1" value="${escapeHtml(
             lostVal
           )}" placeholder="归还汇总 ${aggLost}" title="与归还汇总一致可不存覆盖；填 0 表示强制为 0；整格清空表示仍按归还汇总">
-          <div class="form-hint">默认与当前展示一致。改为 <strong>0</strong> 请填数字 0（不要只清空）。整格清空表示取消手工覆盖，仍按归还汇总（${aggLost}）。</div>
         </div>
       </div>`
       : '';
@@ -10434,21 +11265,23 @@ function invItemModalFormHtml(opts) {
         <input class="form-control" id="invEditItemName" value="${nameVal}">
       </div>
       ${statRow}
-      <div class="form-group">
-        <label class="form-label">规格</label>
-        <input class="form-control" id="invEditItemDim" placeholder="如 100×50×30 cm" value="${dimVal}">
+      <div class="inv-item-edit-core-row">
+        <div class="form-group">
+          <label class="form-label">规格</label>
+          <input class="form-control" id="invEditItemDim" placeholder="如 100×50×30 cm" value="${dimVal}">
+        </div>
+        <div class="form-group">
+          <label class="form-label">库存</label>
+          <input type="number" class="form-control" id="invEditItemQty" min="0" step="1" value="${qtyVal}">
+        </div>
+        <div class="form-group">
+          <label class="form-label">库存预警线</label>
+          <input type="number" class="form-control" id="invEditItemAlertBelow" min="0" step="1" value="${escapeHtml(
+            alertVal
+          )}" placeholder="低于此数量时标黄提示，可留空">
+        </div>
       </div>
-      <div class="form-group">
-        <label class="form-label">库存</label>
-        <input type="number" class="form-control" id="invEditItemQty" min="0" step="1" value="${qtyVal}">
-      </div>
-      <div class="form-group">
-        <label class="form-label">库存预警线</label>
-        <input type="number" class="form-control" id="invEditItemAlertBelow" min="0" step="1" value="${escapeHtml(
-          alertVal
-        )}" placeholder="低于此数量时标黄提示，可留空">
-      </div>
-      <div class="form-group">
+      <div class="form-group inv-item-edit-common-row">
         <label class="form-label" style="display:flex;align-items:center;gap:8px;cursor:pointer;margin:0;font-weight:500">
           <input type="checkbox" id="invEditItemIsCommon" ${common ? 'checked' : ''}>
           <span>常用物料</span>
@@ -10540,6 +11373,7 @@ async function invOpenAddWineModal() {
     invAddWineModalState.catalog = Array.isArray(catalog) ? catalog : [];
     invAddWineModalState.warehouses = Array.isArray(warehouses) ? warehouses : [];
     invAddWineModalState.warehouseId = whId;
+    invAddWineModalState.search = '';
     if (!invAddWineModalState.warehouses.some((w) => Number(w.id) === whId)) {
       invAddWineModalState.warehouseId = Number(invAddWineModalState.warehouses[0]?.id || 0) || null;
     }
@@ -10570,8 +11404,12 @@ async function invRenderAddWineModalContent() {
       Array.isArray(c.image_urls) && c.image_urls[0]
         ? `<img src="${escapeHtml(c.image_urls[0])}" alt="" style="width:40px;height:40px;object-fit:contain;border-radius:6px;background:var(--bg-primary)">`
         : '<span style="color:var(--text-muted)">—</span>';
+    const searchText = [c.brand, c.name, spec]
+      .map((x) => String(x || '').trim().toLowerCase())
+      .filter(Boolean)
+      .join(' ');
     return `
-      <tr data-catalog-id="${c.id}">
+      <tr data-catalog-id="${c.id}" data-search="${escapeHtml(searchText)}">
         <td>${img}</td>
         <td>${escapeHtml(c.brand || '—')}</td>
         <td style="font-weight:600">${escapeHtml(c.name || '—')}</td>
@@ -10585,7 +11423,7 @@ async function invRenderAddWineModalContent() {
       </tr>`;
   });
   const whOpts = (invAddWineModalState.warehouses || [])
-    .map((w) => `<option value="${w.id}" ${Number(w.id) === whId ? 'selected' : ''}>${escapeHtml(`${w.brand_code || ''} · ${w.region || ''}${w.label ? ` · ${w.label}` : ''}`)}</option>`)
+    .map((w) => `<option value="${w.id}" ${Number(w.id) === whId ? 'selected' : ''}>${escapeHtml(`${invWarehouseBrandDisplay(w) || ''} · ${w.region || ''}${w.label ? ` · ${w.label}` : ''}`)}</option>`)
     .join('');
   body.innerHTML = `
     <div class="form-group" style="margin-bottom:10px">
@@ -10595,11 +11433,20 @@ async function invRenderAddWineModalContent() {
       </select>
     </div>
     <div class="form-hint" style="margin:0 0 10px">
-      当前仓库：<strong>${escapeHtml(wh ? `${wh.brand_code} · ${wh.region}` : `#${whId}`)}</strong>。可手动勾选目录酒品加入该仓库；数量可填 0，后续再调整。
+      当前仓库：<strong>${escapeHtml(wh ? `${invWarehouseBrandDisplay(wh)} · ${wh.region}` : `#${whId}`)}</strong>。可手动勾选目录酒品加入该仓库；数量可填 0，后续再调整。
     </div>
     <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px">
       <button type="button" class="btn btn-secondary btn-xs" onclick="invAddWineToggleAll(true)">全选可添加</button>
       <button type="button" class="btn btn-secondary btn-xs" onclick="invAddWineToggleAll(false)">全不选</button>
+      <input
+        type="text"
+        class="form-control"
+        id="invAddWineSearch"
+        value="${escapeHtml(invAddWineModalState.search || '')}"
+        placeholder="搜索品牌/名称/类别容量"
+        style="margin-left:auto;max-width:280px"
+        oninput="invFilterAddWineRows(this.value)"
+      >
     </div>
     <div class="table-wrapper" style="max-height:52vh;overflow:auto">
       <table class="data-table">
@@ -10617,6 +11464,16 @@ async function invRenderAddWineModalContent() {
       </table>
     </div>
   `;
+  invFilterAddWineRows(invAddWineModalState.search || '');
+}
+
+function invFilterAddWineRows(keyword) {
+  const kw = String(keyword || '').trim().toLowerCase();
+  invAddWineModalState.search = kw;
+  document.querySelectorAll('#invAddWineModalBody tbody tr[data-search]').forEach((tr) => {
+    const hay = String(tr.getAttribute('data-search') || '').toLowerCase();
+    tr.style.display = !kw || hay.includes(kw) ? '' : 'none';
+  });
 }
 
 async function invOnAddWineWarehouseChange(warehouseId) {

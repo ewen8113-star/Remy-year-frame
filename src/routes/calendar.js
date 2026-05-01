@@ -16,7 +16,8 @@ router.get('/', async (req, res) => {
             SELECT id, project_code, activity_type, city, brand, 
                    date as activity_date, quoted_price, executor, status
             FROM activities 
-            WHERE LEFT(date, 7) = ? AND activity_type IN (
+            WHERE COALESCE(is_virtual, 0) = 0
+              AND LEFT(date, 7) = ? AND activity_type IN (
                 SELECT value FROM lookup_options WHERE category = 'activity_type' AND is_active = 1
             )
         `;

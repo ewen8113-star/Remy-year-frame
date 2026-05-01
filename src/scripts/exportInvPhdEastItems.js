@@ -5,6 +5,8 @@
  *   OUT=/path/to/out.xlsx node src/scripts/exportInvPhdEastItems.js
  *
  * 默认仓库：PHD + 东区（inv_warehouses.brand_id → brand_inventory.brand_code、region）
+ * 可传参覆盖：
+ *   BRAND_CODE=CLUB REGION=东区 OUT=~/Desktop/CLUB东区仓库物料.xlsx node src/scripts/exportInvPhdEastItems.js
  */
 require('dotenv').config();
 const fs = require('fs');
@@ -16,8 +18,8 @@ const db = require('../config/database');
 const PROJECT_ROOT = path.join(__dirname, '../..');
 const PUBLIC_ROOT = path.join(PROJECT_ROOT, 'public');
 
-const BRAND_CODE = 'PHD';
-const REGION = '东区';
+const BRAND_CODE = String(process.env.BRAND_CODE || 'PHD').trim().toUpperCase();
+const REGION = String(process.env.REGION || '东区').trim();
 
 /** 嵌入图片最大像素框（保持比例缩放，避免拉伸变形） */
 const MAX_EMBED_W = 120;
@@ -73,7 +75,7 @@ async function main() {
   const desktop =
     process.env.HOME ? path.join(process.env.HOME, 'Desktop') : path.join(PROJECT_ROOT, 'exports');
   const stamp = new Date().toISOString().slice(0, 19).replace(/[-:T]/g, '').slice(0, 12);
-  const defaultName = `PHD东区仓库物料清单_${stamp}.xlsx`;
+  const defaultName = `${BRAND_CODE}${REGION}仓库物料清单_${stamp}.xlsx`;
   const outPath = outArg.trim() ? path.resolve(outArg) : path.join(desktop, defaultName);
 
   const [warehouses] = await db.query(

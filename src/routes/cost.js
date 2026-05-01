@@ -20,7 +20,8 @@ router.get('/stats', async (req, res) => {
         const [activities] = await db.execute(`
             SELECT COALESCE(SUM(a.total_cost), 0) as total_cost, COUNT(*) as count
             FROM activities a
-            WHERE a.activity_type IN (
+            WHERE COALESCE(a.is_virtual, 0) = 0
+              AND a.activity_type IN (
                 SELECT value FROM lookup_options WHERE category = 'activity_type' AND is_active = 1
             )
             ${actYf}
@@ -105,7 +106,8 @@ router.get('/activities', async (req, res) => {
             SELECT a.id, a.project_code, a.activity_type, a.city, a.region,
                    a.date as activity_date, a.quoted_price, a.total_cost, a.status
             FROM activities a
-            WHERE a.activity_type IN (
+            WHERE COALESCE(a.is_virtual, 0) = 0
+              AND a.activity_type IN (
                 SELECT value FROM lookup_options WHERE category = 'activity_type' AND is_active = 1
             )
         `;
@@ -179,7 +181,7 @@ router.get('/analytics/workforce', async (req, res) => {
         let query = `
             SELECT id, region, no_cost, total_cost, cost_details
             FROM activities
-            WHERE 1=1
+            WHERE COALESCE(is_virtual, 0) = 0
         `;
         const params = [];
         if (yearFrameId) {

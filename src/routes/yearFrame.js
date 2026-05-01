@@ -25,14 +25,26 @@ router.get('/:id', async (req, res) => {
     
     const frame = frames[0];
     
-    // 统计活动数量和金额
-    const [activityStats] = await db.query(`
+    // 统计活动数量和金额（不含虚拟场次）；虚拟场次报价合计单独列为预存口径
+    const [activityStats] = await db.query(
+      `
       SELECT 
         COUNT(*) as total,
         SUM(quoted_price) as total_revenue,
         SUM(total_cost) as total_cost
-      FROM activities WHERE year_frame_id = ?
-    `, [id]);
+      FROM activities WHERE year_frame_id = ? AND COALESCE(is_virtual, 0) = 0
+    `,
+      [id]
+    );
+    const [virtualStats] = await db.query(
+      `
+      SELECT 
+        COUNT(*) as virtual_count,
+        COALESCE(SUM(quoted_price), 0) as virtual_prepaid_quote_total
+      FROM activities WHERE year_frame_id = ? AND COALESCE(is_virtual, 0) = 1
+    `,
+      [id]
+    );
     
     // 统计仓储金额
     const [warehouseStats] = await db.query(`
@@ -59,6 +71,7 @@ router.get('/:id', async (req, res) => {
       ...frame,
       stats: {
         activities: activityStats[0],
+        virtual_sessions: virtualStats[0],
         warehouse: warehouseStats[0],
         logistics: logisticsStats[0],
         reimbursements: reimbStats[0]

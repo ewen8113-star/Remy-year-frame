@@ -65,7 +65,7 @@ function parseMonthRangeFromDates(startRaw, endRaw) {
 }
 
 function buildActivityFilters(query, opts = {}) {
-  const where = ['a.activity_type IN (?, ?, ?, ?)'];
+  const where = ['a.activity_type IN (?, ?, ?, ?)', 'COALESCE(a.is_virtual, 0) = 0'];
   const params = [...ALLOWED_TYPES];
 
   if (query.yearFrameId) {

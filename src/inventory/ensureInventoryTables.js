@@ -192,6 +192,21 @@ async function ensureInventoryTables(db) {
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
     `);
     await db.query(`
+      CREATE TABLE IF NOT EXISTS inv_item_catalog (
+        id INT PRIMARY KEY AUTO_INCREMENT,
+        name VARCHAR(200) NOT NULL,
+        dimensions VARCHAR(200) NULL,
+        description TEXT NULL,
+        image_urls LONGTEXT NULL,
+        is_common TINYINT(1) NOT NULL DEFAULT 0,
+        source_brands VARCHAR(200) NULL,
+        source_regions VARCHAR(255) NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        UNIQUE KEY uq_inv_item_catalog_name_dim (name, dimensions)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    `);
+    await db.query(`
       CREATE TABLE IF NOT EXISTS inv_outbound_orders (
         id INT PRIMARY KEY AUTO_INCREMENT,
         inv_warehouse_id INT NOT NULL,
