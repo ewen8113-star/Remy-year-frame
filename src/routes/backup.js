@@ -3,12 +3,61 @@ const router = express.Router();
 const db = require('../config/database');
 const fs = require('fs');
 const path = require('path');
+const { execFileSync } = require('child_process');
 
 const BACKUP_DIR = path.join(__dirname, '../../backups');
+const PROJECT_ROOT = path.join(__dirname, '../../');
+const UPLOADS_DIR = path.join(PROJECT_ROOT, 'public/uploads');
 
 // 确保备份目录存在
 if (!fs.existsSync(BACKUP_DIR)) {
   fs.mkdirSync(BACKUP_DIR, { recursive: true });
+}
+
+function tsStamp() {
+  const d = new Date();
+  const p2 = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}${p2(d.getMonth() + 1)}${p2(d.getDate())}-${p2(d.getHours())}${p2(d.getMinutes())}${p2(d.getSeconds())}`;
+}
+
+function safeTableName(name) {
+  return /^[a-zA-Z0-9_]+$/.test(String(name || ''));
+}
+
+async function dumpAllTables() {
+  const [tableRows] = await db.query(
+    `SELECT TABLE_NAME AS table_name
+     FROM INFORMATION_SCHEMA.TABLES
+     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_TYPE = 'BASE TABLE'
+     ORDER BY TABLE_NAME`,
+  );
+  const out = {};
+  const tableStats = [];
+  let totalRows = 0;
+  for (const tr of tableRows) {
+    const table = String(tr.table_name || '').trim();
+    if (!safeTableName(table)) continue;
+    const [rows] = await db.query(`SELECT * FROM \`${table}\``);
+    out[table] = rows;
+    tableStats.push({ table, rows: Array.isArray(rows) ? rows.length : 0 });
+    totalRows += Array.isArray(rows) ? rows.length : 0;
+  }
+  return { data: out, tableStats, totalRows };
+}
+
+function tryCopyUploads(destDir) {
+  const copied = [];
+  if (!fs.existsSync(UPLOADS_DIR)) return copied;
+  const dirs = ['inventory', 'wine-catalog'];
+  for (const d of dirs) {
+    const src = path.join(UPLOADS_DIR, d);
+    if (!fs.existsSync(src)) continue;
+    const dest = path.join(destDir, 'uploads', d);
+    fs.mkdirSync(path.dirname(dest), { recursive: true });
+    fs.cpSync(src, dest, { recursive: true });
+    copied.push(dest);
+  }
+  return copied;
 }
 
 // 获取备份记录
@@ -30,6 +79,74 @@ router.get('/', async (req, res) => {
     res.json(rows);
   } catch (error) {
     res.status(500).json({ error: error.message });
+  }
+});
+
+// 全局备份：全表数据 + 上传文件
+router.post('/full-export', async (req, res) => {
+  try {
+    const stamp = tsStamp();
+    const folderName = `full-backup-${stamp}`;
+    const fullBackupDir = path.join(BACKUP_DIR, folderName);
+    fs.mkdirSync(fullBackupDir, { recursive: true });
+
+    const dumped = await dumpAllTables();
+    const dbJsonPath = path.join(fullBackupDir, 'database-full.json');
+    fs.writeFileSync(
+      dbJsonPath,
+      JSON.stringify(
+        {
+          backupType: 'full',
+          exportTime: new Date().toISOString(),
+          tableStats: dumped.tableStats,
+          totalRows: dumped.totalRows,
+          tables: dumped.data,
+        },
+        null,
+        2,
+      ),
+      'utf8',
+    );
+
+    const copiedUploadDirs = tryCopyUploads(fullBackupDir);
+
+    const manifest = {
+      backupType: 'full',
+      exportTime: new Date().toISOString(),
+      folderName,
+      folderPath: fullBackupDir,
+      databaseFile: dbJsonPath,
+      copiedUploadDirs,
+      tableCount: dumped.tableStats.length,
+      totalRows: dumped.totalRows,
+    };
+    fs.writeFileSync(path.join(fullBackupDir, 'manifest.json'), JSON.stringify(manifest, null, 2), 'utf8');
+
+    let archivePath = null;
+    try {
+      archivePath = path.join(BACKUP_DIR, `${folderName}.tar.gz`);
+      execFileSync('tar', ['-czf', archivePath, '-C', BACKUP_DIR, folderName], { stdio: 'ignore' });
+    } catch (_) {
+      archivePath = null;
+    }
+
+    await db.query(
+      `INSERT INTO backup_records (year_frame_id, backup_type, backup_file, record_count)
+       VALUES (NULL, 'manual', ?, ?)`,
+      [archivePath ? path.basename(archivePath) : folderName, dumped.totalRows],
+    );
+
+    res.json({
+      message: '全局备份成功',
+      backupDir: fullBackupDir,
+      archivePath,
+      tableCount: dumped.tableStats.length,
+      totalRows: dumped.totalRows,
+      uploadsCopied: copiedUploadDirs.length > 0,
+      tableStats: dumped.tableStats,
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message || '全局备份失败' });
   }
 });
 

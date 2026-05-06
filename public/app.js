@@ -5759,6 +5759,13 @@ async function renderBackup() {
         </div>
 
         <div style="padding:16px;background:var(--bg-input);border-radius:var(--radius-sm)">
+          <div style="font-weight:600;margin-bottom:6px">全局数据备份（推荐）</div>
+          <div style="font-size:12px;color:var(--text-secondary);margin-bottom:12px">备份全库所有表 + 上传图片目录（inventory、wine-catalog），写入服务器 backups 目录，并尝试打包为 tar.gz。</div>
+          <button class="btn btn-primary" onclick="fullExportData()"><i data-lucide="shield-check" style="width:14px;height:14px"></i>执行全局备份</button>
+          <div id="fullBackupResult" style="margin-top:10px;font-size:12px;color:var(--text-secondary)"></div>
+        </div>
+
+        <div style="padding:16px;background:var(--bg-input);border-radius:var(--radius-sm)">
           <div style="font-weight:600;margin-bottom:6px">服务器状态</div>
           <div id="serverStatus" style="font-size:13px;color:var(--text-secondary)">检查中...</div>
         </div>
@@ -5809,6 +5816,26 @@ async function exportData() {
     showToast('备份导出成功', 'success');
   } catch (err) {
     showToast('导出失败: ' + err.message, 'error');
+  }
+}
+
+async function fullExportData() {
+  const host = document.getElementById('fullBackupResult');
+  if (host) host.textContent = '全局备份执行中，请稍候...';
+  try {
+    const ret = await api('POST', '/backup/full-export', {});
+    const archive = ret.archivePath ? `压缩包：${ret.archivePath}` : '压缩包：未生成（目录备份仍可用）';
+    if (host) {
+      host.innerHTML = `
+        <div style="color:var(--success)">备份完成：${escapeHtml(String(ret.totalRows || 0))} 行 / ${escapeHtml(String(ret.tableCount || 0))} 张表</div>
+        <div>目录：<code>${escapeHtml(ret.backupDir || '')}</code></div>
+        <div>${escapeHtml(archive)}</div>
+      `;
+    }
+    showToast('全局备份完成', 'success');
+  } catch (err) {
+    if (host) host.innerHTML = `<span style="color:var(--danger)">执行失败：${escapeHtml(err.message || '')}</span>`;
+    showToast('全局备份失败: ' + err.message, 'error');
   }
 }
 
@@ -9673,7 +9700,9 @@ async function invRefreshOutboundModalLineTables() {
         ...snap,
       };
     }
-    const preset = inventoryPageState.outboundEditCommonPreset;
+    const preset = inventoryPageState.editOutboundOrderId
+      ? inventoryPageState.outboundEditCommonPreset
+      : inventoryPageState.outboundCommonByWarehouse[Number(inventoryPageState.warehouseId)] || null;
     commonTbody.innerHTML = invBuildCommonRowsHtml(items, preset);
   }
   invRefreshSelectedPreview();
@@ -10059,95 +10088,49 @@ async function invOpenOutboundOrderDetail(orderId) {
     const det = await api('GET', `/inventory/outbound/${orderId}`);
     const ord = det.order;
     const lines = det.lines || [];
-    const batches = Array.isArray(det.batches) ? det.batches : [];
-    const usageByLineId = new Map();
-    batches.forEach((b) => {
-      (b.lines || []).forEach((rl) => {
-        const lid = Number(rl.outbound_line_id);
-        if (!Number.isFinite(lid)) return;
-        const prev = usageByLineId.get(lid) || {
-          qty_return: 0,
-          qty_lost: 0,
-          qty_damaged: 0,
-          qty_empty_recovered: 0,
-          qty_customer_keep: 0,
-        };
-        prev.qty_return += parseInt(rl.qty_return, 10) || 0;
-        prev.qty_lost += parseInt(rl.qty_lost, 10) || 0;
-        prev.qty_damaged += parseInt(rl.qty_damaged, 10) || 0;
-        prev.qty_empty_recovered += parseInt(rl.qty_empty_recovered, 10) || 0;
-        prev.qty_customer_keep += parseInt(rl.qty_customer_keep, 10) || 0;
-        usageByLineId.set(lid, prev);
-      });
-    });
-    const usageRows = lines
-      .map((ln) => {
-        const u = usageByLineId.get(Number(ln.id)) || {
-          qty_return: 0,
-          qty_lost: 0,
-          qty_damaged: 0,
-          qty_empty_recovered: 0,
-          qty_customer_keep: 0,
-        };
-        return `<tr>
-          <td>${escapeHtml(ln.item_name)}</td>
-          <td>${ln.quantity || 0}</td>
-          <td>${u.qty_return}</td>
-          <td>${u.qty_empty_recovered}</td>
-          <td>${u.qty_customer_keep}</td>
-          <td>${u.qty_lost}</td>
-          <td>${u.qty_damaged}</td>
-          <td>${escapeHtml(ln.line_note || '—')}</td>
-        </tr>`;
-      })
-      .join('');
-    const batchRows = batches
-      .map((b) => {
-        const agg = (b.lines || []).reduce(
-          (acc, rl) => {
-            acc.r += parseInt(rl.qty_return, 10) || 0;
-            acc.e += parseInt(rl.qty_empty_recovered, 10) || 0;
-            acc.k += parseInt(rl.qty_customer_keep, 10) || 0;
-            acc.l += parseInt(rl.qty_lost, 10) || 0;
-            acc.d += parseInt(rl.qty_damaged, 10) || 0;
-            return acc;
-          },
-          { r: 0, e: 0, k: 0, l: 0, d: 0 },
-        );
-        return `<tr>
-          <td>${fmtDate(b.return_date)}</td>
-          <td>${escapeHtml(b.operator || '—')}</td>
-          <td>归还 ${agg.r} / 空瓶 ${agg.e} / 留客 ${agg.k} / 丢失 ${agg.l} / 损坏 ${agg.d}</td>
-          <td>${escapeHtml(b.remarks || '—')}</td>
-        </tr>`;
-      })
-      .join('');
+    const colHtml = '<colgroup><col style="width:25%"><col style="width:25%"><col style="width:15%"><col style="width:10%"><col style="width:25%"></colgroup>';
+    const recipientCity = ord.recipient_city || '—';
+    const contactName = ord.contact_name || '—';
+    const contactPhone = ord.contact_phone || '—';
+    const recipientAddr = ord.recipient_address || '—';
+    const logisticsMethod = ord.logistics_method || '—';
+    const trackingHtml = ord.tracking_number
+      ? `<a href="https://www.sf-express.com/cn/sc/dynamic_function/waybill/#search/bill-number/${encodeURIComponent(String(ord.tracking_number))}" target="_blank" style="color:var(--accent);font-family:monospace;font-size:12px">${escapeHtml(ord.tracking_number)}</a>`
+      : '<span style="color:var(--text-muted)">—</span>';
     const html = `
-        <div class="inv-ob-detail-block">
-          <div class="inv-ob-detail-head">出库单 #${ord.id} · ${ord.shipped_at ? String(ord.shipped_at).slice(0, 16) : '—'} · ${escapeHtml(ord.brand_code)} ${escapeHtml(ord.region)} · ${ord.status === 'closed' ? '已结清' : '待归还'}</div>
-          <div class="activity-detail-grid" style="margin-bottom:12px">
-            <section class="activity-detail-card">
-              <h4>基础信息</h4>
-              ${activityDetailRow('关联方式', ord.link_mode === 'standalone' ? '非项目出库' : '项目编号')}
-              ${activityDetailRow(ord.link_mode === 'standalone' ? '用途说明' : '项目编号', ord.link_mode === 'standalone' ? (ord.purpose || '—') : (ord.project_code || '—'))}
-              ${activityDetailRow('发货仓', `${ord.brand_code || ''} ${ord.region || ''}`.trim() || '—')}
-              ${activityDetailRow('状态', ord.status === 'closed' ? '已归还' : '出库中')}
-            </section>
-            <section class="activity-detail-card">
-              <h4>收件信息</h4>
-              ${activityDetailRow('收件城市', ord.recipient_city || '—')}
-              ${activityDetailRow('联系人', ord.contact_name || '—')}
-              ${activityDetailRow('联系电话', ord.contact_phone || '—')}
-              ${activityDetailRow('收件地址', ord.recipient_address || '—')}
-              ${activityDetailRow('物流方式', ord.logistics_method || '—')}
-              ${activityDetailRowHtml('物流单号', ord.tracking_number
-                ? `<a href="https://www.sf-express.com/cn/sc/dynamic_function/waybill/#search/bill-number/${encodeURIComponent(String(ord.tracking_number))}" target="_blank" style="color:var(--accent);font-family:monospace;font-size:12px">${escapeHtml(ord.tracking_number)}</a>`
-                : '<span style="color:var(--text-muted)">—</span>')}
-            </section>
+        <div class="inv-ob-shell">
+          <div class="inv-ob-head-fixed">
+            <div class="inv-ob-detail-head">出库单 #${ord.id} · ${ord.shipped_at ? String(ord.shipped_at).slice(0, 16) : '—'} · ${escapeHtml(ord.brand_code)} ${escapeHtml(ord.region)} · ${ord.status === 'closed' ? '已结清' : '待归还'}</div>
+            <div class="activity-detail-grid" style="margin-bottom:12px">
+              <section class="activity-detail-card">
+                <h4>基础信息</h4>
+                ${activityDetailRow('关联方式', ord.link_mode === 'standalone' ? '非项目出库' : '项目编号')}
+                ${activityDetailRow(ord.link_mode === 'standalone' ? '用途说明' : '项目编号', ord.link_mode === 'standalone' ? (ord.purpose || '—') : (ord.project_code || '—'))}
+                ${activityDetailRow('发货仓', `${ord.brand_code || ''} ${ord.region || ''}`.trim() || '—')}
+                ${activityDetailRow('状态', ord.status === 'closed' ? '已归还' : '出库中')}
+              </section>
+              <section class="activity-detail-card">
+                <h4>收件信息</h4>
+                ${activityDetailRow('收件城市', recipientCity)}
+                ${activityDetailRow('联系人', contactName)}
+                ${activityDetailRow('联系电话', contactPhone)}
+                ${activityDetailRow('收件地址', recipientAddr)}
+                ${activityDetailRow('物流方式', logisticsMethod)}
+                ${activityDetailRowHtml('物流单号', trackingHtml)}
+              </section>
+            </div>
           </div>
-          <div class="table-wrapper">
+          <div class="inv-ob-items-header">
+            <span class="inv-ob-items-label">物品清单</span>
+            <button type="button" class="btn btn-sm btn-secondary" onclick="invDownloadPdf(${ord.id})">PDF</button>
+          </div>
+          <table class="data-table inv-ob-head-table">
+            ${colHtml}
+            <thead><tr><th>物料</th><th>规格</th><th>所属仓</th><th>数量</th><th>行备注</th></tr></thead>
+          </table>
+          <div class="inv-ob-body-scroll">
             <table class="data-table">
-              <thead><tr><th>物料</th><th>规格</th><th>数量</th><th>行备注</th></tr></thead>
+              ${colHtml}
               <tbody>
                 ${
                   lines.length
@@ -10156,36 +10139,16 @@ async function invOpenOutboundOrderDetail(orderId) {
                           (ln) => `<tr>
                   <td>${escapeHtml(ln.item_name)}</td>
                   <td>${escapeHtml(ln.item_dimensions || '—')}</td>
+                  <td>${escapeHtml(ln.line_brand_code || '—')} ${escapeHtml(ln.line_region || '')}</td>
                   <td>${ln.quantity}</td>
                   <td>${escapeHtml(ln.line_note || '—')}</td>
                 </tr>`,
                         )
                         .join('')
-                    : '<tr><td colspan="4">无明细</td></tr>'
+                    : '<tr><td colspan="5">无明细</td></tr>'
                 }
               </tbody>
             </table>
-          </div>
-          <div class="inv-ob-detail-head" style="margin-top:12px">物品使用情况（按明细累计）</div>
-          <div class="table-wrapper">
-            <table class="data-table">
-              <thead><tr><th>物料</th><th>出库</th><th>归还</th><th>空瓶回收</th><th>留给客户</th><th>丢失</th><th>损坏</th><th>行备注</th></tr></thead>
-              <tbody>
-                ${usageRows || '<tr><td colspan="8">无使用记录</td></tr>'}
-              </tbody>
-            </table>
-          </div>
-          <div class="inv-ob-detail-head" style="margin-top:12px">归还登记记录（含备注）</div>
-          <div class="table-wrapper">
-            <table class="data-table">
-              <thead><tr><th>归还日期</th><th>登记人</th><th>登记汇总</th><th>备注</th></tr></thead>
-              <tbody>
-                ${batchRows || '<tr><td colspan="4">暂无归还登记</td></tr>'}
-              </tbody>
-            </table>
-          </div>
-          <div class="inv-ob-detail-actions">
-            <button type="button" class="btn btn-sm btn-secondary" onclick="invDownloadPdf(${ord.id})">PDF</button>
           </div>
         </div>`;
     body.innerHTML = html;
@@ -10205,7 +10168,6 @@ async function invOpenOutboundEditModal(orderId) {
     } else {
       inventoryPageState.outboundInlineOpen = true;
       inventoryPageState.editOutboundOrderId = orderId;
-      await renderInventory();
     }
     let det;
     try {

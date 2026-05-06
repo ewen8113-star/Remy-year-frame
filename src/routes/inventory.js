@@ -185,8 +185,8 @@ async function ensureEmptyBottleItem(conn, sourceItem) {
 }
 
 function wineCatalogSpecLine(row) {
-  const parts = [row?.category, row?.volume_label].filter((x) => String(x || '').trim());
-  return parts.length ? parts.join(' · ') : '';
+  const v = String(row?.volume_label || '').trim();
+  return v || '';
 }
 
 /** MySQL 聚合 / mysql2 可能返回 string、bigint；统一为安全数字 */
@@ -1944,112 +1944,96 @@ router.get('/outbound/:id/pdf', async (req, res) => {
       lineWhMap.get(key).push(ln);
     });
     const whCount = lineWhMap.size;
-    const detailBlocks = [];
-    for (const [whKey, group] of lineWhMap.entries()) {
-      const [b, r] = String(whKey).split('|');
-      const tableBody = [
-        [
-          { text: '物料', style: 'th' },
-          { text: '规格/尺寸', style: 'th' },
-          { text: '数量', style: 'th' },
-          { text: '明细说明', style: 'th' },
-        ],
-      ];
-      group.forEach((ln) => {
-        tableBody.push([
-          String(ln.item_name || ''),
-          String(ln.item_dimensions || '—'),
-          String(ln.quantity),
-          String(ln.line_note || '—'),
-        ]);
-      });
-      detailBlocks.push(
-        { text: `仓库：${b || '—'} ｜ ${r || '—'}`, style: 'h2', margin: [0, 8, 0, 4] },
-        {
-          table: {
-            widths: ['*', 'auto', 'auto', '*'],
-            headerRows: 1,
-            body: tableBody,
-          },
-          layout: { fillColor: (i) => (i === 0 ? '#eeeeee' : null) },
-        },
-      );
-    }
-
     const shippedAt = order.shipped_at ? new Date(order.shipped_at) : null;
     const shippedDateCn =
       shippedAt && !Number.isNaN(shippedAt.getTime())
         ? `${shippedAt.getFullYear()}年${shippedAt.getMonth() + 1}月${shippedAt.getDate()}日`
         : '—';
 
-    const warehouseLabel = whCount > 1 ? `多仓（${whCount}）` : `${order.brand_code || '—'}${order.region || ''}`;
+    const whNames = Array.from(lineWhMap.keys()).map((k) => {
+      const [b, r] = String(k).split('|');
+      return `${b || '—'} ${r || ''}`.trim();
+    });
+    const warehouseLabel = whCount > 1
+      ? `多仓（${whNames.join(' / ')}）`
+      : `${order.brand_code || '—'} ${order.region || ''}`.trim();
 
     const lineTableBody = [
       [
-        { text: '物品名称', style: 'thCenter' },
+        { text: '序号', style: 'thCenter' },
+        { text: '物品名称', style: 'th' },
+        { text: '所属仓库', style: 'thCenter' },
         { text: '数量', style: 'thCenter' },
-        { text: '规格/尺寸', style: 'thCenter' },
+        { text: '规格/尺寸', style: 'th' },
         { text: '说明', style: 'thCenter' },
       ],
     ];
-    lines.forEach((ln) => {
+    lines.forEach((ln, idx) => {
       lineTableBody.push([
-        { text: String(ln.item_name || ''), style: 'tdCenter' },
+        { text: String(idx + 1), style: 'tdCenter' },
+        { text: String(ln.item_name || ''), style: 'tdLeft' },
+        { text: `${ln.line_brand_code || '—'} ${ln.line_region || ''}`.trim(), style: 'tdCenter' },
         { text: String(ln.quantity || ''), style: 'tdCenter' },
-        { text: String(ln.item_dimensions || '—'), style: 'tdCenter' },
+        { text: String(ln.item_dimensions || '—'), style: 'tdLeft' },
         { text: String(ln.line_note || '—'), style: 'tdCenter' },
       ]);
     });
 
     const docDefinition = {
-      defaultStyle: { font: hasSystemUnicodeFont ? 'unicode' : 'fangzhen', fontSize: 10 },
+      pageSize: 'A4',
+      pageOrientation: 'portrait',
+      pageMargins: [40, 40, 40, 40],
+      defaultStyle: { font: hasSystemUnicodeFont ? 'unicode' : 'fangzhen', fontSize: 10, lineHeight: 1.2 },
       content: [
-        { text: '物品出库单', style: 'title', margin: [0, 0, 0, 16] },
-        ...(order.project_code
-          ? [{ text: [{ text: '项目编号：', bold: true }, String(order.project_code)], margin: [0, 0, 0, 8] }]
-          : []),
-        { text: [{ text: '出库时间：', bold: true }, shippedDateCn], margin: [0, 0, 0, 8] },
-        { text: [{ text: '所属仓：', bold: true }, warehouseLabel], margin: [0, 0, 0, 18] },
-        { text: '收件信息', style: 'h2' },
+        { text: '物品出库单', style: 'title', alignment: 'center', margin: [0, 0, 0, 6] },
+        { text: [{ text: '项目编号：', bold: true }, order.project_code || '—'], margin: [0, 0, 0, 3] },
         {
-          stack: [
-            { text: [{ text: '城市：', bold: true }, `${order.recipient_city || '—'}`], margin: [0, 0, 0, 6] },
-            {
-              columns: [
-                { width: '45%', text: [{ text: '联系人：', bold: true }, `${order.contact_name || '—'}`] },
-                { width: '55%', text: [{ text: '联系电话：', bold: true }, `${order.contact_phone || '—'}`] },
-              ],
-              margin: [0, 0, 0, 6],
-            },
-            { text: [{ text: '地址：', bold: true }, `${order.recipient_address || '—'}`], margin: [0, 0, 0, 6] },
-            { text: [{ text: '物流方式：', bold: true }, `${order.logistics_method || '—'}`] },
+          columns: [
+            { width: 'auto', text: [{ text: '出库时间：', bold: true }, shippedDateCn] },
+            { width: '*', text: [{ text: '所属仓库：', bold: true }, warehouseLabel] },
           ],
+          columnGap: 16,
+          margin: [0, 0, 0, 6],
         },
-        { text: '\n物品明细：', style: 'h2' },
+        { text: '收件信息', style: 'h2' },
+        { text: [{ text: '城市：', bold: true }, order.recipient_city || '—'], margin: [0, 0, 0, 3] },
+        {
+          columns: [
+            { width: 'auto', text: [{ text: '联系人：', bold: true }, order.contact_name || '—'] },
+            { width: '*', text: [{ text: '联系电话：', bold: true }, order.contact_phone || '—'] },
+          ],
+          columnGap: 24,
+          margin: [0, 0, 0, 3],
+        },
+        { text: [{ text: '地址：', bold: true }, order.recipient_address || '—'], margin: [0, 0, 0, 3] },
+        { text: [{ text: '物流方式：', bold: true }, order.logistics_method || '—'], margin: [0, 0, 0, 6] },
+        { text: '物品明细', style: 'h2' },
         {
           table: {
-            widths: ['42%', '18%', '18%', '22%'],
+            widths: ['8%', '32%', '14%', '8%', '28%', '10%'],
             headerRows: 1,
             body: lineTableBody,
           },
           layout: {
-            hLineWidth: () => 1,
-            vLineWidth: () => 1,
-            hLineColor: () => '#222',
-            vLineColor: () => '#222',
-            paddingTop: () => 8,
-            paddingBottom: () => 8,
-            paddingLeft: () => 6,
-            paddingRight: () => 6,
+            hLineWidth: () => 0.5,
+            vLineWidth: () => 0.5,
+            hLineColor: () => '#888888',
+            vLineColor: () => '#888888',
+            paddingTop: () => 3,
+            paddingBottom: () => 3,
+            paddingLeft: () => 4,
+            paddingRight: () => 4,
           },
         },
-        ...(order.remarks ? [{ text: `\n备注：${order.remarks}`, margin: [0, 10, 0, 0] }] : []),
+        ...(order.remarks ? [{ text: `备注：${order.remarks}`, margin: [0, 6, 0, 0] }] : []),
       ],
       styles: {
-        title: { fontSize: 28, bold: true },
-        h2: { fontSize: 13, bold: true, margin: [0, 8, 0, 8] },
-        thCenter: { bold: true, alignment: 'center', fontSize: 11 },
-        tdCenter: { alignment: 'center', fontSize: 11 },
+        title: { fontSize: 18, bold: true },
+        h2: { fontSize: 11, bold: true, margin: [0, 6, 0, 3] },
+        th: { bold: true, fontSize: 9, fillColor: '#f0f0f0' },
+        thCenter: { bold: true, alignment: 'center', fontSize: 9, fillColor: '#f0f0f0' },
+        tdLeft: { alignment: 'left', fontSize: 9, lineHeight: 1.2 },
+        tdCenter: { alignment: 'center', fontSize: 9, lineHeight: 1.2 },
       },
     };
 
