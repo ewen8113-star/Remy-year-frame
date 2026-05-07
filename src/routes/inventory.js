@@ -1421,6 +1421,84 @@ router.get('/outbound/:id', async (req, res) => {
   }
 });
 
+/** 物料入库：增加仓库物品库存并记录入库来源 */
+router.post('/inbound', async (req, res) => {
+  try {
+    const db = require('../config/database');
+    const { inv_warehouse_id, inv_item_id, quantity, items, source, remarks, inbound_date } = req.body;
+    const wid = parseInt(inv_warehouse_id, 10);
+    if (!Number.isFinite(wid)) return res.status(400).json({ error: '请选择有效仓库' });
+    const date = inbound_date || new Date().toISOString().slice(0, 10);
+    const operator = req.session?.user?.display_name || req.session?.user?.username || '系统';
+    const itemList = Array.isArray(items) && items.length
+      ? items
+      : (inv_item_id != null ? [{ inv_item_id, quantity }] : []);
+    if (!itemList.length) return res.status(400).json({ error: '请至少选择一个物品' });
+    const ids = [];
+    for (const it of itemList) {
+      const iid = parseInt(it.inv_item_id, 10);
+      const qty = parseInt(it.quantity, 10);
+      if (!Number.isFinite(iid) || !Number.isFinite(qty) || qty <= 0) continue;
+      const [itemRows] = await db.query('SELECT id FROM inv_items WHERE id = ? AND inv_warehouse_id = ? LIMIT 1', [iid, wid]);
+      if (!itemRows.length) continue;
+      await db.query('UPDATE inv_items SET quantity_on_hand = quantity_on_hand + ? WHERE id = ?', [qty, iid]);
+      const [result] = await db.query(
+        'INSERT INTO inv_inbound_records (inv_warehouse_id, inv_item_id, quantity, source, operator, remarks, inbound_date) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        [wid, iid, qty, source || null, operator, remarks || null, date],
+      );
+      ids.push(result.insertId);
+    }
+    if (!ids.length) return res.status(400).json({ error: '没有有效的物品被入库' });
+    res.json({ data: { ids, count: ids.length } });
+  } catch (e) {
+    console.error(e);
+    if (!res.headersSent) res.status(500).json({ error: e.message || '入库失败' });
+  }
+});
+
+/** 物料入库记录列表 */
+router.get('/inbound', async (req, res) => {
+  try {
+    const wid = parseInt(req.query.inv_warehouse_id, 10);
+    let sql = `
+      SELECT r.id, r.inv_warehouse_id, r.inv_item_id, r.quantity, r.source, r.operator, r.remarks, r.created_at,
+             i.name AS item_name, i.dimensions AS item_dimensions,
+             wh.region, bi.brand_code
+      FROM inv_inbound_records r
+      JOIN inv_items i ON i.id = r.inv_item_id
+      JOIN inv_warehouses wh ON wh.id = r.inv_warehouse_id
+      LEFT JOIN brand_inventory bi ON bi.id = wh.brand_id
+    `;
+    const params = [];
+    if (Number.isFinite(wid)) {
+      sql += ' WHERE r.inv_warehouse_id = ?';
+      params.push(wid);
+    }
+    sql += ' ORDER BY r.created_at DESC LIMIT 50';
+    const [rows] = await db.query(sql, params);
+    res.json({ data: rows });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: e.message || '加载失败' });
+  }
+});
+
+/** 删除物料入库记录并回退库存 */
+router.delete('/inbound/:id', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (!Number.isFinite(id)) return res.status(400).json({ error: '无效ID' });
+    const [[record]] = await db.query('SELECT inv_item_id, quantity FROM inv_inbound_records WHERE id = ? LIMIT 1', [id]);
+    if (!record) return res.status(404).json({ error: '记录不存在' });
+    await db.query('UPDATE inv_items SET quantity_on_hand = quantity_on_hand - ? WHERE id = ?', [record.quantity, record.inv_item_id]);
+    await db.query('DELETE FROM inv_inbound_records WHERE id = ?', [id]);
+    res.json({ data: { id } });
+  } catch (e) {
+    console.error(e);
+    if (!res.headersSent) res.status(500).json({ error: e.message || '删除失败' });
+  }
+});
+
 /** 入库单台账：归还登记批次列表（inv_return_batches），按财年筛选规则与物品出库列表一致 */
 router.get('/inbound-receipts', async (req, res) => {
   try {

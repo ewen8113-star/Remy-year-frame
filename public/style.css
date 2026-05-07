@@ -1507,6 +1507,10 @@ body.modal-open {
   word-break: break-word;
 }
 
+.inv-inbound-dropdown-item:hover {
+  background: var(--bg-hover, #f5f5f5);
+}
+
 .inv-tabs {
   display: flex;
   flex-wrap: wrap;

@@ -707,6 +707,19 @@
     </div>
   </div>
 
+  <!-- 物料入库：弹窗 -->
+  <div class="modal wide" id="modalInvInbound" style="max-width:520px" onclick="event.stopPropagation()">
+    <div class="modal-header">
+      <span class="modal-title">物料入库</span>
+      <button type="button" class="modal-close" onclick="closeModal()">✕</button>
+    </div>
+    <div class="modal-body" id="modalInvInboundBody"></div>
+    <div class="modal-footer">
+      <button type="button" class="btn btn-secondary" onclick="closeModal()">取消</button>
+      <button type="button" class="btn btn-primary" id="invInboundSubmitBtn" onclick="invSubmitInbound()">确认入库</button>
+    </div>
+  </div>
+
   <!-- 库存数据：编辑物品 -->
   <div class="modal wide inv-modal-item-edit" id="modalInvItemEdit" style="max-width:520px" onclick="event.stopPropagation()">
     <div class="modal-header">

@@ -268,6 +268,21 @@ async function ensureInventoryTables(db) {
         CONSTRAINT fk_inv_rl_ol FOREIGN KEY (outbound_line_id) REFERENCES inv_outbound_lines(id) ON DELETE CASCADE
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
     `);
+    await db.query(`
+      CREATE TABLE IF NOT EXISTS inv_inbound_records (
+        id INT PRIMARY KEY AUTO_INCREMENT,
+        inv_warehouse_id INT NOT NULL,
+        inv_item_id INT NOT NULL,
+        quantity INT NOT NULL DEFAULT 0,
+        source VARCHAR(200),
+        operator VARCHAR(100),
+        remarks TEXT,
+        inbound_date DATE,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        CONSTRAINT fk_inv_ir_wh FOREIGN KEY (inv_warehouse_id) REFERENCES inv_warehouses(id),
+        CONSTRAINT fk_inv_ir_item FOREIGN KEY (inv_item_id) REFERENCES inv_items(id)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    `);
     _ensured = true;
   })();
   try {
