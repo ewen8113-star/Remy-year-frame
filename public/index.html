@@ -58,6 +58,28 @@
         </div>
       </div>
 
+      <div class="nav-group" data-nav-group="stock">
+        <button type="button" class="nav-group-toggle" aria-expanded="true" onclick="toggleNavGroup('stock')">
+          <span class="nav-group-title">仓库管理</span>
+          <span class="nav-group-chevron"><i data-lucide="chevron-down" style="width:14px;height:14px"></i></span>
+        </button>
+        <div class="nav-group-items">
+          <a class="nav-item" data-page="inv-outbound" onclick="navigate('inv-outbound')">
+            <span class="nav-icon"><i data-lucide="package" style="width:16px;height:16px"></i></span>
+            <span class="nav-text">物品出库</span>
+          </a>
+          <a class="nav-item" data-page="inv-inbound" onclick="navigate('inv-inbound')">
+            <span class="nav-icon"><i data-lucide="inbox" style="width:16px;height:16px"></i></span>
+            <span class="nav-text">物品入库</span>
+            <span class="nav-badge" id="badge-inv-inbound">—</span>
+          </a>
+          <a class="nav-item" data-page="inventory" id="navInventoryMaster" onclick="navigate('inventory')">
+            <span class="nav-icon"><i data-lucide="database" style="width:16px;height:16px"></i></span>
+            <span class="nav-text">库存管理</span>
+          </a>
+        </div>
+      </div>
+
       <div class="nav-group" data-nav-group="cost">
         <button type="button" class="nav-group-toggle" aria-expanded="true" onclick="toggleNavGroup('cost')">
           <span class="nav-group-title">成本管理</span>
@@ -96,28 +118,6 @@
         </div>
       </div>
 
-      <div class="nav-group" data-nav-group="stock">
-        <button type="button" class="nav-group-toggle" aria-expanded="true" onclick="toggleNavGroup('stock')">
-          <span class="nav-group-title">仓库管理</span>
-          <span class="nav-group-chevron"><i data-lucide="chevron-down" style="width:14px;height:14px"></i></span>
-        </button>
-        <div class="nav-group-items">
-          <a class="nav-item" data-page="inv-outbound" onclick="navigate('inv-outbound')">
-            <span class="nav-icon"><i data-lucide="package" style="width:16px;height:16px"></i></span>
-            <span class="nav-text">物品出库</span>
-          </a>
-          <a class="nav-item" data-page="inv-inbound" onclick="navigate('inv-inbound')">
-            <span class="nav-icon"><i data-lucide="inbox" style="width:16px;height:16px"></i></span>
-            <span class="nav-text">物品入库</span>
-            <span class="nav-badge" id="badge-inv-inbound">—</span>
-          </a>
-          <a class="nav-item" data-page="inventory" id="navInventoryMaster" onclick="navigate('inventory')">
-            <span class="nav-icon"><i data-lucide="database" style="width:16px;height:16px"></i></span>
-            <span class="nav-text">库存管理</span>
-          </a>
-        </div>
-      </div>
-
       <div class="nav-group" data-nav-group="sys">
         <button type="button" class="nav-group-toggle" aria-expanded="true" onclick="toggleNavGroup('sys')">
           <span class="nav-group-title">系统</span>
@@ -131,6 +131,10 @@
           <a class="nav-item" data-page="users" id="navUsers" onclick="navigate('users')">
             <span class="nav-icon"><i data-lucide="users" style="width:16px;height:16px"></i></span>
             <span class="nav-text">用户管理</span>
+          </a>
+          <a class="nav-item" data-page="dict" id="navDict" onclick="navigate('dict')">
+            <span class="nav-icon"><i data-lucide="book-marked" style="width:16px;height:16px"></i></span>
+            <span class="nav-text">字典管理</span>
           </a>
           <a class="nav-item" data-page="backup" onclick="navigate('backup')">
             <span class="nav-icon"><i data-lucide="database-backup" style="width:16px;height:16px"></i></span>
@@ -343,9 +347,10 @@
       <button type="button" class="modal-close" onclick="closeModal()">✕</button>
     </div>
     <div class="modal-body" id="costDetailContent"></div>
-    <div class="modal-footer">
+    <div class="modal-footer" style="display:flex;justify-content:flex-end;flex-wrap:wrap;gap:8px">
+      <button type="button" class="btn btn-danger btn-sm" onclick="clearActivityCostRegistrationFromDetail()">删除登记</button>
       <button type="button" class="btn btn-secondary" onclick="closeModal()">关闭</button>
-      <button type="button" class="btn btn-primary" id="costDetailEditBtn">修改成本</button>
+      <button type="button" class="btn btn-primary" onclick="openCostEditFromDetail()">编辑成本</button>
     </div>
   </div>
 
@@ -401,7 +406,7 @@
     <div class="modal-body" style="max-height:70vh;overflow-y:auto" id="lookupEditorContent"></div>
   </div>
 
-  <div class="modal" id="modalLogistics">
+  <div class="modal wide" id="modalLogistics">
     <div class="modal-header">
       <span class="modal-title" id="logModalTitle">新建物流记录</span>
       <button type="button" class="modal-close" onclick="closeModal()">✕</button>
@@ -409,48 +414,21 @@
     <div class="modal-body">
       <div class="form-grid">
         <input type="hidden" id="logId">
+        <div class="form-group form-full" style="font-size:12px;color:var(--text-secondary);margin-bottom:4px">非活动场次物流（无项目编号）；物品出库无项目编号时自动同步一条记录。</div>
         <div class="form-group">
-          <label class="form-label">物流公司</label>
-          <div style="display:flex;align-items:center;gap:12px">
-            <select class="form-control" id="logCompany">
-            <option value="东区仓库（叶老板）">东区仓库（叶老板）</option>
-            <option value="南区仓库（天空）">南区仓库（天空）</option>
-            <option value="北区仓库（叶老板）">北区仓库（叶老板）</option>
-            </select>
-            <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text-secondary);cursor:pointer;white-space:nowrap">
-              <input type="checkbox" id="logSpecialCar" onchange="toggleLogSpecialCar()">
-              <span>专车（包车）</span>
-            </label>
-            <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text-secondary);cursor:pointer;white-space:nowrap">
-              <input type="checkbox" id="logMonthlySettlement" onchange="toggleLogSpecialCar()">
-              <span>月结</span>
-            </label>
-          </div>
+          <label class="form-label">物流单位 <span class="required">*</span></label>
+          <select class="form-control" id="logUnit" required onchange="onLogisticsUnitChange()"></select>
         </div>
         <div class="form-group">
-          <label class="form-label">快递公司</label>
-          <select class="form-control" id="logExpress">
-            <option value="顺丰">顺丰</option>
-            <option value="京东">京东</option>
-            <option value="中通">中通</option>
-            <option value="圆通">圆通</option>
-            <option value="其他">其他</option>
-          </select>
+          <label class="form-label">物流方式 <span class="required">*</span></label>
+          <select class="form-control" id="logMethod" required></select>
         </div>
         <div class="form-group">
           <label class="form-label">单号</label>
-          <input type="text" class="form-control" id="logTrack" placeholder="快递单号">
+          <input type="text" class="form-control" id="logTrack" placeholder="运单号（可后补）">
         </div>
         <div class="form-group">
-          <label class="form-label">月结年份</label>
-          <select class="form-control" id="logSettlementYear"></select>
-        </div>
-        <div class="form-group">
-          <label class="form-label">月结月份</label>
-          <select class="form-control" id="logSettlementMonth"></select>
-        </div>
-        <div class="form-group">
-          <label class="form-label">品牌</label>
+          <label class="form-label">品牌 <span class="required">*</span></label>
           <select class="form-control" id="logBrand">
             <option value="PHD">PHD</option>
             <option value="X.O">X.O</option>
@@ -459,44 +437,88 @@
           </select>
         </div>
         <div class="form-group">
-          <label class="form-label">发货城市</label>
-          <input type="text" class="form-control" id="logOrigin" placeholder="发货地">
-        </div>
-        <div class="form-group">
-          <label class="form-label">目的城市</label>
-          <input type="text" class="form-control" id="logDest" placeholder="目的地">
-        </div>
-        <div class="form-group">
-          <label class="form-label">发货日期</label>
-          <input type="date" class="form-control" id="logDate">
+          <label class="form-label">发货日期 <span class="required">*</span></label>
+          <input type="date" class="form-control" id="logDate" required>
         </div>
         <div class="form-group">
           <label class="form-label">费用 (¥)</label>
-          <input type="number" class="form-control" id="logFee" placeholder="0.00" step="0.01">
+          <input type="number" class="form-control" id="logFee" placeholder="0.00（可留空）" step="0.01" min="0">
+        </div>
+        <div class="form-group">
+          <label class="form-label">收款方 <span class="required">*</span></label>
+          <input type="text" class="form-control" id="logPayeeName" placeholder="物流公司 / 承运方" required>
         </div>
         <div class="form-group form-full">
-          <label class="form-label">关联项目编号</label>
-          <div style="display:flex;gap:8px;align-items:center">
-            <input type="text" class="form-control" id="logProject" list="logProjectList" autocomplete="off" placeholder="输入搜索并从下拉选择（仅允许活动项目编号）">
+          <label class="form-label">用途</label>
+          <input type="text" class="form-control" id="logPurpose" placeholder="选填，自定义说明">
+        </div>
+        <div class="form-group form-full logistics-info-block">
+          <div class="logistics-info-row-head">
+            <span class="form-label" style="margin:0">发件信息</span>
+            <div class="logistics-info-actions">
+              <button type="button" class="btn btn-secondary btn-sm" onclick="copyLogisticsShipBundle()">复制</button>
+              <button type="button" class="btn btn-secondary btn-sm" onclick="openLogisticsSmartFill('ship')">智能填写</button>
+            </div>
           </div>
-          <datalist id="logProjectList"></datalist>
+          <div class="form-grid three logistics-info-grid">
+            <div class="form-group">
+              <label class="form-label">发件人</label>
+              <input type="text" class="form-control" id="logShipName" placeholder="姓名" autocomplete="off">
+            </div>
+            <div class="form-group">
+              <label class="form-label">联系方式</label>
+              <input type="text" class="form-control" id="logShipPhone" placeholder="手机 / 电话" autocomplete="off">
+            </div>
+            <div class="form-group form-full" style="grid-column:1/-1">
+              <label class="form-label">发件地址</label>
+              <input type="text" class="form-control" id="logShipAddr" placeholder="省市区与详细地址" autocomplete="off">
+            </div>
+          </div>
         </div>
-        <div class="form-group form-full">
-          <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text-secondary);cursor:pointer">
-            <input type="checkbox" id="logMergedIntoActivity">
-            <span>计入活动成本（勾选时需选择关联项目编号）</span>
-          </label>
-          <input type="text" class="form-control" id="logAllocationNote" placeholder="计入说明（选填）" style="margin-top:8px">
-        </div>
-        <div class="form-group form-full">
-          <label class="form-label">备注</label>
-          <textarea class="form-control" id="logRemarks" rows="2"></textarea>
+        <div class="form-group form-full logistics-info-block">
+          <div class="logistics-info-row-head">
+            <span class="form-label" style="margin:0">收件信息</span>
+            <div class="logistics-info-actions">
+              <button type="button" class="btn btn-secondary btn-sm" onclick="copyLogisticsRecvBundle()">复制</button>
+              <button type="button" class="btn btn-secondary btn-sm" onclick="openLogisticsSmartFill('recv')">智能填写</button>
+            </div>
+          </div>
+          <div class="form-grid three logistics-info-grid">
+            <div class="form-group">
+              <label class="form-label">收件人</label>
+              <input type="text" class="form-control" id="logRecvName" placeholder="姓名" autocomplete="off">
+            </div>
+            <div class="form-group">
+              <label class="form-label">联系方式</label>
+              <input type="text" class="form-control" id="logRecvPhone" placeholder="手机 / 电话" autocomplete="off">
+            </div>
+            <div class="form-group form-full" style="grid-column:1/-1">
+              <label class="form-label">收件信息</label>
+              <input type="text" class="form-control" id="logRecvAddr" placeholder="地址或其他收件说明" autocomplete="off">
+            </div>
+          </div>
         </div>
       </div>
     </div>
     <div class="modal-footer">
       <button type="button" class="btn btn-secondary" onclick="closeModal()">取消</button>
       <button type="button" class="btn btn-primary" onclick="saveLogistics()">保存</button>
+    </div>
+  </div>
+
+  <div class="modal narrow" id="modalLogisticsSmartFill">
+    <div class="modal-header">
+      <span class="modal-title" id="logisticsSmartFillTitle">智能填写</span>
+      <button type="button" class="modal-close" onclick="closeModal()">✕</button>
+    </div>
+    <div class="modal-body">
+      <p style="font-size:12px;color:var(--text-secondary);margin:0 0 10px;line-height:1.5">粘贴姓名、手机/电话、地址（可分多行）。将尝试拆成三栏填入对应输入框。</p>
+      <label class="form-label" for="logisticsSmartFillPaste">粘贴内容</label>
+      <textarea class="form-control" id="logisticsSmartFillPaste" rows="5" placeholder="例如：&#10;张三&#10;13800138000&#10;上海市…"></textarea>
+    </div>
+    <div class="modal-footer">
+      <button type="button" class="btn btn-secondary" onclick="closeModal()">取消</button>
+      <button type="button" class="btn btn-primary" onclick="applyLogisticsSmartFill()">填入</button>
     </div>
   </div>
 
@@ -508,9 +530,22 @@
     <div class="modal-body">
       <div class="form-grid three">
         <input type="hidden" id="warId">
-        <div class="form-group">
-          <label class="form-label">年份 <span class="required">*</span></label>
+        <div class="form-group" id="warYearFrameWrap">
+          <label class="form-label">财年 <span class="required">*</span></label>
           <select class="form-control" id="warYearFrameId" required></select>
+          <div id="warYearFrameHint" style="display:none;font-size:11px;color:var(--text-secondary);margin-top:4px">默认当前年度，无需修改</div>
+        </div>
+        <div class="form-group form-full" id="warPeriodWrap" style="display:none;grid-column:1/-1">
+          <label class="form-label">账期（起止日期） <span class="required">*</span></label>
+          <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center">
+            <input type="date" class="form-control" id="warPeriodStart" style="max-width:180px" onchange="onWarehousePeriodChange()">
+            <span style="color:var(--text-muted)">至</span>
+            <input type="date" class="form-control" id="warPeriodEnd" style="max-width:180px" onchange="onWarehousePeriodChange()">
+          </div>
+        </div>
+        <div class="form-group" id="warMonthLegacyWrap">
+          <label class="form-label">月份</label>
+          <input type="month" class="form-control" id="warMonth">
         </div>
         <div class="form-group">
           <label class="form-label">品牌 <span class="required">*</span></label>
@@ -531,7 +566,7 @@
           </select>
         </div>
         <div class="form-group">
-          <label class="form-label">数量（月） <span class="required">*</span></label>
+          <label class="form-label" id="warQtyLabel">数量（天） <span class="required">*</span></label>
           <input type="number" class="form-control" id="warQty" placeholder="0" min="0" step="1" oninput="updateWarQuotedPrice()">
         </div>
         <div class="form-group">
@@ -550,16 +585,20 @@
             <span>无成本</span>
           </label>
         </div>
+        <div class="form-group">
+          <label class="form-label">收款方</label>
+          <input type="text" class="form-control" id="warPayeeName" placeholder="用于付款合并">
+        </div>
         <div class="form-group form-full">
           <label class="form-label">备注</label>
           <input type="text" class="form-control" id="warRemarks" placeholder="备注说明">
         </div>
-        <div class="form-group form-full">
+        <div class="form-group form-full" id="warProjectBlock">
           <label class="form-label">关联项目编号（可选）</label>
           <input type="text" class="form-control" id="warProject" list="warProjectList" autocomplete="off" placeholder="输入搜索并从下拉选择（仅允许活动项目编号）">
           <datalist id="warProjectList"></datalist>
         </div>
-        <div class="form-group form-full">
+        <div class="form-group form-full" id="warMergeBlock">
           <label style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text-secondary);cursor:pointer">
             <input type="checkbox" id="warMergedIntoActivity">
             <span>计入活动成本（勾选时需选择关联项目编号）</span>
@@ -571,6 +610,18 @@
     <div class="modal-footer">
       <button type="button" class="btn btn-secondary" onclick="closeModal()">取消</button>
       <button type="button" class="btn btn-primary" onclick="saveWarehouse()">保存</button>
+    </div>
+  </div>
+
+  <div class="modal" id="modalWarehouseFixedCost" style="max-width:620px" onclick="event.stopPropagation()">
+    <div class="modal-header">
+      <span class="modal-title">生成固定仓储成本</span>
+      <button type="button" class="modal-close" onclick="closeModal()">✕</button>
+    </div>
+    <div class="modal-body" id="warFixedCostBody"></div>
+    <div class="modal-footer">
+      <button type="button" class="btn btn-secondary" onclick="closeModal()">取消</button>
+      <button type="button" class="btn btn-primary" onclick="saveWarehouseFixedCosts()">生成记录</button>
     </div>
   </div>
 
@@ -623,20 +674,6 @@
     </div>
   </div>
 
-  <div class="modal wide" id="modalReimbursement" style="max-width:720px" onclick="event.stopPropagation()">
-    <div class="modal-header">
-      <span class="modal-title" id="modalReimbursementTitle">付款申请</span>
-      <button type="button" class="modal-close" onclick="closeModal()">✕</button>
-    </div>
-    <div class="modal-body" id="modalReimbursementBody" style="max-height:76vh;overflow-y:auto"></div>
-    <div class="modal-footer">
-      <button type="button" class="btn btn-secondary" onclick="closeModal()">取消</button>
-      <button type="button" class="btn btn-secondary" onclick="reimbursementPrintCurrentForm()">PDF预览</button>
-      <button type="button" class="btn btn-secondary" onclick="reimbursementPreviewCsvFromForm()">CSV预览</button>
-      <button type="button" class="btn btn-primary" onclick="saveReimbursementForm()">保存</button>
-    </div>
-  </div>
-
   <div class="modal wide" id="modalReimbPreview" style="max-width:980px" onclick="event.stopPropagation()">
     <div class="modal-header">
       <span class="modal-title" id="modalReimbPreviewTitle">预览</span>
@@ -647,6 +684,52 @@
       <button type="button" class="btn btn-secondary" onclick="closeModal()">关闭</button>
       <button type="button" class="btn btn-secondary" id="reimbPreviewDownloadCsvBtn" onclick="reimbursementPreviewDownloadCsv()" style="display:none">下载 CSV</button>
       <button type="button" class="btn btn-primary" id="reimbPreviewPrintPdfBtn" onclick="reimbursementPreviewPrintPdf()" style="display:none">打印 / 导出 PDF</button>
+    </div>
+  </div>
+
+  <div class="modal wide" id="modalReimbDetail" style="max-width:920px" onclick="event.stopPropagation()">
+    <div class="modal-header">
+      <span class="modal-title" id="modalReimbDetailTitle">付款申请详情</span>
+      <button type="button" class="modal-close" onclick="closeModal()">✕</button>
+    </div>
+    <div class="modal-body" id="modalReimbDetailBody" style="max-height:74vh;overflow:auto"></div>
+    <div class="modal-footer reimb-detail-footer">
+      <div class="reimb-detail-footer-left">
+        <button type="button" class="btn btn-secondary" id="reimbDetailEditBtn" onclick="reimbursementDetailEdit()">编辑</button>
+        <button type="button" class="btn btn-danger" id="reimbDetailDeleteBtn" onclick="reimbursementDetailDelete()">删除</button>
+      </div>
+      <div class="reimb-detail-footer-right">
+        <button type="button" class="btn btn-secondary" onclick="closeModal()">关闭</button>
+        <button type="button" class="btn btn-primary" id="reimbDetailPdfBtn" onclick="reimbursementDetailPdfPreview()">PDF 预览</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal wide" id="modalPaymentOrder" style="max-width:1180px" onclick="event.stopPropagation()">
+    <div class="modal-header">
+      <span class="modal-title" id="modalPaymentOrderTitle">新建付款申请</span>
+      <button type="button" class="modal-close" onclick="closeModal()">✕</button>
+    </div>
+    <div class="modal-body" id="modalPaymentOrderBody" style="max-height:76vh;overflow:auto"></div>
+    <div class="modal-footer">
+      <button type="button" class="btn btn-secondary" onclick="closeModal()">取消</button>
+      <button type="button" class="btn btn-secondary" onclick="paymentOrderPreviewSelected()">预览</button>
+      <button type="button" class="btn btn-primary" onclick="paymentOrderConfirmSave()">确认保存并标记已支付</button>
+    </div>
+  </div>
+
+  <div class="modal" id="modalActivityNoCost" style="max-width:420px" onclick="event.stopPropagation()">
+    <div class="modal-header">
+      <span class="modal-title">无成本场次</span>
+      <button type="button" class="modal-close" onclick="closeModal()">✕</button>
+    </div>
+    <div class="modal-body">
+      <p style="margin:0;line-height:1.55;color:var(--text-primary)">本场活动无成本发生</p>
+      <p style="margin:12px 0 0;font-size:13px;color:var(--text-secondary)">确认后该场次将移入「无成本场次」，并清空已填成本明细。</p>
+    </div>
+    <div class="modal-footer">
+      <button type="button" class="btn btn-secondary" onclick="closeModal()">取消</button>
+      <button type="button" class="btn btn-primary" onclick="submitActivityNoCostConfirm()">确认</button>
     </div>
   </div>
 
@@ -680,6 +763,35 @@
       <button type="button" class="modal-close" onclick="closeModal()">✕</button>
     </div>
     <div class="modal-body" id="invOutboundModalBody"></div>
+  </div>
+
+  <!-- 库存管理：新建/编辑仓库 -->
+  <div class="modal narrow" id="modalInvWarehouse" onclick="event.stopPropagation()">
+    <div class="modal-header">
+      <span class="modal-title" id="invWhModalTitle">新建仓库</span>
+      <button type="button" class="modal-close" onclick="closeModal()">✕</button>
+    </div>
+    <div class="modal-body" id="invWhModalBody"></div>
+    <div class="modal-footer">
+      <button type="button" class="btn btn-secondary" onclick="closeModal()">取消</button>
+      <button type="button" class="btn btn-primary" id="invWhModalSubmit" onclick="invSubmitWarehouseModal()">保存</button>
+    </div>
+  </div>
+
+  <div class="modal narrow" id="modalInvObSmartFill" onclick="event.stopPropagation()">
+    <div class="modal-header">
+      <span class="modal-title">智能填写 · 收件信息</span>
+      <button type="button" class="modal-close" onclick="closeModal()">✕</button>
+    </div>
+    <div class="modal-body">
+      <p style="font-size:12px;color:var(--text-secondary);margin:0 0 10px;line-height:1.5">粘贴联系人、手机/电话、收件地址（可多行）。将尝试识别<strong>收件城市</strong>并填入对应栏位。</p>
+      <label class="form-label" for="invObSmartFillPaste">粘贴内容</label>
+      <textarea class="form-control" id="invObSmartFillPaste" rows="6" placeholder="例如：&#10;张三&#10;13800138000&#10;北京市朝阳区某某路1号"></textarea>
+    </div>
+    <div class="modal-footer">
+      <button type="button" class="btn btn-secondary" onclick="closeModal()">取消</button>
+      <button type="button" class="btn btn-primary" onclick="invApplyOutboundSmartFill()">填入</button>
+    </div>
   </div>
 
   <!-- 物品出库：按项目汇总 — 出库清单明细 -->
@@ -717,6 +829,19 @@
     <div class="modal-footer">
       <button type="button" class="btn btn-secondary" onclick="closeModal()">取消</button>
       <button type="button" class="btn btn-primary" id="invInboundSubmitBtn" onclick="invSubmitInbound()">确认入库</button>
+    </div>
+  </div>
+
+  <!-- 物料入库：编辑来源信息 -->
+  <div class="modal wide" id="modalInvInboundEdit" style="max-width:520px" onclick="event.stopPropagation()">
+    <div class="modal-header">
+      <span class="modal-title">编辑入库信息</span>
+      <button type="button" class="modal-close" onclick="closeModal()">✕</button>
+    </div>
+    <div class="modal-body" id="modalInvInboundEditBody"></div>
+    <div class="modal-footer">
+      <button type="button" class="btn btn-secondary" onclick="closeModal()">取消</button>
+      <button type="button" class="btn btn-primary" onclick="invSubmitInboundEdit()">保存</button>
     </div>
   </div>
 
@@ -793,7 +918,7 @@
       <span class="modal-title" id="modalInvInboundTitle">入库单</span>
       <button type="button" class="modal-close" onclick="closeModal()">✕</button>
     </div>
-    <div class="modal-body" id="modalInvInboundBody" style="max-height:72vh;overflow:auto"></div>
+    <div class="modal-body" id="modalInvInboundReceiptBody" style="max-height:72vh;overflow:auto"></div>
     <div class="modal-footer">
       <button type="button" class="btn btn-secondary" onclick="closeModal()">关闭</button>
     </div>

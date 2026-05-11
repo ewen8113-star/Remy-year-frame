@@ -8,6 +8,26 @@ const pdfVirtualFs = require('pdfmake/js/virtual-fs').default;
 const robotoVfsMap = require('pdfmake/build/vfs_fonts.js');
 const cnVfsMap = require('pdfmake-support-chinese-fonts/vfs_fonts').pdfMake.vfs;
 
+/**
+ * 仓库显示名（与前端 invWarehouseFullLabel 保持一致）。
+ * - X.O 北区/南区是"公司级跨品牌总仓"，显示为「北区仓库」「南区仓库」
+ * - 其它显示为「品牌 区域」
+ * @param {string|null} brandCode
+ * @param {string|null} region
+ * @returns {string}
+ */
+function formatWarehouseLabel(brandCode, region) {
+  const code = String(brandCode || '').trim();
+  const reg = String(region || '').trim();
+  if (code.toUpperCase() === 'X.O' && (reg === '北区' || reg === '南区')) {
+    return `${reg}仓库`;
+  }
+  if (!code && !reg) return '—';
+  if (!code) return reg;
+  if (!reg) return code;
+  return `${code} ${reg}`;
+}
+
 let _inventoryPdfVfsMerged = false;
 function ensureInventoryPdfVfs() {
   if (_inventoryPdfVfsMerged) return;
@@ -42,6 +62,34 @@ function canonicalRegion(r) {
   const trad = { 東區: '东区', 北區: '北区', 南區: '南区', 東南區: '东南区' };
   if (trad[s]) s = trad[s];
   return INV_REGIONS.includes(s) ? s : null;
+}
+
+/** 出库日期：YYYY-MM-DD → DATETIME 字符串（中午，避免时区边界） */
+function parseOutboundShippedAtInput(raw) {
+  if (raw == null) return null;
+  const s = String(raw).trim().slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return null;
+  const [y, mo, d] = s.split('-').map((x) => parseInt(x, 10));
+  if (!Number.isFinite(y) || mo < 1 || mo > 12 || d < 1 || d > 31) return null;
+  const dt = new Date(y, mo - 1, d);
+  if (dt.getFullYear() !== y || dt.getMonth() !== mo - 1 || dt.getDate() !== d) return null;
+  return `${String(y).padStart(4, '0')}-${String(mo).padStart(2, '0')}-${String(d).padStart(2, '0')} 12:00:00`;
+}
+
+/**
+ * 解析「活动日期」表单输入（YYYY-MM-DD），返回纯日期串供 DATE 字段存储；
+ * 空或非法值返回 null，让数据库存 NULL（活动日期可空）。
+ */
+function parseActivityDateInput(raw) {
+  if (raw == null) return null;
+  const s = String(raw).trim().slice(0, 10);
+  if (!s) return null;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return null;
+  const [y, mo, d] = s.split('-').map((x) => parseInt(x, 10));
+  if (!Number.isFinite(y) || mo < 1 || mo > 12 || d < 1 || d > 31) return null;
+  const dt = new Date(y, mo - 1, d);
+  if (dt.getFullYear() !== y || dt.getMonth() !== mo - 1 || dt.getDate() !== d) return null;
+  return `${String(y).padStart(4, '0')}-${String(mo).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
 }
 
 /** 活动区域与物理仓的建议映射（无对应仓时仍可选手选） */
@@ -225,6 +273,21 @@ function safeFilePart(v) {
 }
 
 /**
+ * 从「项目编号」中提取「项目内容」用于 PDF 文件名。
+ * 现实数据格式：年框前缀 + 空格 + 「YYMMDD + 城市 + 描述」，例：
+ *   "N220630-RC-PHD 250522上海PHD晚宴" → "250522上海PHD晚宴"
+ * 规则：若第一个空格之后以 6 位数字（YYMMDD）开头，则取空格之后整段；
+ *      否则（如纯年框编号 "N230530-RM Club"）保持完整 project_code。
+ */
+function extractProjectContent(projectCodeRaw) {
+  const s = String(projectCodeRaw || '').trim();
+  if (!s) return '';
+  const m = s.match(/^\S+\s+(\d{6}.*)$/);
+  if (m && m[1]) return m[1].trim();
+  return s;
+}
+
+/**
  * 项目出库：未带 activity_id 时按 project_code 与可选 year_frame_id 解析场次，
  * 避免仅保存项目编号、activity_id 为空时在按财年筛选的列表中消失。
  */
@@ -289,7 +352,7 @@ router.get('/warehouses', async (req, res) => {
   try {
     const [rows] = await db.query(
       `
-      SELECT w.id, w.brand_id, w.region, w.label, w.created_at,
+      SELECT w.id, w.brand_id, w.region, w.label, w.city, w.remarks, w.created_at,
              bi.brand_code, bi.brand_name
       FROM inv_warehouses w
       JOIN brand_inventory bi ON bi.id = w.brand_id
@@ -305,15 +368,21 @@ router.get('/warehouses', async (req, res) => {
 
 router.post('/warehouses', async (req, res) => {
   try {
-    const { brand_id, label } = req.body;
+    const { brand_id, label, city, remarks } = req.body;
     const region = canonicalRegion(req.body.region);
     const bid = parseInt(brand_id, 10);
     if (!Number.isFinite(bid) || !region) {
       return res.status(400).json({ error: '请填写品牌与区域（东区/南区/北区/东南区）' });
     }
     const [result] = await db.query(
-      'INSERT INTO inv_warehouses (brand_id, region, label) VALUES (?, ?, ?)',
-      [bid, region, label || null]
+      'INSERT INTO inv_warehouses (brand_id, region, label, city, remarks) VALUES (?, ?, ?, ?, ?)',
+      [
+        bid,
+        region,
+        label ? String(label).trim() : null,
+        city ? String(city).trim() : null,
+        remarks ? String(remarks).trim() : null,
+      ]
     );
     const [rows] = await db.query(
       `
@@ -327,6 +396,41 @@ router.post('/warehouses', async (req, res) => {
     if (e && e.code === 'ER_DUP_ENTRY') return res.status(400).json({ error: '已存在相同品牌与区域的仓库' });
     console.error(e);
     res.status(500).json({ error: e.message || '创建失败' });
+  }
+});
+
+router.put('/warehouses/:id', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (!Number.isFinite(id)) return res.status(400).json({ error: '无效 ID' });
+    const { brand_id, label, city, remarks } = req.body;
+    const region = canonicalRegion(req.body.region);
+    const bid = parseInt(brand_id, 10);
+    if (!Number.isFinite(bid) || !region) {
+      return res.status(400).json({ error: '请填写品牌与区域（东区/南区/北区/东南区）' });
+    }
+    await db.query(
+      'UPDATE inv_warehouses SET brand_id = ?, region = ?, label = ?, city = ?, remarks = ? WHERE id = ?',
+      [
+        bid,
+        region,
+        label ? String(label).trim() : null,
+        city ? String(city).trim() : null,
+        remarks ? String(remarks).trim() : null,
+        id,
+      ]
+    );
+    const [rows] = await db.query(
+      `SELECT w.*, bi.brand_code, bi.brand_name FROM inv_warehouses w
+       JOIN brand_inventory bi ON bi.id = w.brand_id WHERE w.id = ?`,
+      [id]
+    );
+    if (!rows.length) return res.status(404).json({ error: '仓库不存在' });
+    res.json(rows[0]);
+  } catch (e) {
+    if (e && e.code === 'ER_DUP_ENTRY') return res.status(400).json({ error: '已存在相同品牌与区域的仓库' });
+    console.error(e);
+    res.status(500).json({ error: e.message || '更新失败' });
   }
 });
 
@@ -1107,9 +1211,13 @@ router.get('/hints/project', async (req, res) => {
 });
 
 async function loadOrderDetail(orderId) {
+  // 注意：SELECT 顺序很关键——act.activity_date 必须用别名 activity_date_link，
+  // 否则会与 o.* 中的 o.activity_date 重名，mysql2 会用最后一个覆盖前面，丢失关联活动的日期作为后备。
   const [orders] = await db.query(
     `
-    SELECT o.*, wh.region, wh.brand_id, bi.brand_code, bi.brand_name,
+    SELECT o.*,
+           wh.region, wh.brand_id, bi.brand_code, bi.brand_name,
+           act.activity_date AS activity_date_link,
            ayf.year AS activity_year_label
     FROM inv_outbound_orders o
     LEFT JOIN inv_warehouses wh ON wh.id = o.inv_warehouse_id
@@ -1167,6 +1275,8 @@ router.post('/outbound', async (req, res) => {
       project_code,
       purpose,
       activity_id,
+      shipped_at,
+      activity_date,
       recipient_city,
       recipient_address,
       contact_name,
@@ -1191,6 +1301,8 @@ router.post('/outbound', async (req, res) => {
       return res.status(400).json({ error: '非项目出库请填写用途说明' });
     }
     const trackingNumber = tracking_number != null && String(tracking_number).trim() !== '' ? String(tracking_number).trim() : null;
+    const shippedAtDb = parseOutboundShippedAtInput(shipped_at) || new Date();
+    const activityDateDb = parseActivityDateInput(activity_date);
 
     await conn.beginTransaction();
 
@@ -1219,8 +1331,8 @@ router.post('/outbound', async (req, res) => {
       INSERT INTO inv_outbound_orders (
         inv_warehouse_id, activity_id, link_mode, project_code, purpose,
         recipient_city, recipient_address, contact_name, contact_phone, logistics_method, tracking_number,
-        status, shipped_at, operator, remarks
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'shipped', NOW(), ?, ?)
+        status, shipped_at, activity_date, operator, remarks
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'shipped', ?, ?, ?, ?)
     `,
       [
         headerWhId,
@@ -1234,6 +1346,8 @@ router.post('/outbound', async (req, res) => {
         contact_phone || null,
         logistics_method || null,
         trackingNumber,
+        shippedAtDb,
+        activityDateDb,
         op,
         remarks || null,
       ]
@@ -1358,13 +1472,21 @@ router.get('/outbound', async (req, res) => {
     const monthRange = parseMonthRangeForSql(req.query.month);
     const yfRaw = req.query.yearFrameId ?? req.query.year_frame_id;
     const yfId = parseInt(yfRaw, 10);
+    // activity_date 优先取出库单上自填的 o.activity_date，
+    // 没填则 fallback 到关联活动 act.activity_date（兼容老数据）；
+    // 同时保留 act.activity_date 作为联动展示字段。
     let sql = `
       SELECT o.id, o.activity_id, o.project_code, o.purpose, o.link_mode, o.status, o.shipped_at, o.recipient_city,
-             o.contact_name, o.logistics_method, o.tracking_number, o.created_at,
+             o.contact_name, o.contact_phone, o.recipient_address, o.remarks,
+             o.logistics_method, o.tracking_number, o.created_at,
              wh.region, bi.brand_code,
-             act.activity_date AS activity_date,
+             COALESCE(o.activity_date, act.activity_date) AS activity_date,
              act.city AS activity_city,
-             (SELECT COUNT(*) FROM inv_outbound_lines ol WHERE ol.order_id = o.id) AS line_count
+             (SELECT COUNT(*) FROM inv_outbound_lines ol WHERE ol.order_id = o.id) AS line_count,
+             (SELECT GROUP_CONCAT(DISTINCT CONCAT_WS(' ', it.name, NULLIF(it.dimensions, '')) ORDER BY it.name SEPARATOR ' / ')
+                FROM inv_outbound_lines ol2
+                JOIN inv_items it ON it.id = ol2.item_id
+                WHERE ol2.order_id = o.id) AS items_summary
       FROM inv_outbound_orders o
       JOIN inv_warehouses wh ON wh.id = o.inv_warehouse_id
       JOIN brand_inventory bi ON bi.id = wh.brand_id
@@ -1461,7 +1583,7 @@ router.get('/inbound', async (req, res) => {
   try {
     const wid = parseInt(req.query.inv_warehouse_id, 10);
     let sql = `
-      SELECT r.id, r.inv_warehouse_id, r.inv_item_id, r.quantity, r.source, r.operator, r.remarks, r.created_at,
+      SELECT r.id, r.inv_warehouse_id, r.inv_item_id, r.quantity, r.source, r.operator, r.remarks, r.inbound_date, r.created_at,
              i.name AS item_name, i.dimensions AS item_dimensions,
              wh.region, bi.brand_code
       FROM inv_inbound_records r
@@ -1480,6 +1602,26 @@ router.get('/inbound', async (req, res) => {
   } catch (e) {
     console.error(e);
     res.status(500).json({ error: e.message || '加载失败' });
+  }
+});
+
+/** 编辑物料入库记录的台账信息（不改库存数量） */
+router.put('/inbound/:id', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (!Number.isFinite(id)) return res.status(400).json({ error: '无效ID' });
+    const { source, remarks, inbound_date } = req.body || {};
+    const date = inbound_date || null;
+    const [[record]] = await db.query('SELECT id FROM inv_inbound_records WHERE id = ? LIMIT 1', [id]);
+    if (!record) return res.status(404).json({ error: '记录不存在' });
+    await db.query(
+      'UPDATE inv_inbound_records SET source = ?, remarks = ?, inbound_date = COALESCE(?, inbound_date) WHERE id = ?',
+      [source || null, remarks || null, date, id],
+    );
+    res.json({ data: { id } });
+  } catch (e) {
+    console.error(e);
+    if (!res.headersSent) res.status(500).json({ error: e.message || '更新失败' });
   }
 });
 
@@ -1657,6 +1799,8 @@ router.put('/outbound/:id', async (req, res) => {
       project_code,
       purpose,
       activity_id,
+      shipped_at,
+      activity_date,
       recipient_city,
       recipient_address,
       contact_name,
@@ -1681,6 +1825,8 @@ router.put('/outbound/:id', async (req, res) => {
       return res.status(400).json({ error: '请填写用途说明' });
     }
     const trackingNumber = tracking_number != null && String(tracking_number).trim() !== '' ? String(tracking_number).trim() : null;
+    const shippedAtPut = parseOutboundShippedAtInput(shipped_at) || new Date();
+    const activityDatePut = parseActivityDateInput(activity_date);
 
     await conn.beginTransaction();
 
@@ -1742,7 +1888,7 @@ router.put('/outbound/:id', async (req, res) => {
       UPDATE inv_outbound_orders SET
         inv_warehouse_id = ?, activity_id = ?, link_mode = ?, project_code = ?, purpose = ?,
         recipient_city = ?, recipient_address = ?, contact_name = ?, contact_phone = ?,
-        logistics_method = ?, tracking_number = ?, remarks = ?, operator = ?
+        logistics_method = ?, tracking_number = ?, remarks = ?, shipped_at = ?, activity_date = ?, operator = ?
       WHERE id = ?
     `,
       [
@@ -1758,6 +1904,8 @@ router.put('/outbound/:id', async (req, res) => {
         logistics_method || null,
         trackingNumber,
         remarks || null,
+        shippedAtPut,
+        activityDatePut,
         op,
         orderId,
       ]
@@ -1801,7 +1949,8 @@ router.put('/outbound/:id', async (req, res) => {
  * 1）冲销空瓶回收：按 inv_return_lines.qty_empty_recovered 从空瓶库存扣回；
  * 2）删除归还批次（级联删除归还明细）；
  * 3）冲销出库：按出库明细把数量加回库存（与出库时 -库存 相反）；
- * 4）删除出库单头（级联删除出库明细）。
+ * 4）删除由该单自动同步的物流成本（remarks 含 [INV-OB:本单ID]）；
+ * 5）删除出库单头（级联删除出库明细）。
  * 效果等价于该单及归还从未发生（丢失/损坏统计随归还明细一并删除）。
  */
 router.delete('/outbound/:id', async (req, res) => {
@@ -1883,15 +2032,72 @@ router.delete('/outbound/:id', async (req, res) => {
       await conn.query('UPDATE inv_items SET quantity_on_hand = quantity_on_hand + ? WHERE id = ?', [q, ln.item_id]);
     }
 
+    // 无项目编号 standalone 出库在物流成本中自动插入的行，与出库单绑定；删单时一并清除
+    const [delLogiResult] = await conn.query(
+      'DELETE FROM logistics WHERE remarks LIKE CONCAT("%[INV-OB:", ?, "]%")',
+      [orderId]
+    );
+    const cleanedLogistics = (delLogiResult && delLogiResult.affectedRows) || 0;
+
     await conn.query('DELETE FROM inv_outbound_orders WHERE id = ?', [orderId]);
     await conn.commit();
-    res.json({ ok: true });
+    res.json({ ok: true, cleaned_logistics: cleanedLogistics });
   } catch (e) {
     await conn.rollback();
     console.error(e);
     res.status(500).json({ error: e.message || '删除失败' });
   } finally {
     conn.release();
+  }
+});
+
+/**
+ * 清理「出库残留物流」：扫描 logistics.remarks 含 [INV-OB:N] 但 N 已被删除的孤儿行，统一清掉。
+ * 仅管理员可调用（路由级 requireWriteAccess 已挂载）。
+ * - 用于历史数据回补：早期版本删出库单未做联动 / 用户手动改过 remarks 等场景。
+ * - 当前版本删出库单已做 INV-OB 标记联动；这里是「兜底回扫」工具，幂等可重复执行。
+ */
+router.post('/cleanup-orphan-logistics', async (req, res) => {
+  try {
+    const [rows] = await db.query(
+      "SELECT id, remarks FROM logistics WHERE remarks LIKE '%[INV-OB:%'"
+    );
+    const orphanIds = [];
+    const referenced = new Set();
+    for (const row of rows) {
+      const m = String(row.remarks || '').match(/\[INV-OB:(\d+)\]/);
+      if (!m) continue;
+      const obId = parseInt(m[1], 10);
+      if (!Number.isFinite(obId)) continue;
+      referenced.add(obId);
+      // 缓存避免重复查询
+    }
+    if (!referenced.size) {
+      return res.json({ ok: true, scanned: rows.length, cleaned: 0, orphan_ids: [] });
+    }
+    const idList = Array.from(referenced);
+    const [existRows] = await db.query(
+      `SELECT id FROM inv_outbound_orders WHERE id IN (${idList.map(() => '?').join(',')})`,
+      idList
+    );
+    const existing = new Set(existRows.map((r) => Number(r.id)));
+    for (const row of rows) {
+      const m = String(row.remarks || '').match(/\[INV-OB:(\d+)\]/);
+      if (!m) continue;
+      const obId = parseInt(m[1], 10);
+      if (!Number.isFinite(obId)) continue;
+      if (!existing.has(obId)) orphanIds.push(row.id);
+    }
+    if (orphanIds.length) {
+      await db.query(
+        `DELETE FROM logistics WHERE id IN (${orphanIds.map(() => '?').join(',')})`,
+        orphanIds
+      );
+    }
+    res.json({ ok: true, scanned: rows.length, cleaned: orphanIds.length, orphan_ids: orphanIds });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: e.message || '清理失败' });
   }
 });
 
@@ -2030,11 +2236,15 @@ router.get('/outbound/:id/pdf', async (req, res) => {
 
     const whNames = Array.from(lineWhMap.keys()).map((k) => {
       const [b, r] = String(k).split('|');
-      return `${b || '—'} ${r || ''}`.trim();
+      return formatWarehouseLabel(b, r);
     });
     const warehouseLabel = whCount > 1
       ? `多仓（${whNames.join(' / ')}）`
-      : `${order.brand_code || '—'} ${order.region || ''}`.trim();
+      : formatWarehouseLabel(order.brand_code, order.region);
+    const projectCodeLabel =
+      order.link_mode === 'standalone'
+        ? String(order.purpose || '').trim() || '—'
+        : String(order.project_code || '').trim() || '—';
 
     const lineTableBody = [
       [
@@ -2050,7 +2260,7 @@ router.get('/outbound/:id/pdf', async (req, res) => {
       lineTableBody.push([
         { text: String(idx + 1), style: 'tdCenter' },
         { text: String(ln.item_name || ''), style: 'tdLeft' },
-        { text: `${ln.line_brand_code || '—'} ${ln.line_region || ''}`.trim(), style: 'tdCenter' },
+        { text: formatWarehouseLabel(ln.line_brand_code, ln.line_region), style: 'tdCenter' },
         { text: String(ln.quantity || ''), style: 'tdCenter' },
         { text: String(ln.item_dimensions || '—'), style: 'tdLeft' },
         { text: String(ln.line_note || '—'), style: 'tdCenter' },
@@ -2064,7 +2274,7 @@ router.get('/outbound/:id/pdf', async (req, res) => {
       defaultStyle: { font: hasSystemUnicodeFont ? 'unicode' : 'fangzhen', fontSize: 10, lineHeight: 1.2 },
       content: [
         { text: '物品出库单', style: 'title', alignment: 'center', margin: [0, 0, 0, 6] },
-        { text: [{ text: '项目编号：', bold: true }, order.project_code || '—'], margin: [0, 0, 0, 3] },
+        { text: [{ text: '项目编号：', bold: true }, projectCodeLabel], margin: [0, 0, 0, 3] },
         {
           columns: [
             { width: 'auto', text: [{ text: '出库时间：', bold: true }, shippedDateCn] },
@@ -2119,10 +2329,35 @@ router.get('/outbound/:id/pdf', async (req, res) => {
     const urlResolver = new URLResolver(pdfVirtualFs);
     const printer = new PdfPrinter(pdfFonts, pdfVirtualFs, urlResolver);
     const pdfDoc = await printer.createPdfKitDocument(docDefinition);
-    const datePart = compactDateYYMMDD(order.shipped_at || order.created_at);
-    const brandPart = extractBrandFromProjectCode(order.project_code) || safeFilePart(order.brand_code) || '未知品牌';
-    const cityPart = safeFilePart(order.recipient_city) || '未知城市';
-    const finalBaseName = `${datePart || '000000'}${brandPart}${cityPart}出库单`;
+    // 仓库名按统一规则（与列表/PDF 内文一致）：
+    //   - X.O 北区/南区 → 「北区仓库」「南区仓库」（公司级跨品牌总仓）
+    //   - 多仓出库 → 「多仓」
+    //   - 其它 → 「品牌 区域」
+    const warehousePartSrc = whCount > 1 ? '多仓' : formatWarehouseLabel(order.brand_code, order.region);
+    const warehousePart = safeFilePart(warehousePartSrc) || '未知仓库';
+    // 文件名规则：
+    //   - 有项目编号（活动用）：`项目内容 + 出库单（仓库名）.pdf`
+    //       「项目内容」= project_code 中年框前缀空格后的活动描述段（YYMMDD + 城市 + 内容）
+    //       如：`N220630-RC-PHD 250522上海PHD晚宴` → 「250522上海PHD晚宴出库单（PHD东区）.pdf」
+    //   - 无项目编号（standalone / 缺失）：`活动日期YYMMDD + 城市 + 出库单（仓库名）.pdf`
+    //       活动日期 fallback：o.activity_date → 关联活动 act.activity_date → shipped_at → created_at
+    const projectCodeTrim = String(order.project_code || '').trim();
+    const isStandalone = order.link_mode === 'standalone' || !projectCodeTrim;
+    let finalBaseName;
+    if (isStandalone) {
+      const dateSource =
+        order.activity_date ||
+        order.activity_date_link ||
+        order.shipped_at ||
+        order.created_at;
+      const datePart = compactDateYYMMDD(dateSource) || '000000';
+      const cityPart = safeFilePart(order.recipient_city) || '未知城市';
+      finalBaseName = `${datePart}${cityPart}出库单（${warehousePart}）`;
+    } else {
+      const projectContentRaw = extractProjectContent(projectCodeTrim);
+      const projectPart = safeFilePart(projectContentRaw) || safeFilePart(projectCodeTrim) || '未知项目';
+      finalBaseName = `${projectPart}出库单（${warehousePart}）`;
+    }
     const filenameEnc = encodeURIComponent(`${finalBaseName}.pdf`);
     const asDownload = req.query.download === '1' || req.query.download === 'true';
     res.setHeader('Content-Type', 'application/pdf');

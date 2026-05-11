@@ -5,17 +5,18 @@ const db = require('../config/database');
 const ALLOWED_TYPES = ['晚宴', '品鉴', '培训', '纯设计'];
 const FISCAL_MONTH_LABELS = ['4月', '5月', '6月', '7月', '8月', '9月', '10月', '11月', '12月', '1月', '2月', '3月'];
 const COST_DETAIL_KEYS = [
-  'supervisor', 'pg', 'parttime', 'bartender', 'photo', 'cloud_album_edit', 'performance',
+  'supervisor', 'pg', 'parttime', 'bartender', 'photo', 'cloud_album_edit', 'performance', 'makeup',
   'travel_supervisor', 'travel_company',
-  'structure', 'print', 'spray',
-  'floral', 'payment', 'tasting',
+  'structure', 'av', 'print', 'spray',
+  'floral', 'floral_design', 'payment', 'tasting', 'venue_fee', 'meal_fee', 'other_advance',
   'warehouse', 'express', 'logistics',
+  'advance_offset',
 ];
 const COST_BUCKET_KEYS = {
   logistics: ['warehouse', 'express', 'logistics'],
-  personnel: ['supervisor', 'pg', 'parttime', 'bartender', 'photo', 'cloud_album_edit', 'performance', 'travel_supervisor', 'travel_company'],
-  procurement: ['structure', 'print', 'spray', 'floral', 'tasting'],
-  other: ['payment'],
+  personnel: ['supervisor', 'pg', 'parttime', 'bartender', 'photo', 'cloud_album_edit', 'performance', 'makeup', 'travel_supervisor', 'travel_company'],
+  procurement: ['structure', 'av', 'print', 'spray', 'floral', 'floral_design', 'tasting', 'venue_fee', 'meal_fee', 'other_advance'],
+  other: ['payment', 'advance_offset'],
 };
 
 function parseCsv(v) {

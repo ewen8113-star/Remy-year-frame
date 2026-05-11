@@ -53,8 +53,11 @@ let virtualActivitiesState = {
 /** activity_belonging：存储值 → 显示名（与场次页筛选项同源） */
 let actBelongingLabelByValue = {};
 let materialPageState = { filterBrandId: '', mergeFilter: 'all' };
-let propRepairPageState = { filterBrandId: '', mergeFilter: 'all' };
-let reimbursementPageState = { rows: [], activities: [], filterInput: '' };
+let propRepairPageState = { filterBrandId: '' };
+let reimbursementPageState = { rows: [], paymentOrders: [], activities: [], filterInput: '', view: 'registrations' };
+/** 付款申请 · 成本登记列表行内展开 */
+let reimbursementListExpanded = new Set();
+let paymentOrderState = { candidates: [], selectedKeys: new Set(), previewRows: [] };
 const reimbursementActivityIndex = {
   codes: new Set(),
   codeToId: new Map(),
@@ -66,25 +69,26 @@ const REIMB_PAYMENT_TYPE_OPTIONS = [
 ];
 const REIMB_COST_MODULE_OPTIONS = [
   { value: 'activity', label: '活动成本' },
-  { value: 'warehouse', label: '仓储成本（月结）' },
   { value: 'logistics', label: '物流成本' },
-  { value: 'prop_repair', label: '道具维修' },
-  { value: 'general', label: '公共成本池' },
+  { value: 'prop_repair', label: '道具维修成本' },
+  { value: 'material_purchase', label: '物料采购' },
+  { value: 'general', label: '内部成本' },
 ];
 const REIMB_CLAIM_STATUS_OPTIONS = [
   { value: 'draft', label: '草稿' },
   { value: 'submitted', label: '待支付' },
   { value: 'paid', label: '已支付' },
-  { value: 'rejected', label: '已驳回' },
 ];
 
 function reimbPaymentTypeLabel(v) {
   return REIMB_PAYMENT_TYPE_OPTIONS.find((x) => x.value === v)?.label || '个人报销';
 }
 function reimbCostModuleLabel(v) {
+  if (v === 'warehouse') return '仓储成本（月结）';
   return REIMB_COST_MODULE_OPTIONS.find((x) => x.value === v)?.label || '活动成本';
 }
 function reimbClaimStatusLabel(v) {
+  if (v === 'rejected') return '已驳回';
   return REIMB_CLAIM_STATUS_OPTIONS.find((x) => x.value === v)?.label || '草稿';
 }
 function reimbClaimStatusBadgeClass(v) {
@@ -93,11 +97,77 @@ function reimbClaimStatusBadgeClass(v) {
   if (v === 'rejected') return 'badge-danger';
   return 'badge-gray';
 }
+
+function paymentSourceLabel(v) {
+  const map = {
+    warehouse: '仓储',
+    logistics: '物流',
+    material_purchase: '物料采购',
+    prop_repair: '道具维修',
+    reimbursement: '成本登记',
+  };
+  return map[v] || v || '—';
+}
+
+function paymentStatusHtml(v, orderId) {
+  if (String(v || '') === 'paid') {
+    const suffix = orderId ? ` #${escapeHtml(orderId)}` : '';
+    return `<span class="badge badge-success">已支付${suffix}</span>`;
+  }
+  return '<span class="badge badge-gray">未支付</span>';
+}
+
+function yearFrameDisplayLabel(frame) {
+  const raw = String(frame?.year || frame?.name || '').trim();
+  const yy = (raw.match(/\d{2}/) || [String(currentYear || '').padStart(2, '0')])[0];
+  return yy ? `${yy}年度` : String(frame?.id || '');
+}
+const REIMB_DETAIL_META_PREFIX = '\n\n[REIMB_DETAIL_JSON]';
+const REIMB_DETAIL_META_MARKER = '[REIMB_DETAIL_JSON]';
+const REIMB_DETAIL_BLOCKS = [
+  { value: 'personnel', label: '人员' },
+  { value: 'travel', label: '差旅' },
+  { value: 'stage', label: '舞美制作' },
+  { value: 'print', label: '画面制作' },
+  { value: 'purchase', label: '采购' },
+  { value: 'logistics', label: '物流' },
+  { value: 'advance', label: '垫付' },
+];
+const REIMB_DETAIL_CATEGORY_OPTIONS = {
+  personnel: [
+    ['supervisor', '督导'], ['pg', 'PG礼仪'], ['parttime', '兼职'], ['bartender', '调酒师'],
+    ['photo', '摄影师'], ['cloud_album_edit', '云相册修图'], ['performance', '演职人员'], ['makeup', '化妆师'],
+  ],
+  travel: [['travel_supervisor', '督导差旅'], ['travel_company', '盛融差旅']],
+  stage: [['structure', '结构制作/搭建'], ['av', 'AV灯光音响']],
+  print: [['print', '印刷/快印'], ['spray', '写真/喷绘']],
+  purchase: [['floral', '花艺'], ['payment', '活动物料'], ['tasting', '品鉴物料']],
+  logistics: [['express', '快递/闪送'], ['logistics', '物流']],
+  advance: [['venue_fee', '场地费'], ['meal_fee', '餐费'], ['other_advance', '其他']],
+};
+const REIMB_DETAIL_BRAND_OPTIONS = [
+  'N230530-RM Club',
+  'N220630-RC PHD',
+  'N230901-RM XO',
+  '内部',
+  'Remy-RC',
+  '其他',
+];
+function reimbDetailBrandFromLegacyBrand(brand) {
+  const b = String(brand || '').trim().toUpperCase();
+  if (b === 'PHD') return 'N220630-RC PHD';
+  if (b === 'X.O' || b === 'XO') return 'N230901-RM XO';
+  if (b === 'CLUB') return 'N230530-RM Club';
+  if (b === 'RC' || b === 'REMY-RC') return 'Remy-RC';
+  if (b === 'REMY' || b === 'VSOP') return '内部';
+  return '';
+}
 let logisticsState = { data: [], selectedIds: new Set() };
 let warehouseState = { data: [], selectedIds: new Set() };
-let logisticsMergeFilter = 'all';
 let logisticsSortState = { key: 'shipping_date', dir: 'desc' };
 let warehouseMergeFilter = 'all';
+/** @type {'legacy'|'period_quote'} 仓储弹窗：传统按天 / 账期按月报价 */
+let warehouseFormMode = 'legacy';
   /** 物资模块：库存管理=主数据；出库页为逐单列表；入库页 tab=returns */
 let inventoryPageState = {
   tab: 'items',
@@ -115,6 +185,8 @@ let inventoryPageState = {
     project_code: '',
     purpose: '',
     activity_id: '',
+    shipped_at: '',
+    activity_date: '',
     recipient_city: '',
     recipient_address: '',
     contact_name: '',
@@ -170,6 +242,12 @@ let inventoryPageState = {
   outboundInlineOpen: false,
   /** 新建出库左侧列表：common=仅常用 | uncommon=仅非常用 */
   outboundListFilter: 'common',
+  /** 物品出库台账搜索关键词：可按物品名/项目编号/收件人/单号/用途/仓库等模糊过滤 */
+  outboundSearch: '',
+  /** 物品出库台账数据缓存：用于搜索时本地过滤，避免重复请求 */
+  _outboundListCache: [],
+  inboundDirectRows: [],
+  inboundEditId: null,
 };
 
 function invLoadCommonOrderStore() {
@@ -381,10 +459,14 @@ function applyRoleUiGuards() {
       '[onclick*="showMaterialPurchaseModal"]',
       '[onclick*="showPropRepairModal"]',
       '[onclick*="showReimbursementModal"]',
+      '[onclick*="showReimbursementForm"]',
+      '[onclick*="showCorporatePaymentTodo"]',
       '[onclick*="saveReimbursementForm"]',
       '[onclick*="deleteReimbursementRecord"]',
       '[onclick*="reimbAppendInvoiceRow"]',
       '[onclick*="reimbRemoveInvoiceRow"]',
+      '[onclick*="reimbAppendDetailRow"]',
+      '[onclick*="reimbRemoveDetailRow"]',
       '[onclick*="materialAppendCustomRow"]',
       '[onclick*="propRepairAppendCustomRow"]',
       '[onclick*="delete"]',
@@ -418,6 +500,11 @@ function applyRoleUiGuards() {
   if (!hasWriteAccess()) {
     const navInvMaster = document.getElementById('navInventoryMaster');
     if (navInvMaster) navInvMaster.style.display = 'none';
+  }
+  // 字典管理仅 admin 可见（含 5 类通讯录 + 7 类表单选项，编辑都属写操作）
+  if (!hasWriteAccess()) {
+    const navDict = document.getElementById('navDict');
+    if (navDict) navDict.style.display = 'none';
   }
 }
 
@@ -592,6 +679,10 @@ function navigate(page) {
     showToast('仅管理员可维护库存管理（仓库与物料主数据）', 'warning');
     page = 'inv-outbound';
   }
+  if (page === 'dict' && !hasWriteAccess()) {
+    showToast('仅管理员可访问字典管理', 'warning');
+    page = 'activities';
+  }
   currentPage = page;
   localStorage.setItem('remy_currentPage', page);
 
@@ -614,6 +705,7 @@ function navigate(page) {
     'prop-repair': '道具维修',
     reimbursement: '付款申请',
     users: '用户管理',
+    dict: '字典管理',
     backup: '数据备份',
   };
   document.getElementById('pageTitle').textContent = titles[page] || page;
@@ -642,6 +734,7 @@ function navigate(page) {
     'prop-repair': renderPropRepairs,
     reimbursement: renderReimbursements,
     users: renderUsers,
+    dict: renderDictManager,
     backup: renderBackup,
   };
   if (renders[page]) {
@@ -673,6 +766,7 @@ function expandSidebarGroupForPage(page) {
     'inv-outbound': 'stock',
     'inv-inbound': 'stock',
     users: 'sys',
+    dict: 'sys',
     backup: 'sys',
   };
   const g = map[page];
@@ -1074,7 +1168,13 @@ async function updateBadges() {
     document.getElementById('badge-logistics').textContent = logs.length || 0;
     document.getElementById('badge-warehouse').textContent = wars.length || 0;
     const materialBadge = document.getElementById('badge-material');
-    if (materialBadge) materialBadge.textContent = materials.length || 0;
+    if (materialBadge) {
+      // 物料采购列表 = 直接登记 + 报销单中 cost_module='material_purchase' 派生（与列表渲染保持一致）
+      const reimbMaterialCount = (Array.isArray(reimbs) ? reimbs : []).filter(
+        (r) => String(r.cost_module || '') === 'material_purchase'
+      ).length;
+      materialBadge.textContent = (materials.length || 0) + reimbMaterialCount;
+    }
     const propRepairBadge = document.getElementById('badge-prop-repair');
     if (propRepairBadge) propRepairBadge.textContent = propRepairs.length || 0;
     const reimbBadge = document.getElementById('badge-reimbursement');
@@ -4199,33 +4299,33 @@ function bindCostStatsCardDrag(grid) {
   });
 }
 
-function buildReimbByActivityMap(reimbursements) {
-  const reimbByAct = {};
-  let mergedTotal = 0;
-  (reimbursements || []).forEach((r) => {
-    const aid = r.activity_id;
-    if (aid == null || aid === '') return;
-    const idKey = Number(aid);
-    if (!Number.isFinite(idKey) || idKey <= 0) return;
-    const amt = parseFloat(r.amount) || 0;
-    const merged = r.merged_into_activity === 1 || r.merged_into_activity === true;
-    if (merged) mergedTotal += amt;
-    if (!reimbByAct[idKey]) reimbByAct[idKey] = { standalone: 0, merged: 0 };
-    if (merged) reimbByAct[idKey].merged += amt;
-    else reimbByAct[idKey].standalone += amt;
-  });
-  return { reimbByAct, mergedTotal };
+let _activityNoCostPendingId = null;
+
+function openActivityNoCostConfirm(actId) {
+  if (!hasWriteAccess()) {
+    showToast('仅管理员可标记无成本场次', 'warning');
+    return;
+  }
+  _activityNoCostPendingId = Number(actId);
+  openModal('modalActivityNoCost');
+  renderLucideIcons();
 }
 
-function activityReimbCellHtml(reimbByAct, actId) {
-  const o = reimbByAct[Number(actId)];
-  if (!o || (o.standalone <= 0 && o.merged <= 0)) return '<span class="amount amount-neutral">—</span>';
-  const bits = [];
-  if (o.standalone > 0) bits.push(`<span class="amount amount-cost">${fmtMoney(o.standalone)}</span>`);
-  if (o.merged > 0) {
-    bits.push(`<span style="font-size:11px;color:var(--text-muted)">已合 ${fmtMoney(o.merged)}</span>`);
+async function submitActivityNoCostConfirm() {
+  const id = _activityNoCostPendingId;
+  if (!id || !Number.isFinite(id)) {
+    closeModal();
+    return;
   }
-  return bits.join('<br>');
+  try {
+    await api('PUT', `/activities/${id}`, { no_cost: 1, total_cost: 0, cost_details: {} });
+    showToast('已标记为无成本场次', 'success');
+    closeModal();
+    _activityNoCostPendingId = null;
+    if (currentPage === 'cost') await renderCost();
+  } catch (e) {
+    showToast(e.message || '保存失败', 'error');
+  }
 }
 
 async function renderCost() {
@@ -4235,12 +4335,7 @@ async function renderCost() {
     await ensureBelongingLabelMap();
     let qsAct = '?isVirtual=0';
     if (currentYearFrameId) qsAct += `&yearFrameId=${currentYearFrameId}`;
-    const qs = currentYearFrameId ? `?yearFrameId=${currentYearFrameId}` : '';
-    const [activities, reimbursements] = await Promise.all([
-      api('GET', `/activities${qsAct}`),
-      api('GET', `/reimbursements${qs}`),
-    ]);
-    const { reimbByAct } = buildReimbByActivityMap(reimbursements);
+    const activities = await api('GET', `/activities${qsAct}`);
 
     const isMarkedNoCost = (a) => {
       const v = a && a.no_cost;
@@ -4283,7 +4378,8 @@ async function renderCost() {
               <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:10px">
                 ${renderCostYmFilterButtons('pending', pendingKeys, costPendingYMFilter)}
               </div>
-              <div style="margin-top:8px">点击"填写"按钮添加成本明细</div>
+              <div style="margin-top:8px">成本以本场登记为准；数据看板按场次已登记成本与各板块公共池汇总，不与报销列表重复加计。</div>
+              <div style="margin-top:6px;font-size:12px;color:var(--text-secondary)">无成本：点击行内 <strong>「无成本」</strong> 按钮，确认后移入「无成本场次」。</div>
             </div>
           </div>
           <button class="btn btn-secondary btn-sm" onclick="toggleCostSection('pending')">展开/收起</button>
@@ -4301,8 +4397,7 @@ async function renderCost() {
                   <th>类型</th>
                   <th>报价</th>
                   <th>成本</th>
-                  <th>关联报销</th>
-                  <th>操作</th>
+                  <th style="min-width:84px;text-align:center;white-space:nowrap" title="标记本场无成本">无成本</th>
                 </tr>
               </thead>
               <tbody>
@@ -4316,11 +4411,12 @@ async function renderCost() {
                     <td><span class="badge badge-${typeColor(a.activity_type)}">${a.activity_type||'—'}</span></td>
                     <td class="amount amount-revenue">${fmtMoney(a.quoted_price)}</td>
                     <td class="amount amount-neutral">—</td>
-                    <td style="font-size:11px;line-height:1.35">${activityReimbCellHtml(reimbByAct, a.id)}</td>
-                    <td onclick="event.stopPropagation()"><button class="btn btn-success btn-sm" onclick="showCostFillFromCost(${a.id})">+ 填写</button></td>
+                    <td style="text-align:center" onclick="event.stopPropagation()">
+                      <button type="button" class="cost-no-cost-pill" title="标记本场无成本" aria-label="标记本场活动无成本发生" onclick="openActivityNoCostConfirm(${a.id})">无成本</button>
+                    </td>
                   </tr>
                 `).join('')}
-                ${filteredActsPending.length > 30 ? `<tr><td colspan="10" style="text-align:center;color:var(--text-muted);padding:10px">还有 ${filteredActsPending.length-30} 条，请在场次记录中查看</td></tr>` : ''}
+                ${filteredActsPending.length > 30 ? `<tr><td colspan="9" style="text-align:center;color:var(--text-muted);padding:10px">还有 ${filteredActsPending.length-30} 条，请在场次记录中查看</td></tr>` : ''}
               </tbody>
             </table>
           </div>
@@ -4354,8 +4450,6 @@ async function renderCost() {
                   <th>类型</th>
                   <th>报价</th>
                   <th>成本</th>
-                  <th>关联报销</th>
-                  <th>操作</th>
                 </tr>
               </thead>
               <tbody>
@@ -4369,8 +4463,6 @@ async function renderCost() {
                     <td><span class="badge badge-${typeColor(a.activity_type)}">${a.activity_type||'—'}</span></td>
                     <td class="amount amount-revenue">${fmtMoney(a.quoted_price)}</td>
                     <td class="amount amount-neutral">无成本</td>
-                    <td style="font-size:11px;line-height:1.35">${activityReimbCellHtml(reimbByAct, a.id)}</td>
-                    <td onclick="event.stopPropagation()"><button class="btn btn-secondary btn-sm" onclick="showCostFillFromCost(${a.id})">修改</button></td>
                   </tr>
                 `).join('')}
               </tbody>
@@ -4405,9 +4497,9 @@ async function renderCost() {
                 <th>类型</th>
                 <th>报价</th>
                 <th>成本</th>
-                <th>关联报销</th>
+                <th style="min-width:84px;text-align:center;white-space:nowrap" title="改标为无成本">无成本</th>
                 <th>利润</th>
-                <th>操作</th>
+                <th style="white-space:nowrap">操作</th>
               </tr>
             </thead>
             <tbody>
@@ -4423,9 +4515,14 @@ async function renderCost() {
                     <td><span class="badge badge-${typeColor(a.activity_type)}">${a.activity_type||'—'}</span></td>
                     <td class="amount amount-revenue">${fmtMoney(a.quoted_price)}</td>
                     <td class="amount amount-cost">${fmtMoney(a.total_cost)}</td>
-                    <td style="font-size:11px;line-height:1.35">${activityReimbCellHtml(reimbByAct, a.id)}</td>
+                    <td style="text-align:center" onclick="event.stopPropagation()">
+                      <button type="button" class="cost-no-cost-pill" title="改标为无成本" aria-label="本场活动无成本发生" onclick="openActivityNoCostConfirm(${a.id})">无成本</button>
+                    </td>
                     <td class="amount ${profit>=0?'amount-revenue':'amount-cost'}">${fmtMoney(profit)}</td>
-                    <td onclick="event.stopPropagation()"><button class="btn btn-secondary btn-sm" onclick="showCostFillFromCost(${a.id})">修改</button></td>
+                    <td style="white-space:nowrap" onclick="event.stopPropagation()">
+                      <button type="button" class="btn btn-secondary btn-sm" onclick="showCostFillFromCost(${a.id})">编辑</button>
+                      <button type="button" class="btn btn-danger btn-sm" onclick="clearActivityCostRegistration(${a.id})">删除</button>
+                    </td>
                   </tr>
                 `;
               }).join('')}
@@ -4453,38 +4550,53 @@ const COST_DETAIL_GROUPS = [
       { key: 'photo', label: '摄影师' },
       { key: 'cloud_album_edit', label: '云相册修图' },
       { key: 'performance', label: '演职人员' },
+      { key: 'makeup', label: '化妆师' },
     ],
   },
   {
     title: '二、差旅',
     items: [
-      { key: 'travel_supervisor', label: '督导差旅（交通及食宿）' },
-      { key: 'travel_company', label: '盛融差旅（交通及食宿）' },
+      { key: 'travel_supervisor', label: '督导差旅' },
+      { key: 'travel_company', label: '盛融差旅' },
     ],
   },
   {
     title: '三、舞美制作',
     items: [
-      { key: 'structure', label: '结构搭建' },
-      { key: 'print', label: '印刷' },
-      { key: 'spray', label: '写真喷绘' },
+      { key: 'structure', label: '结构制作/搭建' },
+      { key: 'av', label: 'AV灯光音响' },
     ],
   },
   {
-    title: '四、采购',
+    title: '四、画面制作',
     items: [
-      { key: 'floral', label: '场地方（场地/餐饮）' },
+      { key: 'print', label: '印刷/快印' },
+      { key: 'spray', label: '写真/喷绘' },
+    ],
+  },
+  {
+    title: '五、采购',
+    items: [
       { key: 'floral_design', label: '花艺' },
+      { key: 'floral', label: '花艺' },
       { key: 'payment', label: '活动物料' },
-      { key: 'tasting', label: '闻香物料' },
+      { key: 'tasting', label: '品鉴物料' },
     ],
   },
   {
-    title: '五、物流仓储',
+    title: '六、物流',
     items: [
-      { key: 'warehouse', label: '仓储' },
       { key: 'express', label: '快递（闪送）' },
       { key: 'logistics', label: '物流' },
+    ],
+  },
+  {
+    title: '七、垫付',
+    items: [
+      { key: 'venue_fee', label: '场地费' },
+      { key: 'meal_fee', label: '餐费' },
+      { key: 'other_advance', label: '其他' },
+      { key: 'advance_offset', label: '备用金抵扣' },
     ],
   },
 ];
@@ -4569,6 +4681,7 @@ async function showCostDetailFromCost(actId) {
     }).join('');
 
     content.innerHTML = `
+      <input type="hidden" id="costDetailActId" value="${actId}">
       <div class="activity-detail">
         <div class="activity-detail-hero">
           <div class="activity-detail-hero-top">
@@ -4596,17 +4709,50 @@ async function showCostDetailFromCost(actId) {
       </div>
     `;
 
-    const editBtn = document.getElementById('costDetailEditBtn');
-    if (editBtn) {
-      editBtn.onclick = () => {
-        closeModal();
-        setTimeout(() => showCostFillFromCost(actId), 100);
-      };
-    }
     openModal('modalCostDetail');
     renderLucideIcons();
   } catch (err) {
     showToast('加载成本详情失败: ' + err.message, 'error');
+  }
+}
+
+function openCostEditFromDetail() {
+  const raw = document.getElementById('costDetailActId')?.value;
+  const id = parseInt(raw, 10);
+  if (!Number.isFinite(id)) {
+    showToast('无法识别场次', 'warning');
+    return;
+  }
+  closeModal();
+  setTimeout(() => showCostFillFromCost(id), 100);
+}
+
+async function clearActivityCostRegistrationFromDetail() {
+  const raw = document.getElementById('costDetailActId')?.value;
+  const id = parseInt(raw, 10);
+  if (!Number.isFinite(id)) {
+    showToast('无法识别场次', 'warning');
+    return;
+  }
+  await clearActivityCostRegistration(id);
+}
+
+async function clearActivityCostRegistration(actId) {
+  if (!hasWriteAccess()) {
+    showToast('仅管理员可删除成本登记', 'warning');
+    return;
+  }
+  const id = parseInt(actId, 10);
+  if (!Number.isFinite(id)) return;
+  if (!confirm('确定清除本场已登记的成本？清除后该场次将回到「待填写成本」，不会删除场次本身。')) return;
+  try {
+    await api('PUT', `/activities/${id}`, { total_cost: 0, cost_details: {}, no_cost: 0 });
+    showToast('已清除成本登记', 'success');
+    closeModal();
+    if (currentPage === 'cost') await renderCost();
+    if (currentPage === 'activities') loadActivities();
+  } catch (e) {
+    showToast(e.message || '操作失败', 'error');
   }
 }
 
@@ -4672,21 +4818,330 @@ async function saveCostFromModal2() {
 /* =============================================
    页面：物流成本（原物流记录）
    ============================================= */
+const LOGISTICS_UNITS = ['东区仓库', '北区仓库', '南区仓库', '快递', '物流'];
+const LOGISTICS_METHODS_BY_UNIT = {
+  东区仓库: ['顺丰', '物流', '其他'],
+  北区仓库: ['顺丰', '物流', '其他'],
+  南区仓库: ['顺丰', '物流', '其他'],
+  快递: ['顺丰', '京东', '圆通', '申通', '中通', '韵达', '其他'],
+  物流: ['德邦', '跨越', 'EMS', '其他'],
+};
+const LOGISTICS_LEGACY_UNIT_MAP = {
+  '东区仓库（叶老板）': '东区仓库',
+  '南区仓库（天空）': '南区仓库',
+  '北区仓库（叶老板）': '北区仓库',
+};
+
+function parseLogisticsAddrMeta(remarks) {
+  const empty = () => ({
+    shipName: '',
+    shipPhone: '',
+    shipAddr: '',
+    recvName: '',
+    recvPhone: '',
+    recvAddr: '',
+    purpose: '',
+    sender: '',
+    recipient: '',
+    address: '',
+  });
+  const raw = String(remarks || '');
+  const m = raw.match(/^\[LOG_ADDR\]([^\n]*)/);
+  if (!m) return empty();
+  const kv = {};
+  m[1].split('|').forEach((part) => {
+    const idx = part.indexOf(':');
+    if (idx <= 0) return;
+    const k = part.slice(0, idx);
+    const v = part.slice(idx + 1).replace(/｜/g, '|');
+    kv[k] = v;
+  });
+  const hasNew = ['发件人', '发件电话', '发件地址', '收件人', '收件电话', '收件地址'].some((key) =>
+    Object.prototype.hasOwnProperty.call(kv, key),
+  );
+  if (hasNew) {
+    const shipName = kv['发件人'] || '';
+    const shipPhone = kv['发件电话'] || '';
+    const shipAddr = kv['发件地址'] || '';
+    const recvName = kv['收件人'] || '';
+    const recvPhone = kv['收件电话'] || '';
+    const recvAddr = kv['收件地址'] || '';
+    const purpose = kv['用途'] || '';
+    return {
+      shipName,
+      shipPhone,
+      shipAddr,
+      recvName,
+      recvPhone,
+      recvAddr,
+      purpose,
+      sender: [shipName, shipPhone].filter(Boolean).join(' '),
+      recipient: [recvName, recvPhone].filter(Boolean).join(' '),
+      address: recvAddr,
+    };
+  }
+  const out = empty();
+  if (Object.prototype.hasOwnProperty.call(kv, '发件')) {
+    out.sender = kv['发件'] || '';
+    out.recipient = kv['收件'] || '';
+    out.address = kv['地址'] || '';
+    out.recvAddr = out.address;
+    const sJoin = out.sender.match(/^(.+?)\s+(1[3-9]\d{9}|\d{2,4}-\d{7,9})$/);
+    if (sJoin) {
+      out.shipName = sJoin[1].trim();
+      out.shipPhone = sJoin[2].replace(/\s/g, '');
+    } else {
+      out.shipName = out.sender;
+    }
+    const rJoin = out.recipient.match(/^(.+?)\s+(1[3-9]\d{9}|\d{2,4}-\d{7,9})$/);
+    if (rJoin) {
+      out.recvName = rJoin[1].trim();
+      out.recvPhone = rJoin[2].replace(/\s/g, '');
+    } else {
+      out.recvName = out.recipient;
+    }
+  }
+  return out;
+}
+
+function buildLogisticsAddrMetaV2(shipName, shipPhone, shipAddr, recvName, recvPhone, recvAddr, purpose) {
+  const esc = (v) => String(v || '').replace(/\|/g, '｜').replace(/\n/g, ' ');
+  const parts = [];
+  if (String(shipName || '').trim()) parts.push(`发件人:${esc(shipName)}`);
+  if (String(shipPhone || '').trim()) parts.push(`发件电话:${esc(shipPhone)}`);
+  if (String(shipAddr || '').trim()) parts.push(`发件地址:${esc(shipAddr)}`);
+  if (String(recvName || '').trim()) parts.push(`收件人:${esc(recvName)}`);
+  if (String(recvPhone || '').trim()) parts.push(`收件电话:${esc(recvPhone)}`);
+  if (String(recvAddr || '').trim()) parts.push(`收件地址:${esc(recvAddr)}`);
+  if (String(purpose || '').trim()) parts.push(`用途:${esc(purpose)}`);
+  if (!parts.length) return '';
+  return `[LOG_ADDR]${parts.join('|')}\n`;
+}
+
+/** 旧三字段（发件/收件/地址）→ 新键；仅保留给极少数兼容调用 */
+function buildLogisticsAddrMeta(sender, recipient, address) {
+  const s = String(sender || '').trim();
+  const r = String(recipient || '').trim();
+  const a = String(address || '').trim();
+  if (!s && !r && !a) return '';
+  return buildLogisticsAddrMetaV2(s, '', '', r, '', a, '');
+}
+
+async function copyTextToClipboard(text) {
+  const s = String(text || '');
+  if (!s.trim()) {
+    showToast('没有可复制内容', 'warning');
+    return;
+  }
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(s);
+    } else {
+      throw new Error('no clipboard');
+    }
+  } catch (_) {
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = s;
+      ta.style.position = 'fixed';
+      ta.style.left = '-9999px';
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      ta.remove();
+    } catch (e2) {
+      showToast('复制失败', 'error');
+      return;
+    }
+  }
+  showToast('已复制', 'success');
+}
+
+function copyLogisticsShipBundle() {
+  const name = document.getElementById('logShipName')?.value?.trim() || '';
+  const phone = document.getElementById('logShipPhone')?.value?.trim() || '';
+  const addr = document.getElementById('logShipAddr')?.value?.trim() || '';
+  const text = [name, phone, addr].filter(Boolean).join('\n');
+  copyTextToClipboard(text);
+}
+
+function copyLogisticsRecvBundle() {
+  const name = document.getElementById('logRecvName')?.value?.trim() || '';
+  const phone = document.getElementById('logRecvPhone')?.value?.trim() || '';
+  const addr = document.getElementById('logRecvAddr')?.value?.trim() || '';
+  const text = [name, phone, addr].filter(Boolean).join('\n');
+  copyTextToClipboard(text);
+}
+
+let logisticsSmartFillTarget = 'ship';
+
+function parseLogisticsContactPaste(raw) {
+  const t = String(raw || '').trim().replace(/\u00a0/g, ' ');
+  if (!t) return { name: '', phone: '', addr: '' };
+  const phoneRe = /(1[3-9]\d{9})|(\d{2,4}[- ]?\d{7,9}\b)/;
+  const lines = t.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+  if (lines.length >= 2) {
+    let pi = -1;
+    let phone = '';
+    lines.forEach((ln, i) => {
+      if (pi < 0 && phoneRe.test(ln)) {
+        const m = ln.match(phoneRe);
+        if (m) {
+          phone = m[0].replace(/\s/g, '');
+          pi = i;
+        }
+      }
+    });
+    if (pi < 0) {
+      return { name: lines[0] || '', phone: '', addr: lines.slice(1).join('\n') };
+    }
+    const namePart = lines.slice(0, pi).join(' ') || lines[pi].replace(phoneRe, '').trim();
+    const addrPart = lines.slice(pi + 1).join('\n');
+    return { name: namePart.trim(), phone: phone.trim(), addr: addrPart.trim() };
+  }
+  const m = t.match(phoneRe);
+  const phone = m ? m[0].replace(/\s/g, '') : '';
+  const rest = t.replace(phoneRe, ' ').replace(/\s+/g, ' ').trim();
+  const parts = rest.split(/\s+/).filter(Boolean);
+  if (!phone) {
+    return { name: parts[0] || '', phone: '', addr: parts.slice(1).join(' ') };
+  }
+  if (parts.length <= 1) {
+    return { name: parts[0] || '', phone, addr: '' };
+  }
+  return { name: (parts[0] || '').trim(), phone, addr: parts.slice(1).join(' ').trim() };
+}
+
+function openLogisticsSmartFill(which) {
+  logisticsSmartFillTarget = which === 'recv' ? 'recv' : 'ship';
+  const ta = document.getElementById('logisticsSmartFillPaste');
+  if (ta) ta.value = '';
+  const title = document.getElementById('logisticsSmartFillTitle');
+  if (title) {
+    title.textContent =
+      logisticsSmartFillTarget === 'ship' ? '智能填写 · 发件信息' : '智能填写 · 收件信息';
+  }
+  openModal('modalLogisticsSmartFill');
+}
+
+function applyLogisticsSmartFill() {
+  const ta = document.getElementById('logisticsSmartFillPaste');
+  const { name, phone, addr } = parseLogisticsContactPaste(ta?.value || '');
+  if (logisticsSmartFillTarget === 'recv') {
+    const n = document.getElementById('logRecvName');
+    const p = document.getElementById('logRecvPhone');
+    const a = document.getElementById('logRecvAddr');
+    if (n) n.value = name;
+    if (p) p.value = phone;
+    if (a) a.value = addr;
+  } else {
+    const n = document.getElementById('logShipName');
+    const p = document.getElementById('logShipPhone');
+    const a = document.getElementById('logShipAddr');
+    if (n) n.value = name;
+    if (p) p.value = phone;
+    if (a) a.value = addr;
+  }
+  closeModal();
+}
+
+/** 物品出库「物流方式」→ 成本模块物流单位/方式（与 LOGISTICS_METHODS_BY_UNIT 一致） */
+function invOutboundMethodToLogisticsUnitExpress(methodRaw) {
+  const m = String(methodRaw || '').trim();
+  if (!m || m === '其他') return { unit: '快递', express: '其他' };
+  if (m === '物流') return { unit: '物流', express: '其他' };
+  const expressSet = new Set(LOGISTICS_METHODS_BY_UNIT['快递']);
+  const logisticsSet = new Set(LOGISTICS_METHODS_BY_UNIT['物流']);
+  if (logisticsSet.has(m)) return { unit: '物流', express: m };
+  if (expressSet.has(m)) return { unit: '快递', express: m };
+  return { unit: '快递', express: m };
+}
+
+function preserveInvObSuffix(remarks) {
+  const m = String(remarks || '').match(/\[INV-OB:\d+\][^\n]*$/);
+  return m ? m[0].trim() : '';
+}
+
+function onLogisticsUnitChange() {
+  const u = document.getElementById('logUnit')?.value || '快递';
+  const sel = document.getElementById('logMethod');
+  if (!sel) return;
+  const methods = LOGISTICS_METHODS_BY_UNIT[u] || LOGISTICS_METHODS_BY_UNIT['快递'];
+  sel.innerHTML = methods.map((m) => `<option value="${escapeHtml(m)}">${escapeHtml(m)}</option>`).join('');
+}
+
+function fillLogisticsUnitSelect(selected) {
+  const sel = document.getElementById('logUnit');
+  if (!sel) return;
+  sel.innerHTML = LOGISTICS_UNITS.map((u) => `<option value="${escapeHtml(u)}">${escapeHtml(u)}</option>`).join('');
+  if (selected && LOGISTICS_UNITS.includes(selected)) sel.value = selected;
+}
+
+function normalizeLogisticsUnitFromRow(item) {
+  if (!item) return '快递';
+  const u = String(item.logistics_company || '').trim();
+  if (LOGISTICS_UNITS.includes(u)) return u;
+  if (LOGISTICS_LEGACY_UNIT_MAP[u]) return LOGISTICS_LEGACY_UNIT_MAP[u];
+  if (u.includes('东区')) return '东区仓库';
+  if (u.includes('北区')) return '北区仓库';
+  if (u.includes('南区')) return '南区仓库';
+  const legacyExpress = new Set(LOGISTICS_METHODS_BY_UNIT['快递']);
+  if (legacyExpress.has(u) && !String(item.express_company || '').trim()) return '快递';
+  return '快递';
+}
+
+function normalizeLogisticsMethodFromRow(item, unit) {
+  const ec = String(item.express_company || '').trim();
+  if (ec) return ec;
+  const u = String(item.logistics_company || '').trim();
+  const legacyExpress = new Set(LOGISTICS_METHODS_BY_UNIT['快递']);
+  if (unit === '快递' && legacyExpress.has(u)) return u;
+  return (LOGISTICS_METHODS_BY_UNIT[unit] || LOGISTICS_METHODS_BY_UNIT['快递'])[0];
+}
+
+function logisticsRouteCellHtml(row) {
+  const p = parseLogisticsAddrMeta(row?.remarks || '');
+  const hasV2 =
+    p.shipName ||
+    p.shipPhone ||
+    p.shipAddr ||
+    p.recvName ||
+    p.recvPhone ||
+    p.recvAddr;
+  if (hasV2) {
+    const bits = [];
+    const shipLine = [p.shipName, p.shipPhone].filter(Boolean).join(' ');
+    const recvLine = [p.recvName, p.recvPhone].filter(Boolean).join(' ');
+    if (shipLine) bits.push(`<span style="color:var(--text-secondary)">发</span> ${escapeHtml(shipLine)}`);
+    if (p.shipAddr) bits.push(`<div style="font-size:11px;color:var(--text-muted)">${escapeHtml(p.shipAddr)}</div>`);
+    if (recvLine) bits.push(`<span style="color:var(--text-secondary)">收</span> ${escapeHtml(recvLine)}`);
+    if (p.recvAddr) bits.push(`<div style="font-size:11px;color:var(--text-muted)">${escapeHtml(p.recvAddr)}</div>`);
+    return bits.length ? bits.join('') : '—';
+  }
+  if (p.sender || p.recipient || p.address) {
+    const bits = [];
+    if (p.sender) bits.push(`<span style="color:var(--text-secondary)">发</span> ${escapeHtml(p.sender)}`);
+    if (p.recipient) bits.push(`<span style="color:var(--text-secondary)">收</span> ${escapeHtml(p.recipient)}`);
+    const top = bits.length ? bits.join('<br/>') : '';
+    const addr = p.address ? `<div style="font-size:11px;color:var(--text-muted);margin-top:4px">${escapeHtml(p.address)}</div>` : '';
+    return top + addr || '—';
+  }
+  const a = String(row?.origin_city || '').trim();
+  const b = String(row?.destination_city || '').trim();
+  if (!a && !b) return '—';
+  return `${escapeHtml(a)}→${escapeHtml(b)}`;
+}
+
 async function renderLogistics() {
   const container = document.getElementById('pageContainer');
 
   container.innerHTML = `
     <div class="toolbar">
       <div class="toolbar-left">
-        <input type="text" class="search-input" id="logSearch" placeholder="搜索单号/城市/项目编号..." oninput="filterLogistics()">
-        <select class="filter-select" id="logMergeFilter" onchange="setLogisticsMergeFilter(this.value)">
-          <option value="all">计入：全部</option>
-          <option value="unmerged">计入：未计入</option>
-          <option value="merged">计入：已计入</option>
-        </select>
+        <input type="text" class="search-input" id="logSearch" placeholder="搜索单号/单位/方式/收发/用途..." oninput="filterLogistics()">
       </div>
       <div class="toolbar-right" style="display:flex;gap:8px;align-items:center">
-        <button type="button" class="btn btn-danger btn-sm" id="logBatchDeleteBtn" disabled onclick="deleteSelectedLogistics()">一键删除</button>
+        <button type="button" class="btn btn-ghost btn-sm inv-admin-only" onclick="logisticsCleanupOrphanOutbound()" title="扫描并清理「出库单已删除但物流成本仍残留」的孤儿数据（按 [INV-OB:N] 标记识别）">清理出库残留</button>
         <button type="button" class="btn btn-primary btn-sm" onclick="showLogisticsModal()">+ 新建物流</button>
       </div>
     </div>
@@ -4694,26 +5149,64 @@ async function renderLogistics() {
   `;
 
   await loadLogistics();
-  const mf = document.getElementById('logMergeFilter');
-  if (mf) mf.value = logisticsMergeFilter;
+}
+
+async function logisticsCleanupOrphanOutbound() {
+  if (!hasWriteAccess()) {
+    showToast('仅管理员可执行此操作', 'warning');
+    return;
+  }
+  if (
+    !window.confirm(
+      '将扫描所有物流成本记录，删除「备注含 [INV-OB:N] 但对应出库单已不存在」的孤儿行。\n\n该操作幂等安全，且只清理由出库模块自动生成的物流；不会影响手填的物流记录。是否继续？',
+    )
+  ) {
+    return;
+  }
+  try {
+    const resp = await api('POST', '/inventory/cleanup-orphan-logistics');
+    const cleaned = Number((resp && resp.cleaned) || 0);
+    const scanned = Number((resp && resp.scanned) || 0);
+    if (cleaned > 0) {
+      showToast(`已清理 ${cleaned} 条残留物流（共扫描 ${scanned} 条带 INV-OB 标记）`, 'success');
+    } else {
+      showToast(`未发现残留物流（共扫描 ${scanned} 条带 INV-OB 标记，全部有对应出库单）`, 'info');
+    }
+    await loadLogistics();
+  } catch (e) {
+    showToast(e.message || '清理失败', 'error');
+  }
 }
 
 /** 与物流表格一致：当前已加载数据 + 搜索框过滤后的可见行 */
 function getLogisticsVisibleRows() {
   const search = (document.getElementById('logSearch')?.value || '').toLowerCase();
   let data = logisticsState.data || [];
-  if (logisticsMergeFilter === 'merged') data = data.filter((l) => isMergedFlag(l.merged_into_activity));
-  if (logisticsMergeFilter === 'unmerged') data = data.filter((l) => !isMergedFlag(l.merged_into_activity));
   if (search) {
-    data = data.filter((l) =>
-    (l.tracking_number || '').toLowerCase().includes(search) ||
-    (l.logistics_company || '').toLowerCase().includes(search) ||
-    (l.express_company || '').toLowerCase().includes(search) ||
-    (l.origin_city || '').toLowerCase().includes(search) ||
-    (l.destination_city || '').toLowerCase().includes(search) ||
-    (l.related_project_code || '').toLowerCase().includes(search) ||
-    (l.project_code || '').toLowerCase().includes(search)
-    );
+    data = data.filter((l) => {
+      const p = parseLogisticsAddrMeta(l.remarks || '');
+      const blob = [
+        l.tracking_number,
+        l.logistics_company,
+        l.express_company,
+        l.origin_city,
+        l.destination_city,
+        p.sender,
+        p.recipient,
+        p.address,
+        p.shipName,
+        p.shipPhone,
+        p.shipAddr,
+        p.recvName,
+        p.recvPhone,
+        p.recvAddr,
+        p.purpose,
+        logisticsPurposeText(l),
+      ]
+        .join(' ')
+        .toLowerCase();
+      return blob.includes(search);
+    });
   }
   return sortLogisticsRows(data);
 }
@@ -4767,11 +5260,6 @@ function toggleLogisticsSort(key) {
   loadLogistics();
 }
 
-function setLogisticsMergeFilter(v) {
-  logisticsMergeFilter = v || 'all';
-  loadLogistics();
-}
-
 function settlementYearOptions() {
   return ['2025', '2026', '2027'];
 }
@@ -4801,6 +5289,46 @@ function logisticsDisplayDate(row) {
   const isMonthly = isTruthyFlag(row.monthly_settlement);
   if (hasSettlementMonth && (isMonthly || !row.shipping_date)) return `${settlement.year}-${settlement.month}`;
   return fmtDateShort(row.shipping_date);
+}
+
+function logisticsCompanyCellHtml(row) {
+  const logisticsCompany = String(row?.logistics_company || '').trim();
+  const expressCompany = String(row?.express_company || '').trim();
+  const primary = logisticsCompany || expressCompany || '—';
+  const showExpress = !isTruthyFlag(row?.special_car) && expressCompany && expressCompany !== primary;
+  return `
+    <span class="badge badge-blue">${escapeHtml(primary)}</span>
+    ${showExpress ? `<span style="margin-left:6px;color:var(--text-secondary);font-size:12px">${escapeHtml(expressCompany)}</span>` : ''}
+  `;
+}
+
+function logisticsTrackingCellHtml(row) {
+  if (isTruthyFlag(row?.monthly_settlement)) {
+    return `<span class="badge badge-green">月结${row?.settlement_month ? ` ${escapeHtml(row.settlement_month)}` : ''}</span>`;
+  }
+  if (row?.special_car) return '<span class="badge badge-accent">专车</span>';
+  const trackingNumber = String(row?.tracking_number || '').trim();
+  if (!trackingNumber) return '—';
+  return `<a href="https://www.sf-express.com/cn/sc/dynamic_function/waybill/#search/bill-number/${encodeURIComponent(trackingNumber)}" target="_blank" style="color:var(--accent);font-family:monospace;font-size:12px">${escapeHtml(trackingNumber)}</a>`;
+}
+
+function logisticsPurposeText(row) {
+  const p = parseLogisticsAddrMeta(row?.remarks || '');
+  const purposeMeta = String(p.purpose || '').trim();
+  const visibleRemarks = String(row?.remarks || '')
+    .replace(/^\[LOG_ADDR\][^\n]*\n?/, '')
+    .replace(/\s*\[INV-OB:\d+\]\s*/g, '')
+    .replace(/[；;]\s*$/g, '')
+    .trim();
+  if (purposeMeta && visibleRemarks) return `${purposeMeta}\n${visibleRemarks}`;
+  if (purposeMeta) return purposeMeta;
+  if (visibleRemarks) return visibleRemarks;
+  return String(row?.allocation_note || '').trim();
+}
+
+function logisticsPurposeCellHtml(row) {
+  const text = logisticsPurposeText(row);
+  return text ? escapeHtml(text) : '—';
 }
 
 function initLogisticsSettlementMonthSelect() {
@@ -4863,43 +5391,24 @@ async function loadLogistics() {
       <div class="table-wrapper log-table-scroll-wrap">
         <table class="log-table-sticky-head">
           <thead><tr>
-              <th style="width:44px;text-align:center" title="多选">
-                <input type="checkbox" id="logSelectAll" style="width:16px;height:16px;cursor:pointer;accent-color:var(--accent)" onchange="toggleLogisticsSelectAll(this.checked)" aria-label="全选当前列表">
-              </th>
               <th style="cursor:pointer;user-select:none" onclick="toggleLogisticsSort('shipping_date')" title="点击排序">日期${logisticsSortIndicator('shipping_date')}</th>
               <th style="cursor:pointer;user-select:none" onclick="toggleLogisticsSort('brand')" title="点击排序">品牌${logisticsSortIndicator('brand')}</th>
-              <th style="cursor:pointer;user-select:none" onclick="toggleLogisticsSort('logistics_company')" title="点击排序">物流公司${logisticsSortIndicator('logistics_company')}</th>
-              <th>单号</th><th>路线</th><th>费用</th><th>关联项目</th><th>计入说明</th><th>计入状态</th><th>操作</th>
+              <th style="cursor:pointer;user-select:none" onclick="toggleLogisticsSort('logistics_company')" title="点击排序">单位/方式${logisticsSortIndicator('logistics_company')}</th>
+              <th>单号</th><th>收发/地址</th><th>用途说明</th><th>费用</th><th>付款状态</th><th>操作</th>
           </tr></thead>
           <tbody>
             ${filtered.length ? filtered.map(l => {
               const lid = Number(l.id);
-              const isSel = logisticsState.selectedIds.has(lid);
               return `
               <tr>
-                <td style="text-align:center;vertical-align:middle">
-                  <input type="checkbox" class="log-row-cb" data-log-id="${lid}" ${isSel ? 'checked' : ''} style="width:16px;height:16px;cursor:pointer;accent-color:var(--accent)" onchange="toggleLogisticsRowSelect(${lid}, this.checked)" aria-label="选择该条物流记录">
-                </td>
                 <td>${logisticsDisplayDate(l)}</td>
                 <td><span class="badge badge-purple">${escapeHtml(l.brand || 'PHD')}</span></td>
-                <td>
-                  <span class="badge badge-blue">${l.logistics_company||'—'}</span>
-                  ${l.special_car ? '' : (l.express_company ? `<span style="margin-left:6px;color:var(--text-secondary);font-size:12px">${l.express_company}</span>` : '')}
-                </td>
-                <td>
-                  ${isTruthyFlag(l.monthly_settlement)
-                    ? `<span class="badge badge-green">月结${l.settlement_month ? ` ${escapeHtml(l.settlement_month)}` : ''}</span>`
-                    : l.special_car
-                    ? '<span class="badge badge-accent">专车</span>'
-                    : l.tracking_number
-                      ? `<a href="https://www.sf-express.com/cn/sc/dynamic_function/waybill/#search/bill-number/${l.tracking_number}" target="_blank" style="color:var(--accent);font-family:monospace;font-size:12px">${l.tracking_number}</a>`
-                      : '—'}
-                </td>
-                <td style="font-size:12px">${l.origin_city||''}→${l.destination_city||''}</td>
+                <td>${logisticsCompanyCellHtml(l)}</td>
+                <td>${logisticsTrackingCellHtml(l)}</td>
+                <td style="font-size:12px;max-width:280px;white-space:normal;line-height:1.45">${logisticsRouteCellHtml(l)}</td>
+                <td style="font-size:12px;max-width:260px;white-space:normal;line-height:1.45">${logisticsPurposeCellHtml(l)}</td>
                 <td class="amount ${parseFloat(l.fee)>0?'amount-cost':'amount-neutral'}">${parseFloat(l.fee)>0?fmtMoney(l.fee):'—'}</td>
-                <td class="project-code">${formatLogisticsRelatedProject(l)}</td>
-                <td>${listAllocationNoteHtml(l.allocation_note)}</td>
-                <td>${isMergedFlag(l.merged_into_activity) ? '<span class="badge badge-success">已计入</span>' : '<span class="badge badge-gray">未计入</span>'}</td>
+                <td>${paymentStatusHtml(l.payment_status, l.payment_order_id)}</td>
                 <td>
                   <div style="display:flex;gap:4px">
                     <button class="btn btn-secondary btn-sm" onclick="showLogisticsModal(${l.id})">编辑</button>
@@ -4908,7 +5417,7 @@ async function loadLogistics() {
                 </td>
               </tr>
             `;
-            }).join('') : '<tr><td colspan="11" style="text-align:center;color:var(--text-muted);padding:30px">暂无数据</td></tr>'}
+            }).join('') : '<tr><td colspan="9" style="text-align:center;color:var(--text-muted);padding:30px">暂无数据</td></tr>'}
           </tbody>
         </table>
       </div>
@@ -5063,23 +5572,27 @@ async function loadLogProjectDatalist() {
 async function showLogisticsModal(id = null) {
   document.getElementById('logModalTitle').textContent = id ? '编辑物流记录' : '新建物流记录';
   document.getElementById('logId').value = id || '';
-  ['logCompany', 'logExpress', 'logTrack', 'logSettlementYear', 'logSettlementMonth', 'logBrand', 'logOrigin', 'logDest', 'logDate', 'logFee', 'logProject', 'logAllocationNote', 'logRemarks'].forEach((f) => {
+  [
+    'logTrack',
+    'logBrand',
+    'logDate',
+    'logFee',
+    'logPayeeName',
+    'logPurpose',
+    'logShipName',
+    'logShipPhone',
+    'logShipAddr',
+    'logRecvName',
+    'logRecvPhone',
+    'logRecvAddr',
+  ].forEach((f) => {
     const el = document.getElementById(f);
     if (el) el.value = '';
   });
-  initLogisticsSettlementMonthSelect();
-  const logSpecialCarCb = document.getElementById('logSpecialCar');
-  const logMonthlySettlementCb = document.getElementById('logMonthlySettlement');
-  if (logSpecialCarCb) logSpecialCarCb.checked = false;
-  if (logMonthlySettlementCb) logMonthlySettlementCb.checked = false;
-  const logMergedCb = document.getElementById('logMergedIntoActivity');
-  if (logMergedCb) logMergedCb.checked = false;
-  document.getElementById('logCompany').value = '东区仓库（叶老板）';
-  document.getElementById('logExpress').value = '顺丰';
+  fillLogisticsUnitSelect('快递');
+  onLogisticsUnitChange();
   document.getElementById('logBrand').value = 'PHD';
-  toggleLogSpecialCar();
-
-  await loadLogProjectDatalist();
+  document.getElementById('logDate').value = todayDateInputValue();
 
   const nid = id != null && id !== '' ? Number(id) : NaN;
   if (Number.isFinite(nid)) {
@@ -5090,143 +5603,135 @@ async function showLogisticsModal(id = null) {
       item = logisticsState.data.find((l) => Number(l.id) === nid) || null;
     }
     if (item) {
-      const logisticsCompanies = ['东区仓库（叶老板）', '南区仓库（天空）', '北区仓库（叶老板）'];
-      const expressCompanies = ['顺丰', '京东', '中通', '圆通', '其他'];
-      const rawLogistics = item.logistics_company || '';
-      const rawExpress = item.express_company || '';
-      document.getElementById('logCompany').value = logisticsCompanies.includes(rawLogistics) ? rawLogistics : '东区仓库（叶老板）';
-      document.getElementById('logExpress').value =
-        expressCompanies.includes(rawExpress)
-          ? rawExpress
-          : (expressCompanies.includes(rawLogistics) ? rawLogistics : '顺丰');
+      const unit = normalizeLogisticsUnitFromRow(item);
+      fillLogisticsUnitSelect(unit);
+      onLogisticsUnitChange();
+      const method = normalizeLogisticsMethodFromRow(item, unit);
+      const mSel = document.getElementById('logMethod');
+      if (mSel && [...mSel.options].some((o) => o.value === method)) mSel.value = method;
       document.getElementById('logTrack').value = item.tracking_number || '';
       document.getElementById('logBrand').value = ['PHD', 'X.O', 'CLUB', 'REMY'].includes(item.brand) ? item.brand : 'PHD';
-      const settlement = parseSettlementMonthValue(item.settlement_month);
-      document.getElementById('logSettlementYear').value = settlement.year;
-      document.getElementById('logSettlementMonth').value = settlement.month;
-      if (logSpecialCarCb) {
-        const special = item.special_car === true || item.special_car === 1 || String(item.special_car) === '1';
-        logSpecialCarCb.checked = special;
-      }
-      if (logMonthlySettlementCb) {
-        const monthly = isTruthyFlag(item.monthly_settlement) || !!String(item.settlement_month || '').trim();
-        logMonthlySettlementCb.checked = monthly;
-      }
-      toggleLogSpecialCar();
-      document.getElementById('logOrigin').value = item.origin_city || '';
-      document.getElementById('logDest').value = item.destination_city || '';
       if (item.shipping_date) document.getElementById('logDate').value = toDateInputValue(item.shipping_date);
       document.getElementById('logFee').value =
         item.fee != null && item.fee !== '' ? roundMoney2(item.fee).toFixed(2) : '';
-      const rpc =
-        item.related_project_code != null && String(item.related_project_code).trim() !== ''
-          ? String(item.related_project_code).trim()
-          : item.project_code != null && String(item.project_code).trim() !== ''
-            ? String(item.project_code).trim()
-            : '';
-      document.getElementById('logProject').value = rpc;
-      if (logMergedCb) {
-        const merged = item.merged_into_activity === true || item.merged_into_activity === 1 || String(item.merged_into_activity) === '1';
-        logMergedCb.checked = merged;
+      document.getElementById('logPayeeName').value = item.payee_name || '';
+      const addr = parseLogisticsAddrMeta(item.remarks || '');
+      document.getElementById('logPurpose').value = addr.purpose || '';
+      const hasDetail =
+        addr.shipName ||
+        addr.shipPhone ||
+        addr.shipAddr ||
+        addr.recvName ||
+        addr.recvPhone ||
+        addr.recvAddr;
+      if (hasDetail) {
+        document.getElementById('logShipName').value = addr.shipName || '';
+        document.getElementById('logShipPhone').value = addr.shipPhone || '';
+        document.getElementById('logShipAddr').value = addr.shipAddr || '';
+        document.getElementById('logRecvName').value = addr.recvName || '';
+        document.getElementById('logRecvPhone').value = addr.recvPhone || '';
+        document.getElementById('logRecvAddr').value = addr.recvAddr || '';
+      } else if (addr.sender || addr.recipient || addr.address) {
+        document.getElementById('logShipName').value = addr.sender || '';
+        document.getElementById('logRecvName').value = addr.recipient || '';
+        document.getElementById('logRecvAddr').value = addr.address || '';
+      } else {
+        document.getElementById('logShipName').value = item.origin_city || '';
+        document.getElementById('logRecvName').value = item.destination_city || '';
       }
-      document.getElementById('logAllocationNote').value = item.allocation_note || '';
-      document.getElementById('logRemarks').value = item.remarks || '';
     }
   }
   openModal('modalLogistics');
 }
 
-function toggleLogSpecialCar() {
-  const cb = document.getElementById('logSpecialCar');
-  const monthlyCb = document.getElementById('logMonthlySettlement');
-  const track = document.getElementById('logTrack');
-  const express = document.getElementById('logExpress');
-  const settlementYear = document.getElementById('logSettlementYear');
-  const settlementMonth = document.getElementById('logSettlementMonth');
-  if (!cb || !monthlyCb || !track || !express || !settlementYear || !settlementMonth) return;
-  const special = !!cb.checked;
-  const monthly = !!monthlyCb.checked;
-  if (monthly) {
-    cb.checked = false;
-    track.value = '';
-    track.disabled = true;
-    express.disabled = true;
-    cb.disabled = true;
-    settlementYear.disabled = false;
-    settlementMonth.disabled = false;
-    track.placeholder = '月结无需专车和单号';
-    return;
-  }
-  cb.disabled = false;
-  settlementYear.value = '';
-  settlementYear.disabled = true;
-  settlementMonth.value = '';
-  settlementMonth.disabled = true;
-  if (special) {
-    track.value = '';
-    track.disabled = true;
-    express.disabled = true;
-    track.placeholder = '专车无需单号';
-  } else {
-    track.disabled = false;
-    express.disabled = false;
-    track.placeholder = '顺丰单号可后续补填';
-  }
-}
+/** 兼容旧 HTML 引用；新表单已移除专车/月结 */
+function toggleLogSpecialCar() {}
 
 async function saveLogistics() {
   const id = document.getElementById('logId').value;
-  const rpcRaw = (document.getElementById('logProject')?.value || '').replace(/^\uFEFF/, '').trim();
-  if (rpcRaw) {
-    // 强制：必须来自活动项目编号，防止手误输入
-    if (!logisticsProjectIndex.codes.has(rpcRaw)) {
-      showToast('关联项目编号必须从活动项目编号中选择（请从下拉建议中选中）', 'error');
-      return;
+  const unit = document.getElementById('logUnit')?.value || '';
+  const method = document.getElementById('logMethod')?.value || '';
+  if (!LOGISTICS_UNITS.includes(unit)) {
+    showToast('请选择物流单位', 'warning');
+    return;
+  }
+  if (!method) {
+    showToast('请选择物流方式', 'warning');
+    return;
+  }
+  const logisticsBrand = document.getElementById('logBrand').value;
+  const shipDate = document.getElementById('logDate').value || '';
+  if (!shipDate) {
+    showToast('请选择发货日期', 'warning');
+    return;
+  }
+  const feeRaw = document.getElementById('logFee').value;
+  const fee = feeRaw === '' || feeRaw == null ? 0 : roundMoney2(feeRaw);
+  if (fee < 0) {
+    showToast('费用不能为负数', 'warning');
+    return;
+  }
+  const payee = document.getElementById('logPayeeName')?.value?.trim() || '';
+  if (!payee) {
+    showToast('请填写收款方（物流公司）', 'warning');
+    return;
+  }
+  const shipName = document.getElementById('logShipName')?.value?.trim() || '';
+  const shipPhone = document.getElementById('logShipPhone')?.value?.trim() || '';
+  const shipAddr = document.getElementById('logShipAddr')?.value?.trim() || '';
+  const recvName = document.getElementById('logRecvName')?.value?.trim() || '';
+  const recvPhone = document.getElementById('logRecvPhone')?.value?.trim() || '';
+  const recvAddr = document.getElementById('logRecvAddr')?.value?.trim() || '';
+  const purpose = document.getElementById('logPurpose')?.value?.trim() || '';
+  const originLine = [shipName, shipPhone].filter(Boolean).join(' ');
+  const destLine = [recvName, recvPhone].filter(Boolean).join(' ');
+  let invSuffix = '';
+  let existingTail = '';
+  if (id) {
+    let prev = null;
+    try {
+      prev = await api('GET', `/logistics/${id}`);
+    } catch (_) {
+      prev = logisticsState.data.find((l) => String(l.id) === String(id)) || null;
+    }
+    if (prev && prev.remarks) {
+      invSuffix = preserveInvObSuffix(prev.remarks);
+      existingTail = String(prev.remarks || '')
+        .replace(/^\[LOG_ADDR\][^\n]*\n?/, '')
+        .replace(/\s*\[INV-OB:\d+\][^\n]*\s*$/g, '')
+        .trim();
     }
   }
-  const mergedIntoActivity = !!document.getElementById('logMergedIntoActivity')?.checked;
-  if (mergedIntoActivity && !rpcRaw) {
-    showToast('勾选计入活动成本时，必须选择关联项目编号', 'error');
-    return;
-  }
-  const activityId = rpcRaw ? logisticsProjectIndex.codeToId.get(rpcRaw) : null;
-  if (mergedIntoActivity && !activityId) {
-    showToast('关联项目编号无效，请从下拉建议中选择', 'error');
-    return;
-  }
-  const isSpecialCar = !!document.getElementById('logSpecialCar')?.checked;
-  const isMonthlySettlement = !!document.getElementById('logMonthlySettlement')?.checked;
-  const settlementYear = document.getElementById('logSettlementYear')?.value || '';
-  const settlementMonth = document.getElementById('logSettlementMonth')?.value || '';
-  const hasSettlementInput = !!(settlementYear && settlementMonth);
-  const monthlySettlementFinal = isMonthlySettlement || hasSettlementInput;
-  const logisticsCompany = document.getElementById('logCompany').value;
-  const logisticsBrand = document.getElementById('logBrand').value;
-  const expressCompany = document.getElementById('logExpress').value;
-  const trackingNumber = document.getElementById('logTrack').value;
-  if (isMonthlySettlement && !hasSettlementInput) {
-    showToast('勾选月结后请填写月份', 'error');
-    return;
-  }
-  // 顺丰单号允许后补：先创建记录，后续再到物流模块补录
+  const addrLine = buildLogisticsAddrMetaV2(shipName, shipPhone, shipAddr, recvName, recvPhone, recvAddr, purpose).replace(
+    /\n$/,
+    '',
+  );
+  const pieces = [];
+  if (addrLine) pieces.push(addrLine);
+  if (existingTail) pieces.push(existingTail);
+  if (invSuffix) pieces.push(invSuffix);
+  const remarksFinal = pieces.length ? pieces.join('\n') : null;
+
+  const trackingNumber = document.getElementById('logTrack').value?.trim() || null;
   const body = {
     year_frame_id: currentYearFrameId || 1,
-    logistics_company: logisticsCompany,
+    logistics_company: unit,
     brand: logisticsBrand,
-    express_company: (isSpecialCar || monthlySettlementFinal) ? null : expressCompany,
-    tracking_number: (isSpecialCar || monthlySettlementFinal) ? null : trackingNumber,
-    special_car: monthlySettlementFinal ? 0 : (isSpecialCar ? 1 : 0),
-    monthly_settlement: monthlySettlementFinal ? 1 : 0,
-    settlement_month: monthlySettlementFinal ? `${settlementYear}-${settlementMonth}` : null,
-    origin_city: document.getElementById('logOrigin').value,
-    destination_city: document.getElementById('logDest').value,
-    shipping_date: document.getElementById('logDate').value || null,
-    fee: roundMoney2(document.getElementById('logFee').value),
-    related_project_code: rpcRaw || null,
-    activity_id: activityId || null,
-    merged_into_activity: mergedIntoActivity ? 1 : 0,
-    allocation_note: document.getElementById('logAllocationNote')?.value?.trim() || null,
-    remarks: document.getElementById('logRemarks').value,
+    express_company: method,
+    tracking_number: trackingNumber,
+    special_car: 0,
+    monthly_settlement: 0,
+    settlement_month: null,
+    origin_city: originLine || null,
+    destination_city: destLine || null,
+    shipping_date: shipDate || null,
+    fee,
+    payee_name: payee,
+    related_project_code: null,
+    activity_id: null,
+    merged_into_activity: 0,
+    allocation_note: null,
+    remarks: remarksFinal,
   };
   try {
     if (id) {
@@ -5261,6 +5766,7 @@ async function renderWarehouse() {
   const container = document.getElementById('pageContainer');
 
   container.innerHTML = `
+    <div class="warehouse-page">
     <div class="toolbar" style="justify-content:space-between">
       <div class="toolbar-left">
         <select class="filter-select" id="warMergeFilter" onchange="setWarehouseMergeFilter(this.value)">
@@ -5270,12 +5776,13 @@ async function renderWarehouse() {
         </select>
       </div>
       <div class="toolbar-right" style="display:flex;gap:8px;align-items:center">
-        <button type="button" class="btn btn-danger btn-sm" id="warBatchDeleteBtn" disabled onclick="deleteSelectedWarehouse()">一键删除</button>
-        <button type="button" class="btn btn-primary btn-sm" onclick="showWarehouseModal()">+ 新建仓储</button>
+        <button type="button" class="btn btn-secondary btn-sm" onclick="showWarehouseFixedCostModal()">生成固定成本</button>
+        <button type="button" class="btn btn-primary btn-sm" onclick="showWarehouseQuoteModal()">新建仓储报价</button>
       </div>
     </div>
     <div id="warSummary"></div>
     <div id="warTable"></div>
+    </div>
   `;
 
   await loadWarehouse();
@@ -5310,6 +5817,78 @@ function readWarBrandSelect() {
   return WAREHOUSE_BRAND_OPTIONS.includes(v) ? v : '';
 }
 
+function warehousePeriodMonthCount(startYmd, endYmd) {
+  const s = String(startYmd || '').slice(0, 10);
+  const e = String(endYmd || '').slice(0, 10);
+  if (!s || !e || s > e) return 0;
+  const ds = new Date(`${s}T12:00:00`);
+  const de = new Date(`${e}T12:00:00`);
+  if (Number.isNaN(ds.getTime()) || Number.isNaN(de.getTime())) return 0;
+  return (de.getFullYear() - ds.getFullYear()) * 12 + (de.getMonth() - ds.getMonth()) + 1;
+}
+
+function warehouseMonthLabelFromPeriodDates(startYmd, endYmd) {
+  const s = String(startYmd || '').slice(0, 7);
+  const e = String(endYmd || '').slice(0, 7);
+  if (!s || !e) return '';
+  return s === e ? s : `${s}~${e}`;
+}
+
+function parseWarehouseMonthRangeToDates(monthStr) {
+  const raw = String(monthStr || '').trim();
+  const idx = raw.indexOf('~');
+  if (idx < 0) return null;
+  const a = raw.slice(0, idx).trim();
+  const b = raw.slice(idx + 1).trim();
+  if (!/^\d{4}-\d{2}$/.test(a) || !/^\d{4}-\d{2}$/.test(b)) return null;
+  const [y2, m2] = b.split('-').map((x) => parseInt(x, 10));
+  const lastD = new Date(y2, m2, 0).getDate();
+  return { start: `${a}-01`, end: `${b}-${String(lastD).padStart(2, '0')}` };
+}
+
+function onWarehousePeriodChange() {
+  if (warehouseFormMode !== 'period_quote') return;
+  const ps = document.getElementById('warPeriodStart')?.value || '';
+  const pe = document.getElementById('warPeriodEnd')?.value || '';
+  const n = warehousePeriodMonthCount(ps, pe);
+  const elQ = document.getElementById('warQty');
+  if (elQ) elQ.value = n > 0 ? String(n) : '';
+  updateWarQuotedPrice();
+}
+
+function applyWarehouseFormMode(mode) {
+  warehouseFormMode = mode;
+  const periodWrap = document.getElementById('warPeriodWrap');
+  const monthLegacy = document.getElementById('warMonthLegacyWrap');
+  const yfWrap = document.getElementById('warYearFrameWrap');
+  const yfHint = document.getElementById('warYearFrameHint');
+  const qtyLabel = document.getElementById('warQtyLabel');
+  const qtyEl = document.getElementById('warQty');
+  const proj = document.getElementById('warProjectBlock');
+  const merge = document.getElementById('warMergeBlock');
+  if (!periodWrap || !monthLegacy) return;
+  if (mode === 'period_quote') {
+    periodWrap.style.display = '';
+    monthLegacy.style.display = 'none';
+    if (qtyLabel) {
+      qtyLabel.innerHTML =
+        '数量（月） <span class="required">*</span> <span style="font-size:11px;color:var(--text-muted);font-weight:400">（按账期自动计算）</span>';
+    }
+    if (qtyEl) qtyEl.readOnly = true;
+    if (proj) proj.style.display = 'none';
+    if (merge) merge.style.display = 'none';
+  } else {
+    periodWrap.style.display = 'none';
+    monthLegacy.style.display = '';
+    if (qtyLabel) qtyLabel.innerHTML = '数量（天） <span class="required">*</span>';
+    if (qtyEl) qtyEl.readOnly = false;
+    if (yfHint) yfHint.style.display = 'none';
+    if (yfWrap) yfWrap.style.display = '';
+    if (proj) proj.style.display = '';
+    if (merge) merge.style.display = '';
+  }
+}
+
 async function loadWarehouse() {
   try {
     let qs = currentYearFrameId ? `?yearFrameId=${currentYearFrameId}` : '?';
@@ -5321,13 +5900,6 @@ async function loadWarehouse() {
       : (warehouseMergeFilter === 'unmerged')
         ? data.filter((w) => !isMergedFlag(w.merged_into_activity))
         : data;
-    const idSetOnPage = new Set(filteredData.map((w) => Number(w.id)));
-    const nextSel = new Set();
-    warehouseState.selectedIds.forEach((id) => {
-      if (idSetOnPage.has(id)) nextSel.add(id);
-    });
-    warehouseState.selectedIds = nextSel;
-
     const sumEl = document.getElementById('warSummary');
     if (sumEl) {
       const REGION_META = [
@@ -5354,7 +5926,7 @@ async function loadWarehouse() {
       };
 
       sumEl.innerHTML = `
-        <div style="display:grid;grid-template-columns:repeat(2,minmax(200px,1fr));gap:16px;margin-bottom:16px">
+        <div class="warehouse-summary-grid">
           <div class="stat-card success">
             <div class="stat-icon"><i data-lucide="receipt" style="width:16px;height:16px"></i></div>
             <div class="stat-label">仓储总报价（含税）</div>
@@ -5367,8 +5939,6 @@ async function loadWarehouse() {
             <div class="stat-value" style="margin-top:8px;font-variant-numeric:tabular-nums">${fmtMoney(totalCostAll)}</div>
             <div class="stat-sub">实际成本字段合计</div>
           </div>
-        </div>
-        <div class="stats-grid three" style="margin-bottom:16px">
           ${REGION_META.map((r) => {
             const rows = rowsByRegion.get(r.key) || [];
             const { quoted, cost, profit } = calc(rows);
@@ -5401,23 +5971,26 @@ async function loadWarehouse() {
     const tableEl = document.getElementById('warTable');
     if (tableEl) {
       tableEl.innerHTML = `
-        <div class="table-wrapper">
-          <table>
+        <div class="warehouse-table-card">
+          <div class="warehouse-table-head">
+            <div>
+              <div class="warehouse-table-title">仓储成本记录</div>
+              <div class="warehouse-table-sub">固定成本、报价记录与付款状态</div>
+            </div>
+            <span class="badge badge-gray">${filteredData.length} 条</span>
+          </div>
+        <div class="table-wrapper warehouse-table-scroll act-table-scroll-wrap">
+          <table class="data-table act-table-sticky-head warehouse-cost-table">
             <thead><tr>
-              <th style="width:44px;text-align:center" title="多选">
-                <input type="checkbox" id="warSelectAll" style="width:16px;height:16px;cursor:pointer;accent-color:var(--accent)" onchange="toggleWarehouseSelectAll(this.checked)" aria-label="全选当前列表">
-              </th>
-              <th>年份</th>
+              <th>财年</th>
+              <th>月份</th>
               <th>品牌</th>
               <th>区域</th>
-              <th>数量<br><span style="font-size:10px;font-weight:500;color:var(--text-muted);text-transform:none;letter-spacing:0">（月）</span></th>
+              <th>数量</th>
               <th>单价</th>
-              <th>报价<br><span style="font-size:10px;font-weight:500;color:var(--text-muted);text-transform:none;letter-spacing:0">（数量×单价）</span></th>
+              <th>报价</th>
               <th>实际成本</th>
-              <th>备注</th>
-              <th>关联项目</th>
-              <th>计入说明</th>
-              <th>计入状态</th>
+              <th>付款状态</th>
               <th>操作</th>
             </tr></thead>
             <tbody>
@@ -5426,30 +5999,18 @@ async function loadWarehouse() {
                 const qtySafe = Number.isFinite(qty) ? qty : 0;
                 const upNum = parseFloat(w.unit_price);
                 const hasUnitPrice = w.unit_price != null && w.unit_price !== '' && Number.isFinite(upNum);
-                const quoteSub = hasUnitPrice
-                  ? `<div style="font-size:11px;color:var(--text-muted);margin-top:2px">${qtySafe}月×${fmtMoney(upNum)}</div>`
-                  : '';
                 const wid = Number(w.id);
-                const isSel = warehouseState.selectedIds.has(wid);
                 return `
                 <tr>
-                  <td style="text-align:center;vertical-align:middle">
-                    <input type="checkbox" class="war-row-cb" data-war-id="${wid}" ${isSel ? 'checked' : ''} style="width:16px;height:16px;cursor:pointer;accent-color:var(--accent)" onchange="toggleWarehouseRowSelect(${wid}, this.checked)" aria-label="选择该条仓储记录">
-                  </td>
-                  <td><span class="badge badge-gray" style="font-weight:600">${w.year_frame_name != null && String(w.year_frame_name).trim() !== '' ? escapeHtml(String(w.year_frame_name)) : '—'}</span></td>
+                  <td><span class="badge badge-gray" style="font-weight:600">${escapeHtml(yearFrameDisplayLabel({ year: w.year_frame_name, id: w.year_frame_id }))}</span></td>
+                  <td>${escapeHtml(w.month || '—')}</td>
                   <td><span class="badge badge-gray">${escapeHtml((w.brand != null && String(w.brand).trim() !== '' ? String(w.brand).trim() : 'PHD'))}</span></td>
                   <td><span class="badge badge-accent">${(() => { const r = normalizeWarehouseRegion(w.region); return r ? escapeHtml(r) : '—'; })()}</span></td>
-                  <td>${qtySafe}<span style="font-size:11px;color:var(--text-muted);margin-left:3px">月</span></td>
+                  <td>${qtySafe}<span style="font-size:11px;color:var(--text-muted);margin-left:3px">${String(w.month || '').includes('~') ? '月' : '天'}</span></td>
                   <td>${hasUnitPrice ? fmtMoney(upNum) : '—'}</td>
-                  <td class="amount amount-revenue" style="vertical-align:top">
-                    <div>${fmtMoney(w.quoted_price)}</div>
-                    ${quoteSub}
-                  </td>
+                  <td class="amount amount-revenue">${fmtMoney(w.quoted_price)}</td>
                   <td class="amount ${w.no_actual_cost ? 'amount-neutral' : (parseFloat(w.actual_cost)>0?'amount-cost':'amount-neutral')}">${w.no_actual_cost ? '无' : (parseFloat(w.actual_cost)>0?fmtMoney(w.actual_cost):'—')}</td>
-                  <td style="font-size:12px;color:var(--text-muted)">${escapeHtml(w.remarks||'')}</td>
-                  <td>${listActivityProjectHtml(w)}</td>
-                  <td>${listAllocationNoteHtml(w.allocation_note)}</td>
-                  <td>${isMergedFlag(w.merged_into_activity) ? '<span class="badge badge-success">已计入</span>' : '<span class="badge badge-gray">未计入</span>'}</td>
+                  <td>${paymentStatusHtml(w.payment_status, w.payment_order_id)}</td>
                   <td>
                     <div style="display:flex;gap:4px">
                       <button class="btn btn-secondary btn-sm" onclick="showWarehouseModal(${w.id})">编辑</button>
@@ -5458,12 +6019,12 @@ async function loadWarehouse() {
                   </td>
                 </tr>
               `;
-              }).join('') : '<tr><td colspan="13" style="text-align:center;color:var(--text-muted);padding:30px">暂无数据</td></tr>'}
+              }).join('') : '<tr><td colspan="10" style="text-align:center;color:var(--text-muted);padding:30px">暂无数据</td></tr>'}
             </tbody>
           </table>
         </div>
+        </div>
       `;
-      updateWarehouseSelectUi();
     }
     void updateBadges();
     renderLucideIcons();
@@ -5472,71 +6033,149 @@ async function loadWarehouse() {
   }
 }
 
-function toggleWarehouseRowSelect(id, checked) {
-  const n = Number(id);
-  if (!Number.isFinite(n)) return;
-  if (checked) warehouseState.selectedIds.add(n);
-  else warehouseState.selectedIds.delete(n);
-  updateWarehouseSelectUi();
-}
-
-function toggleWarehouseSelectAll(checked) {
-  const ids = (warehouseState.data || []).map((w) => Number(w.id)).filter(Number.isFinite);
-  if (checked) ids.forEach((id) => warehouseState.selectedIds.add(id));
-  else ids.forEach((id) => warehouseState.selectedIds.delete(id));
-  document.querySelectorAll('.war-row-cb').forEach((cb) => {
-    const id = Number(cb.getAttribute('data-war-id'));
-    cb.checked = warehouseState.selectedIds.has(id);
-  });
-  updateWarehouseSelectUi();
-}
-
-function updateWarehouseSelectUi() {
-  const allCb = document.getElementById('warSelectAll');
-  const data = warehouseState.data || [];
-  if (allCb) {
-    if (!data.length) {
-      allCb.checked = false;
-      allCb.indeterminate = false;
-    } else {
-      const ids = data.map((w) => Number(w.id));
-      const selCount = ids.filter((id) => warehouseState.selectedIds.has(id)).length;
-      allCb.checked = selCount === ids.length;
-      allCb.indeterminate = selCount > 0 && selCount < ids.length;
-    }
-  }
-  const btn = document.getElementById('warBatchDeleteBtn');
-  if (btn) {
-    const n = warehouseState.selectedIds.size;
-    btn.disabled = n === 0;
-    btn.textContent = n > 0 ? `一键删除（已选 ${n} 条）` : '一键删除';
-  }
-}
-
 function setWarehouseMergeFilter(v) {
   warehouseMergeFilter = v || 'all';
   loadWarehouse();
 }
 
-async function deleteSelectedWarehouse() {
-  const ids = Array.from(warehouseState.selectedIds).filter(Number.isFinite);
-  if (!ids.length) {
-    showToast('请先勾选要删除的记录', 'warning');
+function warehouseFiscalMonths() {
+  const yy = parseInt(String(currentYear || '').match(/\d{2}/)?.[0] || '26', 10);
+  const startYear = 2000 + yy;
+  const out = [];
+  for (let i = 0; i < 12; i += 1) {
+    const d = new Date(Date.UTC(startYear, 3 + i, 1));
+    out.push(`${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`);
+  }
+  return out;
+}
+
+function daysInMonthValue(monthValue) {
+  const [y, m] = String(monthValue || '').split('-').map((x) => parseInt(x, 10));
+  if (!y || !m) return 0;
+  return new Date(Date.UTC(y, m, 0)).getUTCDate();
+}
+
+function warehouseFixedCostPreviewRows() {
+  const region = document.getElementById('warFixedRegion')?.value || '北区';
+  const monthChecks = Array.from(document.querySelectorAll('.war-fixed-month:checked')).map((x) => x.value);
+  return monthChecks.map((month) => {
+    const days = daysInMonthValue(month);
+    const amount = region === '北区' ? roundMoney2(days * 100) : 5600;
+    return { region, month, days, amount };
+  });
+}
+
+function updateWarehouseFixedCostPreview() {
+  const rows = warehouseFixedCostPreviewRows();
+  const total = roundMoney2(rows.reduce((s, r) => s + r.amount, 0));
+  const el = document.getElementById('warFixedPreview');
+  if (!el) return;
+  el.innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+      <span style="color:var(--text-secondary);font-size:13px">将生成 ${rows.length} 条记录</span>
+      <span class="amount" style="font-weight:800">${fmtMoney(total)}</span>
+    </div>
+    <div style="max-height:180px;overflow:auto;border:1px solid var(--border);border-radius:8px">
+      <table class="data-table">
+        <thead><tr><th>区域</th><th>月份</th><th>计算</th><th style="text-align:right">成本</th></tr></thead>
+        <tbody>${rows.map((r) => `<tr><td>${escapeHtml(r.region)}</td><td>${escapeHtml(r.month)}</td><td>${r.region === '北区' ? `${r.days}天 x 100元` : '仓储+人工固定 5600元/月'}</td><td class="amount" style="text-align:right">${fmtMoney(r.amount)}</td></tr>`).join('') || '<tr><td colspan="4" style="text-align:center;color:var(--text-muted);padding:14px">请选择月份</td></tr>'}</tbody>
+      </table>
+    </div>
+  `;
+}
+
+function showWarehouseFixedCostModal() {
+  const body = document.getElementById('warFixedCostBody');
+  if (!body) return;
+  const months = warehouseFiscalMonths();
+  const monthHtml = months
+    .map((m) => `<label style="display:flex;align-items:center;gap:6px;padding:8px;border:1px solid var(--border);border-radius:8px;cursor:pointer"><input type="checkbox" class="war-fixed-month" value="${m}" onchange="updateWarehouseFixedCostPreview()"> <span>${m}</span></label>`)
+    .join('');
+  body.innerHTML = `
+    <div class="form-grid" style="grid-template-columns:1fr 1fr">
+      <div class="form-group">
+        <label class="form-label">财年</label>
+        <input type="text" class="form-control" value="${escapeHtml(String(currentYear || '').padStart(2, '0'))}年度" disabled>
+      </div>
+      <div class="form-group">
+        <label class="form-label">区域</label>
+        <select class="form-control" id="warFixedRegion" onchange="updateWarehouseFixedCostPreview()">
+          <option value="北区">北区：按天 100 元</option>
+          <option value="南区">南区：5600 元/月</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label class="form-label">品牌</label>
+        <select class="form-control" id="warFixedBrand">
+          ${WAREHOUSE_BRAND_OPTIONS.map((b) => `<option value="${b}" ${b === 'PHD' ? 'selected' : ''}>${b}</option>`).join('')}
+        </select>
+      </div>
+      <div class="form-group">
+        <label class="form-label">收款方 <span class="required">*</span></label>
+        <input type="text" class="form-control" id="warFixedPayee" placeholder="付款筛选用">
+      </div>
+    </div>
+    <div class="form-group">
+      <label class="form-label">月份</label>
+      <div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px">${monthHtml}</div>
+    </div>
+    <div id="warFixedPreview"></div>
+  `;
+  openModal('modalWarehouseFixedCost');
+  updateWarehouseFixedCostPreview();
+}
+
+async function saveWarehouseFixedCosts() {
+  if (!hasWriteAccess()) {
+    showToast('仅管理员可保存', 'warning');
     return;
   }
-  if (!confirm(`确定删除选中的 ${ids.length} 条仓储记录？`)) return;
-  if (!confirm('再次确认：删除后不可恢复，是否继续？')) return;
-  try {
-    for (const id of ids) {
-      await api('DELETE', `/warehouse/${id}`);
-    }
-    warehouseState.selectedIds = new Set();
-    showToast(`已删除 ${ids.length} 条记录`, 'success');
-    await loadWarehouse();
-  } catch (err) {
-    showToast('删除失败: ' + err.message, 'error');
-    await loadWarehouse();
+  const payee = document.getElementById('warFixedPayee')?.value?.trim() || '';
+  const brand = document.getElementById('warFixedBrand')?.value || 'PHD';
+  const rows = warehouseFixedCostPreviewRows();
+  if (!payee) {
+    showToast('请填写收款方', 'warning');
+    return;
   }
+  if (!rows.length) {
+    showToast('请选择月份', 'warning');
+    return;
+  }
+  const existing = new Set((warehouseState.data || []).map((w) => `${w.year_frame_id}:${normalizeWarehouseRegion(w.region)}:${w.month}`));
+  const toCreate = rows.filter((r) => !existing.has(`${currentYearFrameId}:${r.region}:${r.month}`));
+  if (!toCreate.length) {
+    showToast('所选月份已存在同区域仓储记录，未生成重复记录', 'warning');
+    return;
+  }
+  try {
+    for (const r of toCreate) {
+      await api('POST', '/warehouse', {
+        year_frame_id: currentYearFrameId || 1,
+        month: r.month,
+        brand,
+        region: r.region,
+        wine_name: '',
+        specifications: r.region === '北区' ? '固定仓储费' : '固定仓储+人工',
+        quantity: r.region === '北区' ? r.days : 1,
+        unit_price: r.region === '北区' ? 100 : 5600,
+        quoted_price: 0,
+        actual_cost: r.amount,
+        no_actual_cost: 0,
+        payee_name: payee,
+        remarks: r.region === '北区' ? `${r.month} 北区固定仓储费：${r.days}天 x 100元` : `${r.month} 南区固定仓储+人工：5600元/月`,
+      });
+    }
+    const skipped = rows.length - toCreate.length;
+    showToast(`已生成 ${toCreate.length} 条固定仓储成本${skipped ? `，跳过重复 ${skipped} 条` : ''}`, 'success');
+    closeModal();
+    await loadWarehouse();
+  } catch (e) {
+    showToast(e.message || '生成失败', 'error');
+  }
+}
+
+async function showWarehouseQuoteModal() {
+  await showWarehouseModal(null, { quote: true });
 }
 
 function updateWarQuotedPrice() {
@@ -5565,7 +6204,7 @@ async function fillWarehouseYearFrameSelect(preferredFrameId) {
   if (!sel) return;
   const frames = await api('GET', '/year-frames');
   sel.innerHTML = frames.map(f => {
-    const label = [f.year, f.name].filter(Boolean).join(' · ');
+    const label = yearFrameDisplayLabel(f);
     return `<option value="${f.id}">${escapeHtml(label || String(f.id))}</option>`;
   }).join('');
   const want = preferredFrameId || currentYearFrameId;
@@ -5576,13 +6215,18 @@ async function fillWarehouseYearFrameSelect(preferredFrameId) {
   }
 }
 
-async function showWarehouseModal(id = null) {
+async function showWarehouseModal(id = null, opts = {}) {
   const wid = id != null && id !== '' ? Number(id) : NaN;
   const editing = Number.isFinite(wid);
+  const quoteNew = !editing && opts.quote === true;
 
-  document.getElementById('warModalTitle').textContent = editing ? '编辑仓储记录' : '新建仓储记录';
+  document.getElementById('warModalTitle').textContent = quoteNew
+    ? '新建仓储报价'
+    : editing
+      ? '编辑仓储记录'
+      : '新建仓储记录';
   document.getElementById('warId').value = editing ? String(wid) : '';
-  ['warQty', 'warUnitPrice', 'warQuotedPrice', 'warActualCost', 'warRemarks', 'warProject', 'warAllocationNote'].forEach(fid => {
+  ['warMonth', 'warQty', 'warUnitPrice', 'warQuotedPrice', 'warActualCost', 'warPayeeName', 'warRemarks', 'warProject', 'warAllocationNote', 'warPeriodStart', 'warPeriodEnd'].forEach((fid) => {
     const el = document.getElementById(fid);
     if (el) el.value = '';
   });
@@ -5594,8 +6238,10 @@ async function showWarehouseModal(id = null) {
   const warMergedCb = document.getElementById('warMergedIntoActivity');
   if (noCostCb) noCostCb.checked = false;
   if (warMergedCb) warMergedCb.checked = false;
-  toggleWarNoActualCost();
-  await loadLogProjectDatalist();
+  const yfWrap = document.getElementById('warYearFrameWrap');
+  const yfHint = document.getElementById('warYearFrameHint');
+  if (yfWrap) yfWrap.style.display = '';
+  if (yfHint) yfHint.style.display = 'none';
 
   let preferredYf = currentYearFrameId;
   let item = null;
@@ -5603,12 +6249,37 @@ async function showWarehouseModal(id = null) {
     try {
       item = await api('GET', `/warehouse/${wid}`);
     } catch (e) {
-      item = warehouseState.data.find(w => Number(w.id) === wid) || null;
-      if (!item) {
-        showToast('加载记录失败: ' + (e.message || ''), 'error');
-      }
+      item = warehouseState.data.find((w) => Number(w.id) === wid) || null;
+      if (!item) showToast('加载记录失败: ' + (e.message || ''), 'error');
     }
   }
+
+  const periodParsed = item && item.month ? parseWarehouseMonthRangeToDates(item.month) : null;
+  const usePeriod = quoteNew || !!periodParsed;
+
+  if (quoteNew) {
+    applyWarehouseFormMode('period_quote');
+    if (yfWrap) yfWrap.style.display = 'none';
+    if (noCostCb) {
+      noCostCb.checked = true;
+      toggleWarNoActualCost();
+    }
+    const remarks = document.getElementById('warRemarks');
+    if (remarks && !remarks.value) remarks.value = '仓储报价记录';
+    const d = new Date();
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const ps = document.getElementById('warPeriodStart');
+    const pe = document.getElementById('warPeriodEnd');
+    if (ps) ps.value = `${y}-${m}-01`;
+    if (pe) pe.value = todayDateInputValue();
+    onWarehousePeriodChange();
+  } else {
+    applyWarehouseFormMode(usePeriod ? 'period_quote' : 'legacy');
+    toggleWarNoActualCost();
+  }
+
+  await loadLogProjectDatalist();
 
   if (item) {
     preferredYf = item.year_frame_id;
@@ -5616,6 +6287,16 @@ async function showWarehouseModal(id = null) {
     if (brandEl) brandEl.value = WAREHOUSE_BRAND_OPTIONS.includes(b) ? b : 'PHD';
     const rSel = normalizeWarehouseRegion(item.region);
     if (reg) reg.value = WAREHOUSE_REGION_OPTIONS.includes(rSel) ? rSel : '';
+    if (periodParsed) {
+      const ps = document.getElementById('warPeriodStart');
+      const pe = document.getElementById('warPeriodEnd');
+      if (ps) ps.value = periodParsed.start;
+      if (pe) pe.value = periodParsed.end;
+      document.getElementById('warMonth').value = '';
+      onWarehousePeriodChange();
+    } else {
+      document.getElementById('warMonth').value = item.month || '';
+    }
     document.getElementById('warQty').value = item.quantity != null && item.quantity !== '' ? item.quantity : '';
     document.getElementById('warUnitPrice').value =
       item.unit_price != null && item.unit_price !== '' ? roundMoney2(item.unit_price).toFixed(2) : '';
@@ -5623,6 +6304,7 @@ async function showWarehouseModal(id = null) {
       item.quoted_price != null && item.quoted_price !== '' ? roundMoney2(item.quoted_price).toFixed(2) : '';
     document.getElementById('warActualCost').value =
       item.actual_cost != null && item.actual_cost !== '' ? roundMoney2(item.actual_cost).toFixed(2) : '';
+    document.getElementById('warPayeeName').value = item.payee_name || '';
     const noActual = item.no_actual_cost === true || item.no_actual_cost === 1 || String(item.no_actual_cost) === '1';
     if (noCostCb) noCostCb.checked = noActual;
     if (noActual) document.getElementById('warActualCost').value = '';
@@ -5633,13 +6315,26 @@ async function showWarehouseModal(id = null) {
       warMergedCb.checked = merged;
     }
     document.getElementById('warAllocationNote').value = item.allocation_note || '';
-    const rpc = item.related_project_code != null && String(item.related_project_code).trim() !== ''
-      ? String(item.related_project_code).trim()
-      : item.project_code != null && String(item.project_code).trim() !== ''
-        ? String(item.project_code).trim()
-        : '';
+    const rpc =
+      item.related_project_code != null && String(item.related_project_code).trim() !== ''
+        ? String(item.related_project_code).trim()
+        : item.activity_project_code != null && String(item.activity_project_code).trim() !== ''
+          ? String(item.activity_project_code).trim()
+          : item.project_code != null && String(item.project_code).trim() !== ''
+            ? String(item.project_code).trim()
+            : '';
     const warProjectEl = document.getElementById('warProject');
     if (warProjectEl) warProjectEl.value = rpc;
+    if (periodParsed) {
+      const merged =
+        item.merged_into_activity === true || item.merged_into_activity === 1 || String(item.merged_into_activity) === '1';
+      if (merged || (rpc && rpc.trim())) {
+        const proj = document.getElementById('warProjectBlock');
+        const merge = document.getElementById('warMergeBlock');
+        if (proj) proj.style.display = '';
+        if (merge) merge.style.display = '';
+      }
+    }
   }
 
   try {
@@ -5647,9 +6342,16 @@ async function showWarehouseModal(id = null) {
   } catch (e) {
     showToast('加载年框失败: ' + (e.message || ''), 'error');
   }
+
+  if (quoteNew) {
+    if (yfWrap) yfWrap.style.display = 'none';
+    const sel = document.getElementById('warYearFrameId');
+    if (sel && currentYearFrameId) sel.value = String(currentYearFrameId);
+  }
+
   if (item) {
-    const rSel = normalizeWarehouseRegion(item.region);
-    if (reg) reg.value = WAREHOUSE_REGION_OPTIONS.includes(rSel) ? rSel : '';
+    const rSel2 = normalizeWarehouseRegion(item.region);
+    if (reg) reg.value = WAREHOUSE_REGION_OPTIONS.includes(rSel2) ? rSel2 : '';
   }
   updateWarQuotedPrice();
   openModal('modalWarehouse');
@@ -5657,7 +6359,8 @@ async function showWarehouseModal(id = null) {
 
 async function saveWarehouse() {
   const id = document.getElementById('warId').value;
-  const yearFrameId = parseInt(document.getElementById('warYearFrameId').value, 10);
+  let yearFrameId = parseInt(document.getElementById('warYearFrameId').value, 10);
+  if (!yearFrameId && currentYearFrameId) yearFrameId = currentYearFrameId;
   const region = readWarRegionSelect();
   const brand = readWarBrandSelect();
   if (!yearFrameId) {
@@ -5673,22 +6376,42 @@ async function saveWarehouse() {
     return;
   }
   updateWarQuotedPrice();
-  const qty = parseInt(document.getElementById('warQty').value, 10) || 0;
-  const unitPrice = roundMoney2(document.getElementById('warUnitPrice').value);
-  if (qty <= 0) {
-    showToast('数量（月）须大于 0', 'error');
-    return;
+  let monthVal = null;
+  let qty = 0;
+  if (warehouseFormMode === 'period_quote') {
+    const ps = document.getElementById('warPeriodStart')?.value || '';
+    const pe = document.getElementById('warPeriodEnd')?.value || '';
+    monthVal = warehouseMonthLabelFromPeriodDates(ps, pe) || null;
+    qty = warehousePeriodMonthCount(ps, pe);
+    if (!ps || !pe) {
+      showToast('请选择账期起止日期', 'warning');
+      return;
+    }
+    if (qty <= 0) {
+      showToast('账期无效：结束日期应不早于起始日期', 'warning');
+      return;
+    }
+  } else {
+    monthVal = document.getElementById('warMonth')?.value?.trim() || null;
+    qty = parseInt(document.getElementById('warQty').value, 10) || 0;
+    if (qty <= 0) {
+      showToast('数量（天）须大于 0', 'error');
+      return;
+    }
   }
+  const unitPrice = roundMoney2(document.getElementById('warUnitPrice').value);
   if (unitPrice <= 0) {
     showToast('单价须大于 0', 'error');
     return;
   }
-  const warProjectRaw = (document.getElementById('warProject')?.value || '').replace(/^\uFEFF/, '').trim();
+  const projBlock = document.getElementById('warProjectBlock');
+  const projHidden = projBlock && projBlock.style.display === 'none';
+  const warProjectRaw = projHidden ? '' : (document.getElementById('warProject')?.value || '').replace(/^\uFEFF/, '').trim();
   if (warProjectRaw && !logisticsProjectIndex.codes.has(warProjectRaw)) {
     showToast('关联项目编号必须从活动项目编号中选择（请从下拉建议中选中）', 'error');
     return;
   }
-  const mergedIntoActivity = !!document.getElementById('warMergedIntoActivity')?.checked;
+  const mergedIntoActivity = projHidden ? false : !!document.getElementById('warMergedIntoActivity')?.checked;
   if (mergedIntoActivity && !warProjectRaw) {
     showToast('勾选计入活动成本时，必须选择关联项目编号', 'error');
     return;
@@ -5700,7 +6423,7 @@ async function saveWarehouse() {
   }
   const body = {
     year_frame_id: yearFrameId,
-    month: null,
+    month: monthVal,
     brand,
     region,
     wine_name: '',
@@ -5709,6 +6432,7 @@ async function saveWarehouse() {
     unit_price: unitPrice,
     quoted_price: roundMoney2(document.getElementById('warQuotedPrice').value),
     actual_cost: document.getElementById('warNoActualCost')?.checked ? 0 : roundMoney2(document.getElementById('warActualCost').value),
+    payee_name: document.getElementById('warPayeeName')?.value?.trim() || null,
     no_actual_cost: document.getElementById('warNoActualCost')?.checked ? 1 : 0,
     activity_id: activityId || null,
     merged_into_activity: mergedIntoActivity ? 1 : 0,
@@ -5738,6 +6462,682 @@ async function deleteWarehouse(id) {
     await loadWarehouse();
   } catch (err) {
     showToast('删除失败: ' + err.message, 'error');
+  }
+}
+
+/* =============================================
+   页面：字典管理（通讯录 + 表单选项）
+   - 通讯录（5 类内置 + 自定义）→ /api/dict
+   - 表单选项（7 个 lookup_options category）→ /api/lookups
+   说明：UX 遵循 ui-ux-pro-max（§4 一致性 / §8 分组 / §9 nav-hierarchy）。
+   ============================================= */
+
+/** 通讯录类别 schema：每个 category 定义可编辑字段集 & 主键字段（name 来源） */
+const DICT_CATEGORY_DEFS = {
+  recipient: {
+    label: '收件人',
+    icon: 'package',
+    desc: '出库单常用收件人（联系人 / 电话 / 地址 / 城市）',
+    fields: [
+      { key: 'contact_name', label: '联系人', type: 'text', required: true },
+      { key: 'phone', label: '联系电话', type: 'tel' },
+      { key: 'address', label: '收件地址', type: 'text' },
+      { key: 'city', label: '城市', type: 'text' },
+    ],
+    nameField: 'contact_name',
+  },
+  sender: {
+    label: '发件方',
+    icon: 'truck',
+    desc: '物流发件方 / 仓库默认发件人',
+    fields: [
+      { key: 'warehouse_name', label: '仓库 / 公司', type: 'text' },
+      { key: 'contact_name', label: '发件人', type: 'text', required: true },
+      { key: 'phone', label: '联系电话', type: 'tel' },
+      { key: 'address', label: '发件地址', type: 'text' },
+    ],
+    nameField: 'warehouse_name',
+    nameFallback: 'contact_name',
+  },
+  supplier: {
+    label: '供应商',
+    icon: 'building-2',
+    desc: '付款 / 报销开票主体（税号 / 银行 / 开票信息）',
+    fields: [
+      { key: 'company_name', label: '公司名称', type: 'text', required: true },
+      { key: 'tax_no', label: '统一社会信用代码 / 税号', type: 'text' },
+      { key: 'bank_name', label: '开户银行', type: 'text' },
+      { key: 'bank_account', label: '银行账号', type: 'text' },
+      { key: 'invoice_address', label: '开票地址', type: 'text' },
+      { key: 'invoice_phone', label: '开票电话', type: 'tel' },
+      { key: 'company_address', label: '公司地址', type: 'text' },
+      { key: 'contact_name', label: '联系人', type: 'text' },
+      { key: 'contact_phone', label: '联系电话', type: 'tel' },
+    ],
+    nameField: 'company_name',
+  },
+  payee: {
+    label: '收款人',
+    icon: 'credit-card',
+    desc: '物流 / 服务方收款信息',
+    fields: [
+      { key: 'company_name', label: '收款方名称', type: 'text', required: true },
+      { key: 'bank_name', label: '开户银行', type: 'text' },
+      { key: 'bank_account', label: '银行账号', type: 'text' },
+      { key: 'tax_no', label: '税号', type: 'text' },
+      { key: 'contact_phone', label: '联系电话', type: 'tel' },
+    ],
+    nameField: 'company_name',
+  },
+  reimburser: {
+    label: '报销人员',
+    icon: 'user-circle-2',
+    desc: '公司内部报销人员',
+    fields: [
+      { key: 'employee_name', label: '姓名', type: 'text', required: true },
+      { key: 'employee_id', label: '员工编号', type: 'text' },
+      { key: 'department', label: '部门', type: 'text' },
+      { key: 'bank_card', label: '银行卡号', type: 'text' },
+      { key: 'phone', label: '联系电话', type: 'tel' },
+    ],
+    nameField: 'employee_name',
+  },
+};
+
+const DICT_BUILTIN_CATEGORIES = Object.keys(DICT_CATEGORY_DEFS);
+
+/** 表单下拉选项类别（复用现有 lookup_options） */
+const DICT_LOOKUP_DEFS = [
+  { category: 'activity_year_frame_code', label: '年框编号', icon: 'tag' },
+  { category: 'activity_type', label: '活动类型', icon: 'sparkles' },
+  { category: 'activity_period', label: '时段', icon: 'clock' },
+  { category: 'activity_region', label: '区域', icon: 'map-pin' },
+  { category: 'activity_belonging', label: '归属', icon: 'briefcase' },
+  { category: 'activity_executor', label: '执行人员', icon: 'user' },
+  { category: 'activity_status', label: '状态', icon: 'check-circle' },
+];
+
+const dictPageState = {
+  /** 'dict' | 'lookup' */
+  group: 'dict',
+  /** category 名称（属于 group 的子项） */
+  category: 'recipient',
+  /** 列表数据 */
+  rows: [],
+  /** 类别统计（仅 dict） */
+  catStats: {},
+  /** 搜索词（仅 dict 用） */
+  q: '',
+  /** 是否含停用 */
+  includeInactive: false,
+  /** 加载中 */
+  loading: false,
+};
+
+function dictCurrentCategoryLabel() {
+  if (dictPageState.group === 'dict') {
+    const def = DICT_CATEGORY_DEFS[dictPageState.category];
+    return def ? def.label : dictPageState.category;
+  }
+  const def = DICT_LOOKUP_DEFS.find((d) => d.category === dictPageState.category);
+  return def ? def.label : dictPageState.category;
+}
+
+function dictCurrentCategoryDef() {
+  if (dictPageState.group === 'dict') return DICT_CATEGORY_DEFS[dictPageState.category];
+  return DICT_LOOKUP_DEFS.find((d) => d.category === dictPageState.category);
+}
+
+/** 主入口：渲染字典管理页面 */
+async function renderDictManager() {
+  if (!hasWriteAccess()) {
+    document.getElementById('pageContainer').innerHTML =
+      '<div class="empty-state">仅管理员可访问字典管理</div>';
+    return;
+  }
+  const container = document.getElementById('pageContainer');
+  container.innerHTML = `
+    <div class="dict-page">
+      <aside class="dict-sidebar" id="dictSidebar">${dictSidebarHtml()}</aside>
+      <section class="dict-main">
+        <div class="dict-main-toolbar" id="dictMainToolbar">${dictToolbarHtml()}</div>
+        <div class="dict-main-list" id="dictMainList">
+          <div class="empty-state">加载中...</div>
+        </div>
+      </section>
+    </div>
+  `;
+  await dictLoadList();
+}
+
+function dictSidebarHtml() {
+  const catStats = dictPageState.catStats || {};
+  const dictItems = DICT_BUILTIN_CATEGORIES.map((c) => {
+    const def = DICT_CATEGORY_DEFS[c];
+    const active = dictPageState.group === 'dict' && dictPageState.category === c;
+    const count = catStats[c] ? catStats[c].active : 0;
+    return `
+      <button type="button" class="dict-side-item ${active ? 'is-active' : ''}"
+              onclick="dictSelectCategory('dict','${c}')"
+              title="${escapeHtml(def.desc)}">
+        <i data-lucide="${def.icon}" style="width:14px;height:14px"></i>
+        <span class="dict-side-label">${escapeHtml(def.label)}</span>
+        <span class="dict-side-count">${count}</span>
+      </button>`;
+  }).join('');
+  const lookupItems = DICT_LOOKUP_DEFS.map((d) => {
+    const active = dictPageState.group === 'lookup' && dictPageState.category === d.category;
+    return `
+      <button type="button" class="dict-side-item ${active ? 'is-active' : ''}"
+              onclick="dictSelectCategory('lookup','${d.category}')">
+        <i data-lucide="${d.icon}" style="width:14px;height:14px"></i>
+        <span class="dict-side-label">${escapeHtml(d.label)}</span>
+      </button>`;
+  }).join('');
+  return `
+    <div class="dict-side-group">
+      <div class="dict-side-group-title">
+        <i data-lucide="contact" style="width:13px;height:13px"></i>
+        <span>通讯录</span>
+      </div>
+      <div class="dict-side-group-items">${dictItems}</div>
+    </div>
+    <div class="dict-side-group">
+      <div class="dict-side-group-title">
+        <i data-lucide="list" style="width:13px;height:13px"></i>
+        <span>表单选项</span>
+      </div>
+      <div class="dict-side-group-items">${lookupItems}</div>
+    </div>
+    <div class="dict-side-hint">
+      <i data-lucide="info" style="width:12px;height:12px"></i>
+      <span>表单选项已在原表单旁支持「编辑选项」入口，此处提供集中管理视图</span>
+    </div>
+  `;
+}
+
+function dictToolbarHtml() {
+  const isDict = dictPageState.group === 'dict';
+  const def = dictCurrentCategoryDef();
+  const desc = isDict && def ? def.desc : '';
+  const searchValue = escapeHtml(dictPageState.q || '');
+  return `
+    <div class="dict-toolbar-left">
+      <div class="dict-toolbar-title">
+        ${def ? `<i data-lucide="${def.icon}" style="width:16px;height:16px"></i>` : ''}
+        <span>${escapeHtml(dictCurrentCategoryLabel())}</span>
+        <span class="dict-toolbar-count" id="dictToolbarCount"></span>
+      </div>
+      ${desc ? `<div class="dict-toolbar-desc">${escapeHtml(desc)}</div>` : ''}
+    </div>
+    <div class="dict-toolbar-right">
+      ${isDict ? `
+        <div class="dict-search-wrap">
+          <i data-lucide="search" style="width:14px;height:14px"></i>
+          <input type="search" class="dict-search-input" id="dictSearchInput"
+                 placeholder="关键词检索（姓名/电话/标签/备注）"
+                 value="${searchValue}"
+                 oninput="dictOnSearchInput(this.value)">
+        </div>` : ''}
+      <label class="dict-inactive-toggle">
+        <input type="checkbox" id="dictIncludeInactive"
+               ${dictPageState.includeInactive ? 'checked' : ''}
+               onchange="dictOnIncludeInactiveChange(this.checked)">
+        <span>显示停用</span>
+      </label>
+      <button type="button" class="btn btn-primary btn-sm" onclick="dictOpenEditor(null)">
+        <i data-lucide="plus" style="width:14px;height:14px"></i> 新建
+      </button>
+    </div>
+  `;
+}
+
+async function dictSelectCategory(group, category) {
+  dictPageState.group = group;
+  dictPageState.category = category;
+  dictPageState.q = '';
+  dictPageState.includeInactive = false;
+  const sidebar = document.getElementById('dictSidebar');
+  if (sidebar) sidebar.innerHTML = dictSidebarHtml();
+  const toolbar = document.getElementById('dictMainToolbar');
+  if (toolbar) toolbar.innerHTML = dictToolbarHtml();
+  renderLucideIcons();
+  await dictLoadList();
+}
+
+function dictOnSearchInput(v) {
+  dictPageState.q = String(v || '').trim();
+  if (dictPageState._searchTimer) clearTimeout(dictPageState._searchTimer);
+  dictPageState._searchTimer = setTimeout(() => dictLoadList(), 200);
+}
+
+function dictOnIncludeInactiveChange(checked) {
+  dictPageState.includeInactive = !!checked;
+  dictLoadList();
+}
+
+async function dictLoadList() {
+  const listEl = document.getElementById('dictMainList');
+  if (!listEl) return;
+  listEl.innerHTML = '<div class="empty-state">加载中...</div>';
+  try {
+    if (dictPageState.group === 'dict') {
+      // 同时刷新统计
+      try {
+        const cats = await api('GET', '/dict/categories');
+        const map = {};
+        (cats || []).forEach((c) => { map[c.category] = c; });
+        dictPageState.catStats = map;
+        const sb = document.getElementById('dictSidebar');
+        if (sb) sb.innerHTML = dictSidebarHtml();
+      } catch (e) { /* 统计失败不影响主列表 */ }
+      const qs = new URLSearchParams();
+      qs.set('category', dictPageState.category);
+      if (dictPageState.q) qs.set('q', dictPageState.q);
+      if (dictPageState.includeInactive) qs.set('includeInactive', '1');
+      const rows = await api('GET', `/dict?${qs.toString()}`);
+      dictPageState.rows = rows || [];
+      dictRenderDictList();
+    } else {
+      const qs = new URLSearchParams();
+      qs.set('category', dictPageState.category);
+      qs.set('includeInactive', '1');
+      const rows = await api('GET', `/lookups?${qs.toString()}`);
+      dictPageState.rows = rows || [];
+      dictRenderLookupList();
+    }
+    renderLucideIcons();
+  } catch (e) {
+    console.error('字典加载失败:', e);
+    listEl.innerHTML = `<div class="empty-state">加载失败：${escapeHtml(e.message || '未知错误')}</div>`;
+  }
+}
+
+/** 通讯录列表渲染 */
+function dictRenderDictList() {
+  const listEl = document.getElementById('dictMainList');
+  const def = DICT_CATEGORY_DEFS[dictPageState.category];
+  const rows = dictPageState.rows || [];
+  const countEl = document.getElementById('dictToolbarCount');
+  if (countEl) {
+    let activeCount = 0;
+    let totalCount = rows.length;
+    rows.forEach((r) => { if (r.is_active) activeCount++; });
+    countEl.textContent = dictPageState.includeInactive
+      ? `${activeCount} 启用 / ${totalCount - activeCount} 停用`
+      : `${activeCount} 条`;
+  }
+  if (!rows.length) {
+    listEl.innerHTML = `
+      <div class="dict-empty">
+        <i data-lucide="inbox" style="width:32px;height:32px"></i>
+        <div class="dict-empty-title">暂无${escapeHtml(def ? def.label : '记录')}</div>
+        <div class="dict-empty-hint">点击右上角「新建」开始添加</div>
+      </div>`;
+    return;
+  }
+  listEl.innerHTML = `
+    <div class="dict-card-grid">
+      ${rows.map((r) => dictCardHtml(r, def)).join('')}
+    </div>
+  `;
+}
+
+function dictCardHtml(row, def) {
+  const c = row.content || {};
+  // 摘要：除主名字段外的字段，串接前 3 个非空值
+  const summaryFields = (def?.fields || []).filter((f) => f.key !== (def?.nameField || ''));
+  const summaryParts = [];
+  for (const f of summaryFields) {
+    const v = c[f.key];
+    if (v && String(v).trim()) {
+      summaryParts.push(`${f.label}：${escapeHtml(String(v))}`);
+      if (summaryParts.length >= 3) break;
+    }
+  }
+  const tagsArr = (row.tags || '').split(',').map((s) => s.trim()).filter(Boolean);
+  const inactive = !row.is_active;
+  return `
+    <div class="dict-card ${inactive ? 'is-inactive' : ''} ${row.pinned ? 'is-pinned' : ''}">
+      <div class="dict-card-head">
+        <div class="dict-card-title">
+          ${row.pinned ? '<i data-lucide="pin" style="width:12px;height:12px;color:var(--accent)"></i>' : ''}
+          <span>${escapeHtml(row.name || '(未命名)')}</span>
+          ${inactive ? '<span class="dict-card-badge dict-badge-inactive">已停用</span>' : ''}
+        </div>
+        <div class="dict-card-actions">
+          <button type="button" class="icon-btn" title="${row.pinned ? '取消置顶' : '置顶'}"
+                  onclick="dictTogglePin(${row.id}, ${row.pinned ? 0 : 1})">
+            <i data-lucide="${row.pinned ? 'pin-off' : 'pin'}" style="width:13px;height:13px"></i>
+          </button>
+          <button type="button" class="icon-btn" title="编辑" onclick="dictOpenEditor(${row.id})">
+            <i data-lucide="pencil" style="width:13px;height:13px"></i>
+          </button>
+          ${inactive
+            ? `<button type="button" class="icon-btn" title="启用" onclick="dictToggleActive(${row.id}, true)">
+                <i data-lucide="rotate-ccw" style="width:13px;height:13px"></i>
+              </button>`
+            : `<button type="button" class="icon-btn" title="停用" onclick="dictToggleActive(${row.id}, false)">
+                <i data-lucide="archive" style="width:13px;height:13px"></i>
+              </button>`}
+          <button type="button" class="icon-btn icon-btn-danger" title="彻底删除"
+                  onclick="dictHardDelete(${row.id})">
+            <i data-lucide="trash-2" style="width:13px;height:13px"></i>
+          </button>
+        </div>
+      </div>
+      ${row.short_label ? `<div class="dict-card-short">${escapeHtml(row.short_label)}</div>` : ''}
+      ${summaryParts.length ? `<div class="dict-card-summary">${summaryParts.join(' · ')}</div>` : ''}
+      ${tagsArr.length ? `<div class="dict-card-tags">${tagsArr.map((t) => `<span class="dict-tag">${escapeHtml(t)}</span>`).join('')}</div>` : ''}
+      ${row.remarks ? `<div class="dict-card-remarks">${escapeHtml(row.remarks)}</div>` : ''}
+      <div class="dict-card-foot">
+        <span>使用 ${Number(row.use_count || 0)} 次</span>
+        ${row.last_used_at ? `<span>上次 ${escapeHtml(String(row.last_used_at).slice(0, 10))}</span>` : ''}
+        ${row.created_by ? `<span>创建人 ${escapeHtml(row.created_by)}</span>` : ''}
+      </div>
+    </div>
+  `;
+}
+
+/** 打开通讯录编辑/新建弹窗（modal） */
+function dictOpenEditor(id) {
+  if (dictPageState.group !== 'dict') {
+    dictOpenLookupEditor(id);
+    return;
+  }
+  const def = DICT_CATEGORY_DEFS[dictPageState.category];
+  if (!def) return;
+  const row = id ? (dictPageState.rows || []).find((r) => r.id === id) : null;
+  const isEdit = !!row;
+  const c = row ? (row.content || {}) : {};
+  const overlay = document.getElementById('modalOverlay');
+  let modal = document.getElementById('modalDictEditor');
+  if (!modal) {
+    modal = document.createElement('div');
+    modal.id = 'modalDictEditor';
+    modal.className = 'modal';
+    document.body.appendChild(modal);
+  }
+  modal.innerHTML = `
+    <div class="modal-header">
+      <div class="modal-title">
+        <i data-lucide="${def.icon}" style="width:14px;height:14px;vertical-align:-2px;margin-right:6px"></i>
+        ${isEdit ? '编辑' : '新建'}${escapeHtml(def.label)}${isEdit && row ? ` · #${row.id}` : ''}
+      </div>
+      <button type="button" class="modal-close" onclick="dictCloseEditor()">×</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-grid form-grid-2col">
+        ${def.fields.map((f) => `
+          <div class="form-group ${f.required ? 'is-required' : ''}">
+            <label class="form-label">${escapeHtml(f.label)}${f.required ? ' <span class="required">*</span>' : ''}</label>
+            <input type="${f.type || 'text'}" class="form-control" id="dictF_${f.key}"
+                   value="${escapeHtml(c[f.key] || '')}"
+                   placeholder="${escapeHtml(f.placeholder || '')}">
+          </div>`).join('')}
+      </div>
+      <hr class="dict-form-divider">
+      <div class="form-grid form-grid-2col">
+        <div class="form-group">
+          <label class="form-label">简称 / 标签名</label>
+          <input type="text" class="form-control" id="dictShortLabel"
+                 value="${escapeHtml(row?.short_label || '')}"
+                 placeholder="便于业务页面快速识别（可留空）">
+        </div>
+        <div class="form-group">
+          <label class="form-label">标签（逗号分隔）</label>
+          <input type="text" class="form-control" id="dictTags"
+                 value="${escapeHtml(row?.tags || '')}"
+                 placeholder="如：北京,常用,VIP">
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="form-label">备注</label>
+        <textarea class="form-control" id="dictRemarks" rows="2"
+                  placeholder="可填写注意事项 / 说明">${escapeHtml(row?.remarks || '')}</textarea>
+      </div>
+      <label class="dict-pin-toggle">
+        <input type="checkbox" id="dictPinned" ${row?.pinned ? 'checked' : ''}>
+        <span>置顶（在列表与业务选择器中优先显示）</span>
+      </label>
+    </div>
+    <div class="modal-footer">
+      <button type="button" class="btn btn-secondary" onclick="dictCloseEditor()">取消</button>
+      <button type="button" class="btn btn-primary" onclick="dictSaveEditor(${row?.id || 'null'})">
+        ${isEdit ? '保存' : '新建'}
+      </button>
+    </div>
+  `;
+  openModal('modalDictEditor');
+  renderLucideIcons();
+  setTimeout(() => {
+    const first = modal.querySelector('input.form-control');
+    if (first) first.focus();
+  }, 50);
+}
+
+function dictCloseEditor() {
+  closeModal();
+}
+
+async function dictSaveEditor(id) {
+  const def = DICT_CATEGORY_DEFS[dictPageState.category];
+  if (!def) return;
+  const content = {};
+  for (const f of def.fields) {
+    const el = document.getElementById(`dictF_${f.key}`);
+    content[f.key] = el ? String(el.value || '').trim() : '';
+    if (f.required && !content[f.key]) {
+      showToast(`「${f.label}」不能为空`, 'warning');
+      if (el) el.focus();
+      return;
+    }
+  }
+  const nameKey = def.nameField || def.fields[0]?.key;
+  const fallbackKey = def.nameFallback;
+  const name = content[nameKey] || (fallbackKey ? content[fallbackKey] : '') || '';
+  if (!name.trim()) {
+    showToast('主标识不能为空', 'warning');
+    return;
+  }
+  const short_label = String(document.getElementById('dictShortLabel')?.value || '').trim();
+  const tags = String(document.getElementById('dictTags')?.value || '').trim();
+  const remarks = String(document.getElementById('dictRemarks')?.value || '').trim();
+  const pinned = !!document.getElementById('dictPinned')?.checked;
+  const body = {
+    category: dictPageState.category,
+    name,
+    short_label,
+    tags,
+    remarks,
+    pinned,
+    content,
+  };
+  try {
+    if (id && id !== 'null') {
+      await api('PUT', `/dict/${id}`, body);
+      showToast('已保存', 'success');
+    } else {
+      await api('POST', '/dict', body);
+      showToast('已新建', 'success');
+    }
+    dictCloseEditor();
+    await dictLoadList();
+  } catch (e) {
+    showToast(`保存失败：${e.message || '未知错误'}`, 'danger');
+  }
+}
+
+async function dictTogglePin(id, pinned) {
+  try {
+    await api('PUT', `/dict/${id}`, { pinned: !!pinned });
+    await dictLoadList();
+  } catch (e) {
+    showToast(`操作失败：${e.message}`, 'danger');
+  }
+}
+
+async function dictToggleActive(id, active) {
+  try {
+    await api('PUT', `/dict/${id}`, { is_active: !!active });
+    showToast(active ? '已启用' : '已停用', 'success');
+    await dictLoadList();
+  } catch (e) {
+    showToast(`操作失败：${e.message}`, 'danger');
+  }
+}
+
+async function dictHardDelete(id) {
+  if (!confirm('确认彻底删除这条记录？此操作不可撤销。停用记录建议使用「停用」而非删除。')) return;
+  try {
+    await api('DELETE', `/dict/${id}?hard=1`);
+    showToast('已删除', 'success');
+    await dictLoadList();
+  } catch (e) {
+    showToast(`删除失败：${e.message}`, 'danger');
+  }
+}
+
+/* ----- 表单选项（lookup_options）部分 ----- */
+
+function dictRenderLookupList() {
+  const listEl = document.getElementById('dictMainList');
+  const rows = dictPageState.rows || [];
+  const countEl = document.getElementById('dictToolbarCount');
+  if (countEl) {
+    let activeCount = 0;
+    rows.forEach((r) => { if (r.is_active) activeCount++; });
+    countEl.textContent = `${activeCount} 启用 / ${rows.length - activeCount} 停用`;
+  }
+  if (!rows.length) {
+    listEl.innerHTML = `
+      <div class="dict-empty">
+        <i data-lucide="inbox" style="width:32px;height:32px"></i>
+        <div class="dict-empty-title">暂无选项</div>
+        <div class="dict-empty-hint">点击右上角「新建」添加</div>
+      </div>`;
+    return;
+  }
+  listEl.innerHTML = `
+    <table class="dict-lookup-table">
+      <thead>
+        <tr>
+          <th style="width:60px">排序</th>
+          <th>显示名 (label)</th>
+          <th>值 (value)</th>
+          <th style="width:90px">状态</th>
+          <th style="width:160px;text-align:right">操作</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${rows.map((r) => `
+          <tr class="${!r.is_active ? 'is-inactive' : ''}">
+            <td>${Number(r.sort_order || 0)}</td>
+            <td>${escapeHtml(r.label || '')}</td>
+            <td><code class="dict-lookup-code">${escapeHtml(r.value || '')}</code></td>
+            <td>${r.is_active
+                ? '<span class="dict-status dict-status-active">启用</span>'
+                : '<span class="dict-status dict-status-inactive">停用</span>'}</td>
+            <td style="text-align:right">
+              <button type="button" class="icon-btn" title="编辑" onclick="dictOpenLookupEditor(${r.id})">
+                <i data-lucide="pencil" style="width:13px;height:13px"></i>
+              </button>
+              ${r.is_active
+                ? `<button type="button" class="icon-btn" title="停用" onclick="dictLookupSetActive(${r.id}, false)">
+                    <i data-lucide="archive" style="width:13px;height:13px"></i>
+                  </button>`
+                : `<button type="button" class="icon-btn" title="启用" onclick="dictLookupSetActive(${r.id}, true)">
+                    <i data-lucide="rotate-ccw" style="width:13px;height:13px"></i>
+                  </button>`}
+            </td>
+          </tr>`).join('')}
+      </tbody>
+    </table>
+  `;
+}
+
+function dictOpenLookupEditor(id) {
+  const cat = dictPageState.category;
+  const def = DICT_LOOKUP_DEFS.find((d) => d.category === cat);
+  const row = id ? (dictPageState.rows || []).find((r) => r.id === id) : null;
+  const isEdit = !!row;
+  let modal = document.getElementById('modalDictLookupEditor');
+  if (!modal) {
+    modal = document.createElement('div');
+    modal.id = 'modalDictLookupEditor';
+    modal.className = 'modal';
+    document.body.appendChild(modal);
+  }
+  modal.innerHTML = `
+    <div class="modal-header">
+      <div class="modal-title">${isEdit ? '编辑' : '新建'}：${escapeHtml(def?.label || cat)}${isEdit && row ? ` · #${row.id}` : ''}</div>
+      <button type="button" class="modal-close" onclick="dictCloseLookupEditor()">×</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-group">
+        <label class="form-label">显示名 (label) <span class="required">*</span></label>
+        <input type="text" class="form-control" id="dictLkLabel"
+               value="${escapeHtml(row?.label || '')}"
+               placeholder="表单下拉显示的中文">
+      </div>
+      <div class="form-group">
+        <label class="form-label">值 (value) <span class="required">*</span></label>
+        <input type="text" class="form-control" id="dictLkValue"
+               value="${escapeHtml(row?.value || '')}"
+               ${isEdit ? 'readonly' : ''}
+               placeholder="存数据库的真实值，一般等于 label">
+        ${isEdit ? '<div class="form-hint">编辑时不可修改 value（避免已引用的数据失效）</div>' : ''}
+      </div>
+      <div class="form-group">
+        <label class="form-label">排序 (越小越靠前)</label>
+        <input type="number" class="form-control" id="dictLkSort"
+               value="${Number(row?.sort_order || 0)}">
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button type="button" class="btn btn-secondary" onclick="dictCloseLookupEditor()">取消</button>
+      <button type="button" class="btn btn-primary" onclick="dictSaveLookup(${row?.id || 'null'})">
+        ${isEdit ? '保存' : '新建'}
+      </button>
+    </div>
+  `;
+  openModal('modalDictLookupEditor');
+  renderLucideIcons();
+}
+
+function dictCloseLookupEditor() {
+  closeModal();
+}
+
+async function dictSaveLookup(id) {
+  const label = String(document.getElementById('dictLkLabel')?.value || '').trim();
+  const value = String(document.getElementById('dictLkValue')?.value || '').trim();
+  const sort_order = parseInt(document.getElementById('dictLkSort')?.value, 10) || 0;
+  if (!label) { showToast('显示名不能为空', 'warning'); return; }
+  if (!id || id === 'null') {
+    if (!value) { showToast('值不能为空', 'warning'); return; }
+  }
+  try {
+    if (id && id !== 'null') {
+      await api('PUT', `/lookups/${id}`, { label, sort_order });
+    } else {
+      await api('POST', '/lookups', { category: dictPageState.category, label, value, sort_order });
+    }
+    showToast('已保存', 'success');
+    dictCloseLookupEditor();
+    await dictLoadList();
+  } catch (e) {
+    showToast(`保存失败：${e.message}`, 'danger');
+  }
+}
+
+async function dictLookupSetActive(id, active) {
+  try {
+    await api('PUT', `/lookups/${id}`, { is_active: active ? 1 : 0 });
+    showToast(active ? '已启用' : '已停用', 'success');
+    await dictLoadList();
+  } catch (e) {
+    showToast(`操作失败：${e.message}`, 'danger');
   }
 }
 
@@ -5950,6 +7350,66 @@ function materialPurchaseAggFourBuckets(rowsAllYear) {
   return { totals, counts };
 }
 
+function materialPurchaseBrandMatchesFilter(row, brandId, brands) {
+  if (!brandId) return true;
+  if (String(row.brand_id || '') === String(brandId)) return true;
+  const b = (brands || []).find((x) => String(x.id) === String(brandId));
+  if (!b) return false;
+  const rowBrand = String(row.brand_code || row.brand_name || row.brand || '').trim().toUpperCase();
+  const brandCode = String(b.brand_code || '').trim().toUpperCase();
+  const brandName = String(b.brand_name || '').trim().toUpperCase();
+  return !!rowBrand && (rowBrand === brandCode || rowBrand === brandName);
+}
+
+function materialPurchaseRowsFromReimbursements(rows, brands, brandId = '') {
+  return (rows || [])
+    .filter((r) => String(r.cost_module || '') === 'material_purchase')
+    .map((r) => {
+      const brand = String(r.brand || '').trim();
+      const brandInfo = (brands || []).find((b) => {
+        const code = String(b.brand_code || '').trim().toUpperCase();
+        const name = String(b.brand_name || '').trim().toUpperCase();
+        const rb = brand.toUpperCase();
+        return rb && (rb === code || rb === name);
+      });
+      const meta = reimbReadDetailMeta(r.remarks || '');
+      const detailRows = Array.isArray(meta.rows) ? meta.rows : [];
+      const purchaseItems = detailRows
+        .filter((row) => row && row.block === 'purchase')
+        .map((row) => ({
+          name: (REIMB_DETAIL_CATEGORY_OPTIONS.purchase || []).find(([v]) => v === row.category)?.[1] || row.category || '采购',
+          amount: roundMoney2(row.subtotal),
+        }))
+        .filter((row) => row.name && row.amount > 0);
+      const mapped = {
+        ...r,
+        source_type: 'reimbursement',
+        source_label: '报销申请',
+        id: r.id,
+        brand_id: brandInfo ? brandInfo.id : null,
+        brand_code: brandInfo?.brand_code || brand,
+        brand_name: brandInfo?.brand_name || brand,
+        purchase_date: r.date,
+        total_amount: roundMoney2(r.amount),
+        activity_project_code: r.related_project_code || '',
+        allocation_note: '报销申请',
+        remarks: reimbVisibleRemarks(r.remarks || ''),
+        items: purchaseItems,
+      };
+      return mapped;
+    })
+    .filter((row) => materialPurchaseBrandMatchesFilter(row, brandId, brands));
+}
+
+function sortMaterialPurchaseRows(rows) {
+  return (rows || []).slice().sort((a, b) => {
+    const at = new Date(a.purchase_date || 0).getTime() || 0;
+    const bt = new Date(b.purchase_date || 0).getTime() || 0;
+    if (bt !== at) return bt - at;
+    return Number(b.id || 0) - Number(a.id || 0);
+  });
+}
+
 const MATERIAL_FIXED_ITEM_NAMES = [
   '奶酪',
   '巧克力',
@@ -5968,19 +7428,21 @@ const MATERIAL_FIXED_ITEM_NAMES = [
 function materialPurchaseRowHtml(r) {
   const rem = r.remarks ? String(r.remarks).slice(0, 48) + (String(r.remarks).length > 48 ? '…' : '') : '—';
   const merged = isMergedFlag(r.merged_into_activity);
-  return `<tr>
-    <td>${r.id}</td>
+  const isReimbursement = r.source_type === 'reimbursement';
+  // 行点击 → 详情弹窗：reimbursement 派生走付款申请详情，直接登记走物料采购详情
+  const openCall = isReimbursement
+    ? `reimbursementOpenDetailModal(${r.id})`
+    : `materialPurchaseOpenDetailModal(${r.id})`;
+  return `<tr class="mp-list-row" style="cursor:pointer" onclick="${openCall}">
+    <td>${isReimbursement ? `报销#${escapeHtml(r.id)}` : escapeHtml(r.id)}</td>
     <td>${escapeHtml(fmtDate(r.purchase_date))}</td>
     <td><span class="badge badge-${brandColor(r.brand_code || r.brand_name)}">${escapeHtml(r.brand_name || r.brand_code || '—')}</span></td>
     <td class="amount" style="text-align:right">${fmtMoney(r.total_amount)}</td>
     <td>${listActivityProjectHtml(r)}</td>
     <td>${listAllocationNoteHtml(r.allocation_note)}</td>
     <td>${merged ? '<span class="badge badge-success">已计入</span>' : '<span class="badge badge-gray">未计入</span>'}</td>
+    <td>${paymentStatusHtml(r.payment_status, r.payment_order_id)}</td>
     <td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;font-size:12px;color:var(--text-secondary)" title="${escapeHtml(r.remarks || '')}">${escapeHtml(rem)}</td>
-    <td onclick="event.stopPropagation()" style="white-space:nowrap">
-      <button type="button" class="btn btn-secondary btn-sm" onclick="showMaterialPurchaseModal(${r.id})">编辑</button>
-      <button type="button" class="btn btn-danger btn-sm" onclick="deleteMaterialPurchaseRecord(${r.id})">删除</button>
-    </td>
   </tr>`;
 }
 
@@ -6008,10 +7470,11 @@ async function renderMaterialPurchases() {
     if (yf) yfOnlyQs.set('yearFrameId', String(yf));
     const yfOnlyStr = yfOnlyQs.toString();
 
-    const [rows, rowsAllYear, brands] = await Promise.all([
+    const [rows, rowsAllYear, brands, reimbursementRows] = await Promise.all([
       api('GET', `/material-purchases${qStr ? `?${qStr}` : ''}`),
       api('GET', `/material-purchases${yfOnlyStr ? `?${yfOnlyStr}` : ''}`),
       api('GET', '/brand?active=true'),
+      api('GET', `/reimbursements${yfOnlyStr ? `?${yfOnlyStr}` : ''}`),
     ]);
 
     const brandOpts = (brands || [])
@@ -6021,7 +7484,16 @@ async function renderMaterialPurchases() {
       )
       .join('');
 
-    const { totals: bt, counts: bc } = materialPurchaseAggFourBuckets(rowsAllYear);
+    const reimbursementMaterialRowsAllYear = materialPurchaseRowsFromReimbursements(reimbursementRows, brands);
+    const reimbursementMaterialRowsForList = materialPurchaseRowsFromReimbursements(
+      reimbursementRows,
+      brands,
+      materialPageState.filterBrandId
+    );
+    const rowsAllYearCombined = sortMaterialPurchaseRows([...(rowsAllYear || []), ...reimbursementMaterialRowsAllYear]);
+    const listRows = sortMaterialPurchaseRows([...(rows || []), ...reimbursementMaterialRowsForList]);
+
+    const { totals: bt, counts: bc } = materialPurchaseAggFourBuckets(rowsAllYearCombined);
     const grandTotal = roundMoney2(Object.values(bt).reduce((s, v) => s + roundMoney2(v), 0));
 
     const bucketDefs = [
@@ -6042,11 +7514,6 @@ async function renderMaterialPurchases() {
       )
       .join('');
 
-    const listRows = (materialPageState.mergeFilter === 'merged')
-      ? (rows || []).filter((r) => isMergedFlag(r.merged_into_activity))
-      : (materialPageState.mergeFilter === 'unmerged')
-        ? (rows || []).filter((r) => !isMergedFlag(r.merged_into_activity))
-        : (rows || []);
     const listBody = listRows.length
       ? listRows.map((r) => materialPurchaseRowHtml(r)).join('')
       : '<tr><td colspan="9" style="text-align:center;color:var(--text-muted);padding:20px">暂无记录</td></tr>';
@@ -6056,7 +7523,7 @@ async function renderMaterialPurchases() {
         <div class="stat-card accent">
           <div class="stat-label">物料采购合计（当前年框）</div>
           <div class="stat-value sm">${fmtMoney(grandTotal)}</div>
-          <div class="stat-sub">四卡片之和 · 与下方列表筛选无关</div>
+          <div class="stat-sub">采购登记 + 报销申请</div>
         </div>
       </div>
       <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:12px;margin-bottom:16px">
@@ -6065,25 +7532,18 @@ async function renderMaterialPurchases() {
       <div class="card">
         <div class="card-header" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
           <div>
-            <div class="card-title">登记记录</div>
-            <div class="card-sub">固定费用项目 + 自定义项目；金额保留两位小数</div>
+            <div class="card-title">采购记录</div>
           </div>
           <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
             <select class="filter-select" id="mpListBrandFilter" onchange="materialSetBrandFilter(this.value)">
               <option value="">全部品牌</option>${brandOpts}
             </select>
-            <select class="filter-select" id="mpListMergeFilter" onchange="materialSetMergeFilter(this.value)">
-              <option value="all" ${materialPageState.mergeFilter === 'all' ? 'selected' : ''}>计入：全部</option>
-              <option value="unmerged" ${materialPageState.mergeFilter === 'unmerged' ? 'selected' : ''}>计入：未计入</option>
-              <option value="merged" ${materialPageState.mergeFilter === 'merged' ? 'selected' : ''}>计入：已计入</option>
-            </select>
-            <button type="button" class="btn btn-primary btn-sm" onclick="showMaterialPurchaseModal(null)">+ 新建登记</button>
           </div>
         </div>
         <div class="card-body" style="padding:0">
           <div class="table-wrapper">
             <table>
-              <thead><tr><th>ID</th><th>日期</th><th>品牌</th><th style="text-align:right">合计</th><th>关联项目</th><th>计入说明</th><th>计入状态</th><th>备注</th><th>操作</th></tr></thead>
+              <thead><tr><th>ID</th><th>日期</th><th>品牌</th><th style="text-align:right">合计</th><th>关联项目</th><th>计入说明</th><th>计入状态</th><th>付款状态</th><th>备注</th></tr></thead>
               <tbody>${listBody}</tbody>
             </table>
           </div>
@@ -6229,6 +7689,10 @@ async function showMaterialPurchaseModal(id) {
         <label class="form-label">报销日期 <span class="required">*</span></label>
         <input type="date" class="form-control" id="mpPurchaseDate" required value="${dateVal}">
       </div>
+      <div class="form-group">
+        <label class="form-label">收款方</label>
+        <input type="text" class="form-control" id="mpPayeeName" placeholder="用于付款合并" value="${escapeHtml((record && record.payee_name) || '')}">
+      </div>
     </div>
     <div class="form-group">
       <div class="form-label">固定费用项目（¥）</div>
@@ -6312,6 +7776,7 @@ async function saveMaterialPurchaseForm() {
     year_frame_id: currentYearFrameId || 1,
     brand_id,
     purchase_date,
+    payee_name: document.getElementById('mpPayeeName')?.value?.trim() || null,
     items,
     remarks,
     activity_id: activityId || null,
@@ -6392,9 +7857,9 @@ function reimbSelectActivity(id) {
       lbl.style.display = 'none';
     }
   }
-  const brandEl = document.getElementById('reimbBrand');
-  if (brandEl && a && !brandEl.value) {
-    brandEl.value = a.brand || '';
+  if (a && a.brand) {
+    const mapped = reimbDetailBrandFromLegacyBrand(a.brand);
+    if (mapped) reimbDetailDefaultBrand = mapped;
   }
 }
 
@@ -6413,7 +7878,536 @@ function reimbProjectInputChanged() {
       const a = (reimbursementPageState.activities || []).find((x) => Number(x.id) === Number(id));
       lbl.innerHTML = a ? reimbActivityLine(a) : code;
       lbl.style.display = 'block';
+      if (a && a.brand) {
+        const mapped = reimbDetailBrandFromLegacyBrand(a.brand);
+        if (mapped) reimbDetailDefaultBrand = mapped;
+      }
     }
+  }
+}
+
+function reimbVisibleRemarks(raw) {
+  const s = String(raw || '');
+  const idx = s.indexOf(REIMB_DETAIL_META_PREFIX);
+  return idx >= 0 ? s.slice(0, idx).trim() : s.trim();
+}
+
+function reimbReadDetailMeta(raw) {
+  const s = String(raw || '');
+  const idx = s.indexOf(REIMB_DETAIL_META_PREFIX);
+  if (idx < 0) return {};
+  try {
+    return JSON.parse(s.slice(idx + REIMB_DETAIL_META_PREFIX.length).trim()) || {};
+  } catch {
+    return {};
+  }
+}
+
+function reimbParseJsonObject(raw) {
+  if (!raw) return {};
+  if (typeof raw === 'object' && !Array.isArray(raw)) return raw;
+  try {
+    const parsed = JSON.parse(String(raw));
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function reimbRemarksWithMeta(remarks, meta) {
+  const visible = String(remarks || '').trim();
+  return `${visible}${REIMB_DETAIL_META_PREFIX}${JSON.stringify(meta)}`;
+}
+
+function reimbCategoryOptionsHtml(block, selected) {
+  const opts = REIMB_DETAIL_CATEGORY_OPTIONS[block] || [];
+  return opts
+    .map(([value, label]) => `<option value="${escapeHtml(value)}" ${value === selected ? 'selected' : ''}>${escapeHtml(label)}</option>`)
+    .join('');
+}
+
+function reimbBlockOptionsHtml(selected) {
+  return REIMB_DETAIL_BLOCKS
+    .map((x) => `<option value="${x.value}" ${x.value === selected ? 'selected' : ''}>${x.label}</option>`)
+    .join('');
+}
+
+let reimbDetailDefaultBrand = '内部';
+
+function reimbBrandOptionsHtml(selected) {
+  return REIMB_DETAIL_BRAND_OPTIONS
+    .map((v) => `<option value="${escapeHtml(v)}" ${v === selected ? 'selected' : ''}>${escapeHtml(v)}</option>`)
+    .join('');
+}
+
+function reimbNewDetailRowData(row, index) {
+  const block = row?.block || 'personnel';
+  const firstCategory = (REIMB_DETAIL_CATEGORY_OPTIONS[block] || [])[0]?.[0] || '';
+  const rawBrand = row?.brand;
+  const brand =
+    typeof rawBrand === 'string' && rawBrand.trim()
+      ? rawBrand.trim()
+      : reimbDetailDefaultBrand || REIMB_DETAIL_BRAND_OPTIONS[3] || '内部';
+  return {
+    brand,
+    block,
+    category: row?.category || firstCategory,
+    description: row?.description || '',
+    quantity: row?.quantity || '',
+    unit_price: row?.unit_price || '',
+    invoice: row?.invoice || '有',
+    invoice_date: row?.invoice_date || '',
+    invoice_no: row?.invoice_no || '',
+    applicant: row?.applicant || getCurrentUserName(),
+    remarks: row?.remarks || '',
+    _index: index,
+  };
+}
+
+function reimbDetailRowHtml(row, index) {
+  const r = reimbNewDetailRowData(row, index);
+  return `
+    <tr class="reimb-detail-row">
+      <td class="reimb-row-no">${index + 1}</td>
+      <td class="reimb-col-brand"><select class="form-control reimb-line-brand" title="按品牌分摊年框">${reimbBrandOptionsHtml(r.brand)}</select></td>
+      <td><select class="form-control reimb-line-block" onchange="reimbDetailBlockChanged(this)">${reimbBlockOptionsHtml(r.block)}</select></td>
+      <td><select class="form-control reimb-line-category">${reimbCategoryOptionsHtml(r.block, r.category)}</select></td>
+      <td><input type="text" class="form-control reimb-line-desc" value="${escapeHtml(r.description)}"></td>
+      <td><input type="number" class="form-control reimb-line-qty" min="0" step="0.01" value="${escapeHtml(r.quantity)}" oninput="reimbUpdateDetailTotals()"></td>
+      <td><input type="number" class="form-control reimb-line-price" min="0" step="0.01" value="${escapeHtml(r.unit_price)}" oninput="reimbUpdateDetailTotals()"></td>
+      <td class="amount reimb-line-subtotal">¥0.00</td>
+      <td>
+        <select class="form-control reimb-line-invoice">
+          <option value="有" ${r.invoice !== '无' ? 'selected' : ''}>有</option>
+          <option value="无" ${r.invoice === '无' ? 'selected' : ''}>无</option>
+        </select>
+      </td>
+      <td><input type="date" class="form-control reimb-line-invoice-date" value="${escapeHtml(r.invoice_date)}"></td>
+      <td><input type="text" class="form-control reimb-line-invoice-no" value="${escapeHtml(r.invoice_no)}"></td>
+      <td><input type="text" class="form-control reimb-line-applicant" value="${escapeHtml(r.applicant)}"></td>
+      <td><input type="text" class="form-control reimb-line-remarks" value="${escapeHtml(r.remarks)}"></td>
+      <td><button type="button" class="btn btn-secondary btn-sm" onclick="reimbRemoveDetailRow(this)">删</button></td>
+    </tr>`;
+}
+
+function reimbAppendDetailRow(row = null) {
+  const body = document.getElementById('reimbDetailRows');
+  if (!body) return;
+  body.insertAdjacentHTML('beforeend', reimbDetailRowHtml(row, body.querySelectorAll('.reimb-detail-row').length));
+  reimbRenumberDetailRows();
+  reimbUpdateDetailTotals();
+}
+
+function reimbRemoveDetailRow(btn) {
+  const row = btn?.closest?.('.reimb-detail-row');
+  if (row) row.remove();
+  const body = document.getElementById('reimbDetailRows');
+  if (body && !body.querySelector('.reimb-detail-row')) {
+    for (let i = 0; i < 3; i += 1) reimbAppendDetailRow(null);
+  }
+  reimbRenumberDetailRows();
+  reimbUpdateDetailTotals();
+}
+
+function reimbRenumberDetailRows() {
+  document.querySelectorAll('#reimbDetailRows .reimb-detail-row').forEach((row, idx) => {
+    const no = row.querySelector('.reimb-row-no');
+    if (no) no.textContent = String(idx + 1);
+  });
+}
+
+function reimbDetailBlockChanged(sel) {
+  const row = sel?.closest?.('.reimb-detail-row');
+  const cat = row?.querySelector?.('.reimb-line-category');
+  if (!cat) return;
+  cat.innerHTML = reimbCategoryOptionsHtml(sel.value, '');
+}
+
+function reimbCollectDetailRows() {
+  const rows = [];
+  document.querySelectorAll('#reimbDetailRows .reimb-detail-row').forEach((row) => {
+    const quantity = roundMoney2(row.querySelector('.reimb-line-qty')?.value);
+    const unit_price = roundMoney2(row.querySelector('.reimb-line-price')?.value);
+    const subtotal = roundMoney2(quantity * unit_price);
+    const item = {
+      brand: row.querySelector('.reimb-line-brand')?.value?.trim() || '',
+      block: row.querySelector('.reimb-line-block')?.value || '',
+      category: row.querySelector('.reimb-line-category')?.value || '',
+      description: row.querySelector('.reimb-line-desc')?.value?.trim() || '',
+      quantity,
+      unit_price,
+      subtotal,
+      invoice: row.querySelector('.reimb-line-invoice')?.value || '有',
+      invoice_date: row.querySelector('.reimb-line-invoice-date')?.value || '',
+      invoice_no: row.querySelector('.reimb-line-invoice-no')?.value?.trim() || '',
+      applicant: row.querySelector('.reimb-line-applicant')?.value?.trim() || '',
+      remarks: row.querySelector('.reimb-line-remarks')?.value?.trim() || '',
+    };
+    if (item.description || item.quantity || item.unit_price || item.subtotal || item.invoice_no || item.remarks) rows.push(item);
+  });
+  return rows;
+}
+
+function reimbResolveRecordBrand(rows) {
+  for (const row of rows || []) {
+    const b = String(row?.brand || '').trim();
+    if (b) return b;
+  }
+  return '';
+}
+
+function reimbRowsToCostDetails(rows, advanceAmount) {
+  const details = {};
+  rows.forEach((row) => {
+    const key = row.category;
+    if (!key) return;
+    details[key] = roundMoney2((details[key] || 0) + roundMoney2(row.subtotal));
+  });
+  if (advanceAmount > 0) details.advance_offset = -roundMoney2(advanceAmount);
+  return details;
+}
+
+function reimbUpdateDetailTotals() {
+  let gross = 0;
+  document.querySelectorAll('#reimbDetailRows .reimb-detail-row').forEach((row) => {
+    const subtotal = roundMoney2(roundMoney2(row.querySelector('.reimb-line-qty')?.value) * roundMoney2(row.querySelector('.reimb-line-price')?.value));
+    gross += subtotal;
+    const el = row.querySelector('.reimb-line-subtotal');
+    if (el) el.textContent = fmtMoney(subtotal);
+  });
+  const useAdvance = !!document.getElementById('reimbUseAdvance')?.checked;
+  const advance = useAdvance ? roundMoney2(document.getElementById('reimbAdvanceAmount')?.value) : 0;
+  const net = roundMoney2(gross - advance);
+  const grossEl = document.getElementById('reimbGrossTotal');
+  const netEl = document.getElementById('reimbCostTotal');
+  if (grossEl) grossEl.textContent = fmtMoney(gross);
+  if (netEl) {
+    netEl.textContent = fmtMoney(net);
+    netEl.style.color = net > 0 ? 'var(--accent)' : net < 0 ? 'var(--danger)' : 'var(--text-secondary)';
+    netEl.style.fontWeight = '700';
+  }
+}
+
+function reimbOnCostAttributionChange() {
+  const mergedNote = document.getElementById('reimbMergedNote');
+  const merged = mergedNote && mergedNote.dataset.merged === '1';
+  if (merged) return;
+  const v = document.querySelector('input[name="reimbCostAttribution"]:checked')?.value || 'activity';
+  const isNon = v === 'non_activity';
+  const proj = document.querySelector('.reimb-form-body .reimb-project-field');
+  const syncRow = document.querySelector('.reimb-form-body .reimb-sync-row');
+  const costMod = document.getElementById('reimbCostModule');
+  if (proj) proj.style.display = isNon ? 'none' : '';
+  if (syncRow) syncRow.style.display = isNon ? 'none' : '';
+  if (costMod) {
+    if (isNon) {
+      costMod.value = 'general';
+      costMod.setAttribute('disabled', 'disabled');
+    } else {
+      costMod.removeAttribute('disabled');
+    }
+  }
+  if (isNon) {
+    const hid = document.getElementById('reimbActivityId');
+    const pci = document.getElementById('reimbProjectCode');
+    if (hid) hid.value = '';
+    if (pci) pci.value = '';
+    const syncEl = document.getElementById('reimbSyncToActivity');
+    if (syncEl && !syncEl.disabled) syncEl.checked = false;
+    const picked = document.getElementById('reimbActivityPicked');
+    if (picked) {
+      picked.style.display = 'none';
+      picked.textContent = '';
+    }
+  }
+  reimbOnSyncToActivityChange();
+  reimbUpdateDetailTotals();
+}
+
+/**
+ * 「同步项目成本」勾选状态变更：
+ * 1. 项目编号 label 动态加/去 * 红星，提示必填
+ * 2. 勾选时隐藏费用明细中的「品牌」列（同步项目成本场景下品牌由项目自动决定，不允许逐行差异化）
+ * 3. 未勾选时品牌列恢复可见
+ */
+function reimbOnSyncToActivityChange() {
+  const syncEl = document.getElementById('reimbSyncToActivity');
+  const checked = !!syncEl?.checked;
+  const lbl = document.getElementById('reimbProjectCodeLabel');
+  if (lbl) {
+    const existed = lbl.querySelector('.required');
+    if (checked && !existed) {
+      lbl.insertAdjacentHTML('beforeend', ' <span class="required">*</span>');
+    } else if (!checked && existed) {
+      existed.remove();
+    }
+  }
+  const table = document.getElementById('reimbDetailTable');
+  if (table) table.classList.toggle('no-brand-col', checked);
+  const projInput = document.getElementById('reimbProjectCode');
+  if (projInput) {
+    if (checked) {
+      projInput.classList.add('reimb-project-required');
+      projInput.setAttribute('placeholder', '已勾选「同步项目成本」，必须从下拉选中项目编号');
+    } else {
+      projInput.classList.remove('reimb-project-required');
+      projInput.setAttribute('placeholder', '输入关键字并从下拉选择项目编号');
+    }
+  }
+}
+
+function poQuickFilter(sourceType) {
+  const el = document.getElementById('poFilter_sourceType');
+  if (el) el.value = sourceType || '';
+  paymentOrderLoadCandidates();
+}
+
+function reimbToggleAdvanceAmount() {
+  const checked = !!document.getElementById('reimbUseAdvance')?.checked;
+  const wrap = document.getElementById('reimbAdvanceAmountWrap');
+  if (wrap) wrap.style.display = checked ? 'block' : 'none';
+  reimbUpdateDetailTotals();
+}
+
+function reimbClaimStatusChanged() {
+  const status = document.getElementById('reimbClaimStatus')?.value || 'draft';
+  const wrap = document.getElementById('reimbPaymentDateWrap');
+  const paymentDate = document.getElementById('reimbPaymentDate');
+  if (wrap) wrap.style.display = status === 'paid' ? 'block' : 'none';
+  if (status === 'paid' && paymentDate && !paymentDate.value) paymentDate.value = todayDateInputValue();
+}
+
+function paymentOrderKey(row) {
+  return `${row.source_type}:${row.source_id}`;
+}
+
+function paymentOrderSelectedRows() {
+  return (paymentOrderState.candidates || []).filter((row) => paymentOrderState.selectedKeys.has(paymentOrderKey(row)));
+}
+
+function paymentOrderDescriptionText(row) {
+  const text = String(row?.description || '').trim();
+  const idx = text.indexOf(REIMB_DETAIL_META_MARKER);
+  return idx >= 0 ? text.slice(0, idx).trim() || '成本登记' : text;
+}
+
+function paymentOrderValidateSelection(rows) {
+  if (!rows.length) {
+    showToast('请先选择待付款记录', 'warning');
+    return false;
+  }
+  const payees = [...new Set(rows.map((r) => String(r.payee_name || '').trim()).filter(Boolean))];
+  if (payees.length !== 1 || rows.some((r) => !String(r.payee_name || '').trim())) {
+    showToast('只能合并同一收款方的记录；空收款方请先回来源记录补填', 'warning');
+    return false;
+  }
+  return true;
+}
+
+async function showCorporatePaymentTodo() {
+  if (!currentYearFrameId) {
+    showToast('请先选择年度', 'warning');
+    return;
+  }
+  paymentOrderState = { candidates: [], selectedKeys: new Set(), previewRows: [] };
+  const body = document.getElementById('modalPaymentOrderBody');
+  if (body) body.innerHTML = '<div class="empty-state"><div class="skeleton skeleton-title"></div></div>';
+  openModal('modalPaymentOrder');
+  await paymentOrderLoadCandidates();
+}
+
+async function paymentOrderLoadCandidates() {
+  const qs = new URLSearchParams();
+  qs.set('yearFrameId', String(currentYearFrameId || ''));
+  ['keyword', 'payee', 'brand', 'sourceType', 'projectCode', 'dateFrom', 'dateTo'].forEach((id) => {
+    const v = document.getElementById(`poFilter_${id}`)?.value?.trim();
+    if (v) qs.set(id, v);
+  });
+  try {
+    paymentOrderState.candidates = await api('GET', `/payment-orders/candidates?${qs.toString()}`);
+    const visibleKeys = new Set(paymentOrderState.candidates.map(paymentOrderKey));
+    paymentOrderState.selectedKeys = new Set([...paymentOrderState.selectedKeys].filter((k) => visibleKeys.has(k)));
+    paymentOrderRenderModal();
+  } catch (e) {
+    const body = document.getElementById('modalPaymentOrderBody');
+    if (body) body.innerHTML = `<div class="empty-state"><div class="empty-title">加载失败</div><div class="empty-sub">${escapeHtml(e.message || '')}</div></div>`;
+  }
+}
+
+function paymentOrderToggleRow(key, checked) {
+  if (checked) paymentOrderState.selectedKeys.add(key);
+  else paymentOrderState.selectedKeys.delete(key);
+  paymentOrderState.previewRows = [];
+  paymentOrderRenderModal();
+}
+
+function paymentOrderRenderModal() {
+  const body = document.getElementById('modalPaymentOrderBody');
+  if (!body) return;
+  const filterVals = {};
+  ['keyword', 'payee', 'brand', 'sourceType', 'projectCode', 'dateFrom', 'dateTo'].forEach((id) => {
+    filterVals[id] = document.getElementById(`poFilter_${id}`)?.value || '';
+  });
+  const orderDateVal = document.getElementById('poOrderDate')?.value || todayDateInputValue();
+  const paymentDateVal = document.getElementById('poPaymentDate')?.value || todayDateInputValue();
+  const remarksVal = document.getElementById('poRemarks')?.value || '';
+  const rows = paymentOrderState.candidates || [];
+  const selected = paymentOrderSelectedRows();
+  const total = roundMoney2(selected.reduce((s, r) => s + roundMoney2(r.amount), 0));
+  const previewRows = paymentOrderState.previewRows || [];
+  const sourceOpts = [
+    ['', '全部板块'],
+    ['warehouse', '仓储'],
+    ['logistics', '物流'],
+    ['material_purchase', '物料采购'],
+    ['prop_repair', '道具维修'],
+    ['reimbursement', '成本登记'],
+  ].map(([v, t]) => `<option value="${v}">${t}</option>`).join('');
+  body.innerHTML = `
+    <div class="payment-order-wizard" style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:12px">
+      <span style="font-size:12px;color:var(--text-secondary)">新建对公 · 快捷筛选未付：</span>
+      <button type="button" class="btn btn-secondary btn-sm" onclick="poQuickFilter('warehouse')">仓储</button>
+      <button type="button" class="btn btn-secondary btn-sm" onclick="poQuickFilter('logistics')">物流</button>
+      <button type="button" class="btn btn-secondary btn-sm" onclick="poQuickFilter('material_purchase')">物料采购</button>
+      <button type="button" class="btn btn-secondary btn-sm" onclick="poQuickFilter('prop_repair')">道具维修</button>
+      <button type="button" class="btn btn-secondary btn-sm" onclick="poQuickFilter('')">全部</button>
+    </div>
+    <div class="form-grid payment-order-filter-grid">
+      <input class="form-control" id="poFilter_keyword" placeholder="关键词/城市/说明/单号" value="${escapeHtml(filterVals.keyword || '')}">
+      <input class="form-control" id="poFilter_payee" placeholder="收款方精确筛选" value="${escapeHtml(filterVals.payee || '')}">
+      <input class="form-control" id="poFilter_projectCode" placeholder="项目编号" value="${escapeHtml(filterVals.projectCode || '')}">
+      <select class="form-control" id="poFilter_sourceType">${sourceOpts}</select>
+      <select class="form-control" id="poFilter_brand">
+        <option value="">全部品牌</option>${FIXED_BRAND_CODES.map((b) => `<option value="${b}">${b}</option>`).join('')}
+      </select>
+      <input type="date" class="form-control" id="poFilter_dateFrom" value="${escapeHtml(filterVals.dateFrom || '')}">
+      <input type="date" class="form-control" id="poFilter_dateTo" value="${escapeHtml(filterVals.dateTo || '')}">
+      <button type="button" class="btn btn-secondary" onclick="paymentOrderLoadCandidates()">筛选</button>
+    </div>
+    <div class="form-grid payment-order-meta-grid">
+      <div class="form-group" style="margin:0">
+        <label class="form-label">申请日期</label>
+        <input type="date" class="form-control" id="poOrderDate" value="${escapeHtml(orderDateVal)}">
+      </div>
+      <div class="form-group" style="margin:0">
+        <label class="form-label">付款日期</label>
+        <input type="date" class="form-control" id="poPaymentDate" value="${escapeHtml(paymentDateVal)}">
+      </div>
+      <div class="form-group" style="margin:0">
+        <label class="form-label">备注</label>
+        <input type="text" class="form-control" id="poRemarks" placeholder="选填" value="${escapeHtml(remarksVal)}">
+      </div>
+    </div>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin:8px 0 10px">
+      <div style="font-size:13px;color:var(--text-secondary)">未支付记录 ${rows.length} 条 · 已选 ${selected.length} 条</div>
+      <div class="amount" style="font-weight:800">${fmtMoney(total)}</div>
+    </div>
+    <div class="table-wrapper payment-order-table-wrap">
+      <table class="data-table payment-order-table">
+        <thead><tr><th style="width:42px"></th><th>日期</th><th>板块</th><th>收款方</th><th>品牌</th><th>项目编号</th><th>城市</th><th>说明</th><th style="text-align:right">金额</th></tr></thead>
+        <tbody>
+          ${rows.length ? rows.map((r) => {
+            const key = paymentOrderKey(r);
+            const desc = paymentOrderDescriptionText(r);
+            return `<tr>
+              <td><input type="checkbox" class="payment-order-check" ${paymentOrderState.selectedKeys.has(key) ? 'checked' : ''} onchange="paymentOrderToggleRow('${escapeHtml(key)}', this.checked)" aria-label="选择该条待付款记录"></td>
+              <td>${escapeHtml(fmtDateShort(r.source_date))}</td>
+              <td>${escapeHtml(paymentSourceLabel(r.source_type))}</td>
+              <td>${escapeHtml(r.payee_name || '（未填）')}</td>
+              <td>${escapeHtml(r.brand || '—')}</td>
+              <td>${escapeHtml(r.project_code || '—')}</td>
+              <td>${escapeHtml(r.city || '—')}</td>
+              <td class="payment-order-desc-cell" title="${escapeHtml(desc || '')}">${escapeHtml(desc || '—')}</td>
+              <td class="amount" style="text-align:right">${fmtMoney(r.amount)}</td>
+            </tr>`;
+          }).join('') : '<tr><td colspan="9" style="text-align:center;color:var(--text-muted);padding:22px">暂无未支付记录</td></tr>'}
+        </tbody>
+      </table>
+    </div>
+    <div id="paymentOrderPreviewBlock" style="margin-top:14px">${previewRows.length ? paymentOrderPreviewBlockHtml(previewRows) : ''}</div>
+  `;
+  ['sourceType', 'brand'].forEach((id) => {
+    const el = document.getElementById(`poFilter_${id}`);
+    if (el) el.value = filterVals[id] || '';
+  });
+}
+
+function paymentOrderPreviewBlockHtml(rows) {
+  const payee = rows[0]?.payee_name || '';
+  const total = roundMoney2(rows.reduce((s, r) => s + roundMoney2(r.amount), 0));
+  return `<div style="border:1px solid var(--border);border-radius:8px;padding:12px;background:var(--bg-elevated)">
+    <div style="display:flex;justify-content:space-between;gap:12px;align-items:center;margin-bottom:10px">
+      <strong>付款申请单预览 · ${escapeHtml(payee)}</strong>
+      <span class="amount" style="font-weight:800">${fmtMoney(total)}</span>
+    </div>
+    <table class="data-table"><thead><tr><th>日期</th><th>板块</th><th>项目编号</th><th>品牌</th><th>城市</th><th>说明</th><th style="text-align:right">金额</th></tr></thead>
+      <tbody>${rows.map((r) => `<tr><td>${escapeHtml(fmtDateShort(r.source_date))}</td><td>${escapeHtml(paymentSourceLabel(r.source_type))}</td><td>${escapeHtml(r.project_code || '—')}</td><td>${escapeHtml(r.brand || '—')}</td><td>${escapeHtml(r.city || '—')}</td><td>${escapeHtml(paymentOrderDescriptionText(r) || '—')}</td><td class="amount" style="text-align:right">${fmtMoney(r.amount)}</td></tr>`).join('')}</tbody>
+    </table>
+  </div>`;
+}
+
+function paymentOrderPreviewSelected() {
+  const rows = paymentOrderSelectedRows();
+  if (!paymentOrderValidateSelection(rows)) return;
+  paymentOrderState.previewRows = rows;
+  const block = document.getElementById('paymentOrderPreviewBlock');
+  if (block) block.innerHTML = paymentOrderPreviewBlockHtml(rows);
+}
+
+async function paymentOrderConfirmSave() {
+  if (!hasWriteAccess()) {
+    showToast('仅管理员可保存', 'warning');
+    return;
+  }
+  const rows = paymentOrderSelectedRows();
+  if (!paymentOrderValidateSelection(rows)) return;
+  if (!paymentOrderState.previewRows.length) {
+    showToast('请先预览付款申请单', 'warning');
+    return;
+  }
+  const body = {
+    year_frame_id: currentYearFrameId,
+    payee_name: rows[0].payee_name,
+    order_date: document.getElementById('poOrderDate')?.value || todayDateInputValue(),
+    payment_date: document.getElementById('poPaymentDate')?.value || todayDateInputValue(),
+    remarks: document.getElementById('poRemarks')?.value?.trim() || null,
+    items: rows.map((r) => ({ source_type: r.source_type, source_id: r.source_id })),
+  };
+  try {
+    const saved = await api('POST', '/payment-orders', body);
+    showToast(`付款单已保存：${saved.order_no || saved.id}`, 'success');
+    closeModal();
+    if (currentPage === 'reimbursement') await renderReimbursements();
+    if (currentPage === 'logistics') await loadLogistics();
+    if (currentPage === 'warehouse') await loadWarehouse();
+    if (currentPage === 'material') await renderMaterialPurchases();
+    if (currentPage === 'prop-repair') await renderPropRepairs();
+  } catch (e) {
+    showToast(e.message || '保存失败', 'error');
+  }
+}
+
+async function paymentOrderViewDetail(id) {
+  try {
+    const order = await api('GET', `/payment-orders/${id}`);
+    const rows = Array.isArray(order.items) ? order.items : [];
+    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>付款申请单</title>
+      <style>body{font-family:sans-serif;padding:24px;color:#111}table{border-collapse:collapse;width:100%}th,td{border:1px solid #d9dee8;padding:8px;font-size:13px}th{background:#f5f7fb;text-align:left}.amount{text-align:right;font-weight:700}</style>
+    </head><body>
+      <h2>付款申请单</h2>
+      <p>付款单号：${escapeHtml(order.order_no || `#${order.id}`)}　收款方：${escapeHtml(order.payee_name || '—')}</p>
+      <p>申请日期：${escapeHtml(fmtDateShort(order.order_date))}　付款日期：${escapeHtml(fmtDateShort(order.payment_date))}　合计：<strong>${fmtMoney(order.total_amount)}</strong></p>
+      <table><thead><tr><th>日期</th><th>来源</th><th>项目编号</th><th>品牌</th><th>城市</th><th>说明</th><th>金额</th></tr></thead>
+      <tbody>${rows.map((r) => `<tr><td>${escapeHtml(fmtDateShort(r.source_date))}</td><td>${escapeHtml(paymentSourceLabel(r.source_type))} #${escapeHtml(r.source_id)}</td><td>${escapeHtml(r.project_code || '—')}</td><td>${escapeHtml(r.brand || '—')}</td><td>${escapeHtml(r.city || '—')}</td><td>${escapeHtml(paymentOrderDescriptionText(r) || '—')}</td><td class="amount">${fmtMoney(r.amount)}</td></tr>`).join('')}</tbody></table>
+      <p>备注：${escapeHtml(order.remarks || '—')}</p>
+    </body></html>`;
+    openReimbursementPreviewModal({
+      title: `付款单 ${order.order_no || `#${order.id}`}`,
+      type: 'pdf',
+      bodyHtml: `<iframe id="reimbPreviewPdfFrame" style="width:100%;height:70vh;border:1px solid #e5e7eb;border-radius:8px;background:#fff" srcdoc="${escapeHtml(html)}"></iframe>`,
+    });
+  } catch (e) {
+    showToast(e.message || '加载付款单失败', 'error');
   }
 }
 
@@ -6486,13 +8480,19 @@ function reimbExportPayloadFromForm() {
   const remarks = document.getElementById('reimbRemarks')?.value?.trim() || '';
   const actId = parseInt(document.getElementById('reimbActivityId')?.value, 10);
   const act = (reimbursementPageState.activities || []).find((x) => Number(x.id) === actId);
-  const brand = document.getElementById('reimbBrand')?.value?.trim() || '';
+  const payee_name = document.getElementById('reimbPayeeName')?.value?.trim() || '';
   const payment_type = document.getElementById('reimbPaymentType')?.value || 'personal_reimbursement';
   const cost_module = document.getElementById('reimbCostModule')?.value || 'activity';
   const claim_status = document.getElementById('reimbClaimStatus')?.value || 'draft';
-  const has_invoice = !!document.getElementById('reimbHasInvY')?.checked;
-  const invoices = has_invoice ? reimbCollectInvoicesFromForm() : [];
-  const cost_details = collectCostDetails('reimb-cost-field');
+  const rows = reimbCollectDetailRows();
+  const brand = reimbResolveRecordBrand(rows);
+  const use_advance = !!document.getElementById('reimbUseAdvance')?.checked;
+  const advance_amount = use_advance ? roundMoney2(document.getElementById('reimbAdvanceAmount')?.value) : 0;
+  const invoices = rows
+    .filter((row) => row.invoice_no && row.invoice_date)
+    .map((row) => ({ invoice_content: row.description, invoice_no: row.invoice_no, invoice_date: row.invoice_date, invoice_kind: '普票' }));
+  const has_invoice = invoices.length > 0;
+  const cost_details = reimbRowsToCostDetails(rows, advance_amount);
   const amount = roundMoney2(calcCostDetailsTotal(cost_details));
   const merged = document.getElementById('reimbMergedNote')?.dataset?.merged === '1';
   return {
@@ -6501,6 +8501,7 @@ function reimbExportPayloadFromForm() {
     remarks,
     activity_id: actId,
     brand,
+    payee_name,
     payment_type,
     cost_module,
     claim_status,
@@ -6508,6 +8509,8 @@ function reimbExportPayloadFromForm() {
     has_invoice,
     invoices,
     cost_details,
+    detail_rows: rows,
+    advance_amount,
     amount,
     merged_into_activity: merged,
   };
@@ -6523,7 +8526,7 @@ function buildReimbursementCsvText(p) {
   lines.push(['报销日期', p.date, '金额合计', p.amount].join(','));
   lines.push(['申请类型', reimbPaymentTypeLabel(p.payment_type), '成本板块', reimbCostModuleLabel(p.cost_module), '状态', reimbClaimStatusLabel(p.claim_status)].join(','));
   lines.push(['品牌', esc(p.brand), '项目编号', esc(p.project_code), '关联场次ID', p.activity_id || ''].join(','));
-  lines.push(['备注', esc(p.remarks)].join(','));
+  lines.push(['备注', esc(reimbVisibleRemarks(p.remarks))].join(','));
   lines.push(['有发票', p.has_invoice ? '是' : '否'].join(','));
   if (p.has_invoice && p.invoices.length) {
     lines.push('发票内容,发票号码,开票日期,专票/普票');
@@ -6532,13 +8535,17 @@ function buildReimbursementCsvText(p) {
     );
   }
   lines.push('');
-  lines.push('费用明细项,金额');
-  COST_DETAIL_GROUPS.forEach((g) => {
-    g.items.forEach((it) => {
-      const v = p.cost_details[it.key];
-      if (v && roundMoney2(v) !== 0) lines.push([esc(it.label), roundMoney2(v)].join(','));
-    });
+  lines.push('编号,板块,类别,内容说明,数量,单价,小计,发票,发票日期,发票号码,申请人,备注');
+  const detailRows = Array.isArray(p.detail_rows) && p.detail_rows.length ? p.detail_rows : [];
+  detailRows.forEach((row, idx) => {
+    const blockLabel = REIMB_DETAIL_BLOCKS.find((x) => x.value === row.block)?.label || row.block || '';
+    const catLabel = (REIMB_DETAIL_CATEGORY_OPTIONS[row.block] || []).find(([v]) => v === row.category)?.[1] || row.category || '';
+    lines.push([
+      idx + 1, esc(blockLabel), esc(catLabel), esc(row.description), row.quantity, row.unit_price, row.subtotal,
+      esc(row.invoice), row.invoice_date, esc(row.invoice_no), esc(row.applicant), esc(row.remarks),
+    ].join(','));
   });
+  if (p.advance_amount) lines.push(['备用金抵扣', '', '', '', '', '', -roundMoney2(p.advance_amount)].join(','));
   return lines.join('\n');
 }
 
@@ -6592,36 +8599,228 @@ function reimbursementPreviewPrintPdf() {
   frame.contentWindow.print();
 }
 
-function buildReimbursementPrintableHtml(p) {
-  let invHtml = '';
-  if (p.has_invoice && p.invoices.length) {
-    invHtml = `<h3>发票明细</h3><table border="1" cellpadding="6" cellspacing="0" style="max-width:720px"><tr><th>发票内容</th><th>发票号码</th><th>开票日期</th><th>类型</th></tr>
-      ${p.invoices
-        .map(
-          (iv) =>
-            `<tr><td>${escapeHtml(iv.invoice_content || '')}</td><td>${escapeHtml(iv.invoice_no)}</td><td>${escapeHtml(iv.invoice_date)}</td><td>${escapeHtml(iv.invoice_kind)}</td></tr>`
-        )
-        .join('')}
-    </table>`;
-  }
-  let detailRows = '';
-  COST_DETAIL_GROUPS.forEach((g) => {
-    g.items.forEach((it) => {
-      const v = roundMoney2(p.cost_details[it.key]);
-      if (v) detailRows += `<tr><td>${escapeHtml(it.label)}</td><td style="text-align:right">${v.toFixed(2)}</td></tr>`;
-    });
+/** 与列表 CSV / 打印共用结构（来源于 GET /reimbursements/:id） */
+function reimbursementPayloadFromRecord(r) {
+  const meta = reimbReadDetailMeta(r.remarks || '');
+  return {
+    id: r.id,
+    date: r.date,
+    remarks: reimbVisibleRemarks(r.remarks || ''),
+    activity_id: r.activity_id,
+    brand: r.brand || '',
+    payee_name: String(r.payee_name || '').trim(),
+    project_code: r.related_project_code || '',
+    payment_type: r.payment_type || 'personal_reimbursement',
+    cost_module: r.cost_module || 'activity',
+    claim_status: r.claim_status || 'draft',
+    has_invoice: !!(r.has_invoice === 1 || r.has_invoice === true),
+    invoices: Array.isArray(r.invoices) ? r.invoices : [],
+    cost_details: parseActivityCostDetails({ cost_details: r.cost_details }),
+    detail_rows: Array.isArray(meta.rows) ? meta.rows : [],
+    advance_amount: roundMoney2(meta.advance_amount),
+    amount: parseFloat(r.amount) || 0,
+    merged_into_activity: !!(r.merged_into_activity === 1 || r.merged_into_activity === true),
+    payment_status: String(r.payment_status || 'unpaid').toLowerCase() === 'paid' ? 'paid' : 'unpaid',
+  };
+}
+
+function reimbClaimStatusSheetLabel(v) {
+  if (v === 'paid') return '已报销';
+  if (v === 'submitted') return '待支付';
+  if (v === 'rejected') return '已驳回';
+  return '草稿';
+}
+
+/**
+ * 报销单 PDF 中无项目编号时按品牌填年框编号（用户指定字面格式，不修改数据库）
+ */
+function reimbBrandYearFrameCodeForPdf(brand) {
+  const b = String(brand || '').trim().toUpperCase();
+  if (b === 'PHD') return 'N220630-RC PHD';
+  if (b === 'X.O' || b === 'XO') return 'N230901-RM XO';
+  if (b === 'CLUB') return 'N230530-RM Club';
+  return '';
+}
+
+/** @deprecated 报销单 PDF 已移除「项目归属一览」附件页；保留函数以兼容旧引用 */
+function buildReimbursementRosterAttachmentHtml(activities) {
+  const acts = (activities || []).filter((a) => a && String(a.project_code || '').trim());
+  const byBrand = new Map();
+  acts.forEach((a) => {
+    const b = String(a.brand || '其他').trim() || '其他';
+    const pc = String(a.project_code || '').trim();
+    if (!byBrand.has(b)) byBrand.set(b, new Set());
+    byBrand.get(b).add(pc);
   });
-  return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>付款申请打印</title>
-    <style>body{font-family:sans-serif;padding:24px;color:#111} table{border-collapse:collapse;width:100%;max-width:720px} h2{margin-top:0}</style>
-  </head><body>
-  <h2>付款申请单（预览）</h2>
-  <p>日期：${escapeHtml(p.date)}　品牌：${escapeHtml(p.brand || '—')}　项目编号：${escapeHtml(p.project_code || '—')}　金额合计：<strong>${p.amount.toFixed(2)}</strong> 元</p>
-  <p>备注：${escapeHtml(p.remarks || '—')}</p>
-  ${invHtml}
-  <h3>费用明细</h3>
-  <table border="1" cellpadding="6" cellspacing="0"><tr><th>项目</th><th>金额（元）</th></tr>${detailRows}<tr><th>合计</th><th style="text-align:right">${p.amount.toFixed(2)}</th></tr></table>
-  <p style="margin-top:24px;font-size:12px;color:#666">已计入活动成本（场次）：${p.merged_into_activity ? '是' : '否'}</p>
-  </body></html>`;
+  const brandLines = [...byBrand.entries()]
+    .sort((a, b) => a[0].localeCompare(b[0], 'zh-CN'))
+    .map(([brand, codes]) => `${escapeHtml(brand)}年框： ${[...codes].sort().join(' / ')}`)
+    .join('<br/>');
+
+  const byExec = new Map();
+  acts.forEach((a) => {
+    const ex = String(a.executor || '').trim();
+    const pc = String(a.project_code || '').trim();
+    if (!ex) return;
+    if (!byExec.has(ex)) byExec.set(ex, new Set());
+    byExec.get(ex).add(pc);
+  });
+  const execLines = [...byExec.entries()].sort((a, b) => a[0].localeCompare(b[0], 'zh-CN'));
+
+  let tbody = '';
+  tbody += `<tr><td>盛融</td><td>—</td><td class="sr-pre">${brandLines || '—'}</td><td></td></tr>`;
+  execLines.forEach(([name, codes]) => {
+    tbody += `<tr><td></td><td>${escapeHtml(name)}</td><td class="sr-pre">${[...codes].sort().map(escapeHtml).join('<br/>')}</td><td></td></tr>`;
+  });
+  let pad = 1 + execLines.length;
+  while (pad < 8) {
+    tbody += `<tr><td>&#160;</td><td>&#160;</td><td>&#160;</td><td>&#160;</td></tr>`;
+    pad += 1;
+  }
+
+  return `<section class="sr-roster">
+    <p class="sr-roster-note">说明：以下为当前年度场次项目编号汇总，可作附件；空白栏位可打印后手写。</p>
+    <table class="sr-table sr-roster-table" aria-label="项目归属一览">
+      <thead><tr><th style="width:12%">公司</th><th style="width:14%">人员</th><th style="width:50%">项目名称</th><th style="width:24%">备注</th></tr></thead>
+      <tbody>${tbody}</tbody>
+    </table>
+  </section>`;
+}
+
+/**
+ * 盛融报销单打印版式（对齐纸质模板：主表 + 项目归属附件页）
+ */
+function buildReimbursementPrintableHtml(p) {
+  const detailRows = Array.isArray(p.detail_rows) ? p.detail_rows.filter(Boolean) : [];
+  const padSlots = Math.max(15, detailRows.length);
+  const rows = [];
+  for (let i = 0; i < padSlots; i += 1) rows.push(detailRows[i] || null);
+
+  const gross = roundMoney2(detailRows.reduce((s, row) => s + roundMoney2(row && row.subtotal), 0));
+  const totalShow = roundMoney2(gross > 0 ? gross : p.amount || 0);
+  const advance = roundMoney2(p.advance_amount || 0);
+  const payee = (p.payee_name || '').trim() || (detailRows[0] && detailRows[0].applicant) || '—';
+  const projectBase = (p.project_code || '').trim();
+  const dStr = p.date ? String(p.date).slice(0, 10) : '';
+  const monthLabel = dStr.length >= 7 ? `${parseInt(dStr.slice(5, 7), 10)}月` : '—';
+  const filer = getCurrentUserName() || (detailRows[0] && detailRows[0].applicant) || '—';
+  const statusLabel = reimbClaimStatusSheetLabel(p.claim_status);
+
+  const lineRows = rows
+    .map((row, idx) => {
+      if (!row) {
+        return `<tr>
+          <td class="sr-c">${idx + 1}</td>
+          <td></td><td></td><td></td><td></td>
+          <td class="sr-m"></td>
+          <td></td><td></td><td></td>
+          <td></td>
+          <td class="sr-c"></td>
+          <td></td>
+        </tr>`;
+      }
+      const blockLabel = REIMB_DETAIL_BLOCKS.find((x) => x.value === row.block)?.label || row.block || '';
+      const catLabel = (REIMB_DETAIL_CATEGORY_OPTIONS[row.block] || []).find(([v]) => v === row.category)?.[1] || row.category || '';
+      // 项目编号优先使用单据项目编号；无则按行品牌（年框编号），最后兜底单据 brand 推断
+      const rowBrand = String(row.brand || '').trim();
+      const lineProject =
+        projectBase
+        || (REIMB_DETAIL_BRAND_OPTIONS.includes(rowBrand) ? rowBrand : '')
+        || reimbBrandYearFrameCodeForPdf(p.brand)
+        || rowBrand
+        || '—';
+      const inv = row.invoice === '无' ? '无' : '有';
+      return `<tr>
+        <td class="sr-c">${idx + 1}</td>
+        <td>${escapeHtml(lineProject)}</td>
+        <td>${escapeHtml(blockLabel)}</td>
+        <td>${escapeHtml(catLabel)}</td>
+        <td>${escapeHtml(row.description || '')}</td>
+        <td class="sr-m">${fmtMoney(row.subtotal || 0)}</td>
+        <td class="sr-c">${escapeHtml(inv)}</td>
+        <td>${row.invoice_date ? escapeHtml(String(row.invoice_date).slice(0, 10)) : ''}</td>
+        <td class="sr-invoice-no">${escapeHtml(row.invoice_no || '')}</td>
+        <td>${escapeHtml(payee)}</td>
+        <td class="sr-c">${escapeHtml(statusLabel)}</td>
+        <td>${escapeHtml(row.remarks || '')}</td>
+      </tr>`;
+    })
+    .join('');
+
+  return `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">
+<title>盛融报销单</title>
+<style>
+  @page { size: A4; margin: 12mm 10mm 14mm; }
+  * { box-sizing: border-box; }
+  body { font-family: "Songti SC","SimSun","Noto Serif SC",serif; font-size: 10.5px; color: #1a1a1a; margin: 0; padding: 12px 8px 24px; line-height: 1.45; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  .sr-sheet { max-width: 190mm; margin: 0 auto; }
+  .sr-title { text-align: center; font-size: 17px; font-weight: 700; letter-spacing: 0.35em; margin: 0 0 10px; }
+  .sr-meta { display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; font-size: 11px; }
+  .sr-meta span { white-space: nowrap; }
+  table.sr-table { width: 100%; border-collapse: collapse; table-layout: auto; }
+  table.sr-table th, table.sr-table td {
+    border: 1px solid #000;
+    padding: 3px 5px;
+    vertical-align: middle;
+    white-space: nowrap;
+    overflow: hidden;
+  }
+  table.sr-table thead th {
+    background: #ececec;
+    font-weight: 600;
+    font-size: 9.5px;
+    text-align: center;
+    line-height: 1.25;
+    white-space: nowrap;
+  }
+  .sr-c { text-align: center; }
+  .sr-m { text-align: right; font-variant-numeric: tabular-nums; }
+  .sr-invoice-no { font-size: 9px; letter-spacing: -0.1px; }
+  .sr-footer { margin-top: 10px; font-size: 11px; display: grid; grid-template-columns: 1fr 1fr; gap: 6px 16px; align-items: center; }
+  .sr-footer-row { grid-column: 1 / -1; display: flex; flex-wrap: wrap; justify-content: space-between; gap: 12px; border-top: 1px solid #000; padding-top: 8px; margin-top: 4px; }
+  .sr-note { margin-top: 8px; font-size: 10px; color: #333; }
+  @media print {
+    body { padding: 0; }
+    .sr-footer-row { break-inside: avoid; }
+  }
+</style></head><body>
+  <div class="sr-sheet">
+    <h1 class="sr-title">盛融报销单</h1>
+    <div class="sr-meta">
+      <span>提报月份：<strong>${escapeHtml(monthLabel)}</strong></span>
+      <span>申请日期：${escapeHtml(dStr || '—')}</span>
+      <span>品牌：${escapeHtml(p.brand || '按明细行归属')}</span>
+    </div>
+    <table class="sr-table" aria-label="报销明细">
+      <thead>
+        <tr>
+          <th>序号</th>
+          <th>项目编号</th>
+          <th>板块</th>
+          <th>类别</th>
+          <th>内容说明</th>
+          <th>报销金额含税</th>
+          <th>发票</th>
+          <th>发票日期</th>
+          <th>发票号码</th>
+          <th>收款方</th>
+          <th>报销状态</th>
+          <th>备注</th>
+        </tr>
+      </thead>
+      <tbody>${lineRows}</tbody>
+    </table>
+    <div class="sr-footer">
+      <div><strong>合计金额（含税）：</strong>${fmtMoney(totalShow)}</div>
+      <div><strong>备用金抵扣：</strong>${advance > 0 ? fmtMoney(advance) : '—'}</div>
+      <div class="sr-footer-row">
+        <span><strong>抵扣后应付：</strong>${fmtMoney(p.amount || 0)}</span>
+        <span><strong>填报人：</strong>${escapeHtml(filer)}</span>
+      </div>
+    </div>
+    <p class="sr-note">已计入项目成本：${p.merged_into_activity ? '是' : '否'}　｜　使用浏览器「打印 → 另存为 PDF」可选路径导出电子版。</p>
+  </div>
+</body></html>`;
 }
 
 function reimbursementPreviewCsvFromForm() {
@@ -6641,10 +8840,253 @@ function reimbursementPrintCurrentForm() {
   const p = reimbExportPayloadFromForm();
   const html = buildReimbursementPrintableHtml(p);
   openReimbursementPreviewModal({
-    title: 'PDF 预览',
+    title: '盛融报销单 · 预览',
     type: 'pdf',
     bodyHtml: `<iframe id="reimbPreviewPdfFrame" style="width:100%;height:70vh;border:1px solid #e5e7eb;border-radius:8px;background:#fff" srcdoc="${escapeHtml(html)}"></iframe>`,
   });
+}
+
+async function reimbursementPrintTemplateById(id) {
+  try {
+    const r = await api('GET', `/reimbursements/${id}`);
+    const p = reimbursementPayloadFromRecord(r);
+    const html = buildReimbursementPrintableHtml(p);
+    openReimbursementPreviewModal({
+      title: `盛融报销单 · #${id}`,
+      type: 'pdf',
+      bodyHtml: `<iframe id="reimbPreviewPdfFrame" style="width:100%;height:70vh;border:1px solid #e5e7eb;border-radius:8px;background:#fff" srcdoc="${escapeHtml(html)}"></iframe>`,
+    });
+  } catch (e) {
+    showToast(e.message || '加载失败', 'error');
+  }
+}
+
+/* =============================================
+   付款申请 · 详情弹窗（行点击展开）
+   也被「物料采购页」整行点击复用：通过 detailModalContext 区分来源。
+   ============================================= */
+let reimbursementDetailState = { id: null, record: null };
+/** 'reimbursement' | 'material' —— 当前 detail modal 的来源；控制 footer 按钮行为 */
+let detailModalContext = 'reimbursement';
+
+function buildReimbursementDetailModalHtml(record) {
+  const r = record || {};
+  const meta = reimbReadDetailMeta(r.remarks || '');
+  const rows = Array.isArray(meta.rows) ? meta.rows : [];
+  const advance = roundMoney2(meta.advance_amount);
+  const visibleRemarks = reimbVisibleRemarks(r.remarks || '');
+  const amount = parseFloat(r.amount) || 0;
+  const amountCls = amount > 0 ? 'amount-pos' : amount < 0 ? 'amount-neg' : '';
+  const projectCode = String(r.related_project_code || '').trim();
+  const projectDisplay = projectCode || '按明细行归属';
+  const heroRows = [
+    ['日期', escapeHtml(fmtDateShort(r.date) || '—')],
+    ['申请类型', escapeHtml(reimbPaymentTypeLabel(r.payment_type || ''))],
+    ['成本板块', escapeHtml(reimbCostModuleLabel(r.cost_module || ''))],
+    ['项目编号', escapeHtml(projectDisplay)],
+    [
+      '金额（含税）',
+      `<span class="reimb-detail-value ${amountCls}">${fmtMoney(amount)}</span>`,
+      true,
+    ],
+    ['状态', `<span class="badge ${reimbClaimStatusBadgeClass(r.claim_status)}">${escapeHtml(reimbClaimStatusLabel(r.claim_status || ''))}</span>`, true],
+    ['付款状态', paymentStatusHtml(r.payment_status, r.payment_order_id)],
+    ['收款方', escapeHtml(r.payee_name || '—')],
+    ['合并场次', r.merged_into_activity ? '<span class="badge badge-success">已计入</span>' : '<span class="badge badge-gray">未计入</span>'],
+  ];
+  const heroHtml = heroRows
+    .map(([label, value, rawValue]) => {
+      const v = rawValue ? value : `<span class="reimb-detail-value">${value}</span>`;
+      return `<div class="reimb-detail-hero-row"><span class="reimb-detail-label">${escapeHtml(label)}</span>${v}</div>`;
+    })
+    .join('');
+
+  const legacyBrandMappedDetail = reimbDetailBrandFromLegacyBrand(r.brand);
+  const detailTbody = rows.length
+    ? rows
+        .map((row, idx) => {
+          const blockLabel = REIMB_DETAIL_BLOCKS.find((x) => x.value === row.block)?.label || row.block || '';
+          const catLabel = (REIMB_DETAIL_CATEGORY_OPTIONS[row.block] || []).find(([v]) => v === row.category)?.[1] || row.category || '';
+          const subtotal = roundMoney2(row.subtotal);
+          const rowBrand =
+            (typeof row.brand === 'string' && row.brand.trim())
+              ? row.brand.trim()
+              : (legacyBrandMappedDetail || (r.brand ? String(r.brand) : '—'));
+          return `<tr>
+            <td class="reimb-ro-c">${idx + 1}</td>
+            <td>${escapeHtml(rowBrand)}</td>
+            <td>${escapeHtml(blockLabel)}</td>
+            <td>${escapeHtml(catLabel)}</td>
+            <td class="reimb-ro-wrap">${escapeHtml(row.description || '')}</td>
+            <td class="reimb-ro-c">${row.quantity != null && row.quantity !== '' ? escapeHtml(row.quantity) : '—'}</td>
+            <td class="reimb-ro-amount">${row.unit_price != null && row.unit_price !== '' ? fmtMoney(row.unit_price) : '—'}</td>
+            <td class="reimb-ro-amount">${fmtMoney(subtotal)}</td>
+            <td class="reimb-ro-c">${row.invoice === '无' ? '无' : '有'}</td>
+            <td class="reimb-ro-mono">${escapeHtml(row.invoice_no || '')}</td>
+            <td class="reimb-ro-wrap">${escapeHtml(row.remarks || '')}</td>
+          </tr>`;
+        })
+        .join('')
+    : '';
+
+  const detailTable = rows.length
+    ? `<div class="reimb-ro-scroll"><table class="reimb-ro-table">
+        <thead>
+          <tr><th>#</th><th>品牌</th><th>板块</th><th>类别</th><th>内容说明</th><th>数量</th><th>单价</th><th>小计</th><th>发票</th><th>发票号码</th><th>备注</th></tr>
+        </thead>
+        <tbody>${detailTbody}</tbody>
+      </table></div>`
+    : '<div class="reimb-detail-empty">无结构化明细（可能为旧数据）</div>';
+
+  return `<div class="reimb-detail-body">
+    <div class="reimb-detail-hero" aria-label="付款申请基本信息">${heroHtml}</div>
+    <section class="reimb-detail-section">
+      <h4 class="reimb-detail-section-title">费用明细</h4>
+      ${detailTable}
+      ${advance > 0 ? `<div style="margin-top:10px;font-size:12px;color:var(--text-secondary)">备用金抵扣：<span class="reimb-detail-value amount-neg">- ${fmtMoney(advance)}</span></div>` : ''}
+    </section>
+    <section class="reimb-detail-section">
+      <h4 class="reimb-detail-section-title">备注</h4>
+      <div style="white-space:pre-wrap;line-height:1.6;font-size:12px;color:var(--text-primary)">${escapeHtml(visibleRemarks || '—')}</div>
+    </section>
+  </div>`;
+}
+
+function detailModalSyncFooter() {
+  const pdfBtn = document.getElementById('reimbDetailPdfBtn');
+  if (pdfBtn) pdfBtn.style.display = detailModalContext === 'reimbursement' ? '' : 'none';
+}
+
+async function reimbursementOpenDetailModal(id) {
+  const nid = Number(id);
+  if (!Number.isFinite(nid)) return;
+  detailModalContext = 'reimbursement';
+  reimbursementDetailState = { id: nid, record: null };
+  const titleEl = document.getElementById('modalReimbDetailTitle');
+  const bodyEl = document.getElementById('modalReimbDetailBody');
+  if (!titleEl || !bodyEl) {
+    showToast('详情弹窗未就绪，请刷新页面', 'warning');
+    return;
+  }
+  titleEl.textContent = `付款申请详情 · #${nid}`;
+  bodyEl.innerHTML = '<div class="empty-state" style="padding:24px"><div class="empty-title">加载中…</div></div>';
+  openModal('modalReimbDetail');
+  detailModalSyncFooter();
+  try {
+    const r = await api('GET', `/reimbursements/${nid}`);
+    reimbursementDetailState.record = r;
+    bodyEl.innerHTML = buildReimbursementDetailModalHtml(r);
+  } catch (e) {
+    bodyEl.innerHTML = `<div class="empty-state" style="padding:24px"><div class="empty-title">加载失败</div><div class="empty-sub">${escapeHtml(e.message || '')}</div></div>`;
+  }
+}
+
+/**
+ * 物料采购详情弹窗：复用付款申请详情容器（统一视觉），footer 按钮按上下文派发。
+ * - 行 = `material_purchases` 表中的直接登记记录（不是报销派生）
+ * - PDF 预览按钮在物料采购上下文下隐藏
+ */
+async function materialPurchaseOpenDetailModal(id) {
+  const nid = Number(id);
+  if (!Number.isFinite(nid)) return;
+  detailModalContext = 'material';
+  reimbursementDetailState = { id: nid, record: null };
+  const titleEl = document.getElementById('modalReimbDetailTitle');
+  const bodyEl = document.getElementById('modalReimbDetailBody');
+  if (!titleEl || !bodyEl) {
+    showToast('详情弹窗未就绪，请刷新页面', 'warning');
+    return;
+  }
+  titleEl.textContent = `物料采购详情 · #${nid}`;
+  bodyEl.innerHTML = '<div class="empty-state" style="padding:24px"><div class="empty-title">加载中…</div></div>';
+  openModal('modalReimbDetail');
+  detailModalSyncFooter();
+  try {
+    const r = await api('GET', `/material-purchases/${nid}`);
+    reimbursementDetailState.record = r;
+    bodyEl.innerHTML = buildMaterialPurchaseDetailModalHtml(r);
+  } catch (e) {
+    bodyEl.innerHTML = `<div class="empty-state" style="padding:24px"><div class="empty-title">加载失败</div><div class="empty-sub">${escapeHtml(e.message || '')}</div></div>`;
+  }
+}
+
+/**
+ * 渲染物料采购详情正文（与付款申请详情保持视觉一致：hero 区 + 明细表 + 备注）
+ */
+function buildMaterialPurchaseDetailModalHtml(record) {
+  const r = record || {};
+  const merged = isMergedFlag(r.merged_into_activity);
+  const amount = roundMoney2(r.total_amount);
+  const heroRows = [
+    ['日期', escapeHtml(fmtDateShort(r.purchase_date) || '—')],
+    ['品牌', `<span class="badge badge-${brandColor(r.brand_code || r.brand_name)}">${escapeHtml(r.brand_name || r.brand_code || '—')}</span>`, true],
+    ['合计', `<span class="reimb-detail-value ${amount > 0 ? 'amount-pos' : ''}">${fmtMoney(amount)}</span>`, true],
+    ['关联项目', escapeHtml(r.activity_project_code || r.related_project_code || '—')],
+    ['计入状态', merged ? '<span class="badge badge-success">已计入</span>' : '<span class="badge badge-gray">未计入</span>', true],
+    ['付款状态', paymentStatusHtml(r.payment_status, r.payment_order_id), true],
+  ];
+  const heroHtml = heroRows
+    .map(([label, value, rawValue]) => {
+      const v = rawValue ? value : `<span class="reimb-detail-value">${value}</span>`;
+      return `<div class="reimb-detail-hero-row"><span class="reimb-detail-label">${escapeHtml(label)}</span>${v}</div>`;
+    })
+    .join('');
+  const items = Array.isArray(r.items) ? r.items : [];
+  const tbody = items.length
+    ? items.map((it, idx) => `<tr>
+        <td class="reimb-ro-c">${idx + 1}</td>
+        <td class="reimb-ro-wrap">${escapeHtml(it.name || '')}</td>
+        <td class="reimb-ro-amount">${fmtMoney(it.amount)}</td>
+      </tr>`).join('')
+    : '';
+  const table = items.length
+    ? `<div class="reimb-ro-scroll"><table class="reimb-ro-table">
+        <thead>
+          <tr><th style="width:48px">#</th><th>项目名称</th><th style="text-align:right">金额</th></tr>
+        </thead>
+        <tbody>${tbody}</tbody>
+      </table></div>`
+    : '<div class="reimb-detail-empty">无明细</div>';
+  return `<div class="reimb-detail-body">
+    <div class="reimb-detail-hero" aria-label="物料采购基本信息">${heroHtml}</div>
+    <section class="reimb-detail-section">
+      <h4 class="reimb-detail-section-title">采购明细</h4>
+      ${table}
+    </section>
+    <section class="reimb-detail-section">
+      <h4 class="reimb-detail-section-title">备注</h4>
+      <div style="white-space:pre-wrap;line-height:1.6;font-size:12px;color:var(--text-primary)">${escapeHtml(r.remarks || '—')}</div>
+    </section>
+  </div>`;
+}
+
+async function reimbursementDetailEdit() {
+  const id = reimbursementDetailState.id;
+  if (!Number.isFinite(id)) return;
+  closeModal();
+  if (detailModalContext === 'material') {
+    await showMaterialPurchaseModal(id);
+  } else {
+    await reimbursementEditById(id);
+  }
+}
+
+async function reimbursementDetailDelete() {
+  const id = reimbursementDetailState.id;
+  if (!Number.isFinite(id)) return;
+  closeModal();
+  if (detailModalContext === 'material') {
+    await deleteMaterialPurchaseRecord(id);
+  } else {
+    await deleteReimbursementRecord(id);
+  }
+}
+
+async function reimbursementDetailPdfPreview() {
+  const id = reimbursementDetailState.id;
+  if (!Number.isFinite(id)) return;
+  if (detailModalContext !== 'reimbursement') return;
+  await reimbursementPrintTemplateById(id);
 }
 
 async function reimbursementEditById(id) {
@@ -6656,10 +9098,27 @@ async function reimbursementEditById(id) {
   }
 }
 
+function reimbursementInlineHost() {
+  return document.getElementById('reimbInlineHost');
+}
+
+function hideReimbursementInline() {
+  const host = reimbursementInlineHost();
+  if (!host) return;
+  host.hidden = true;
+  host.innerHTML = '';
+}
+
 async function showReimbursementModal(record) {
-  const body = document.getElementById('modalReimbursementBody');
-  const title = document.getElementById('modalReimbursementTitle');
-  if (!body || !title) return;
+  return showReimbursementForm(record);
+}
+
+async function showReimbursementForm(record) {
+  const host = reimbursementInlineHost();
+  if (!host) {
+    showToast('请先打开「付款申请」页面', 'warning');
+    return;
+  }
   if (!currentYearFrameId) {
     showToast('请先选择年度并确保已加载年框', 'warning');
     return;
@@ -6683,25 +9142,24 @@ async function showReimbursementModal(record) {
     record && record.date
       ? toDateInputValue(record.date)
       : todayDateInputValue();
-  const remarksEsc = record && record.remarks ? escapeHtml(String(record.remarks)) : '';
-  const details = record
-    ? parseActivityCostDetails({ cost_details: record.cost_details })
-    : parseActivityCostDetails({});
-  const hi =
-    record &&
-    (record.has_invoice === 1 || record.has_invoice === true || String(record.has_invoice) === '1');
-  const invList =
-    record && Array.isArray(record.invoices) && record.invoices.length ? record.invoices : [];
-  const brandVal = record && record.brand ? String(record.brand) : '';
-  const paymentTypeVal = record && record.payment_type ? String(record.payment_type) : 'personal_reimbursement';
+  const meta = reimbReadDetailMeta(record?.remarks || '');
+  const remarksEsc = escapeHtml(reimbVisibleRemarks(record?.remarks || ''));
+  const rawDetailRows = Array.isArray(meta.rows) && meta.rows.length ? meta.rows : [];
+  const useAdvance = !!meta.use_advance;
+  const advanceAmount = roundMoney2(meta.advance_amount);
+  const paymentDateVal = meta.payment_date || '';
+  const legacyBrandMapped = record && record.brand ? reimbDetailBrandFromLegacyBrand(record.brand) : '';
+  reimbDetailDefaultBrand = legacyBrandMapped || '内部';
+  const detailRows = rawDetailRows.map((row) => ({
+    ...row,
+    brand:
+      typeof row?.brand === 'string' && row.brand.trim()
+        ? row.brand.trim()
+        : legacyBrandMapped || reimbDetailDefaultBrand,
+  }));
+  const payeeVal = record && record.payee_name ? String(record.payee_name) : '';
   const costModuleVal = record && record.cost_module ? String(record.cost_module) : 'activity';
   const claimStatusVal = record && record.claim_status ? String(record.claim_status) : 'draft';
-  const brandOpts = FIXED_BRAND_CODES
-    .map((code) => `<option value="${escapeHtml(code)}">${escapeHtml(code)}</option>`)
-    .join('');
-  const paymentTypeOptions = REIMB_PAYMENT_TYPE_OPTIONS
-    .map((x) => `<option value="${x.value}" ${x.value === paymentTypeVal ? 'selected' : ''}>${x.label}</option>`)
-    .join('');
   const costModuleOptions = REIMB_COST_MODULE_OPTIONS
     .map((x) => `<option value="${x.value}" ${x.value === costModuleVal ? 'selected' : ''}>${x.label}</option>`)
     .join('');
@@ -6715,84 +9173,145 @@ async function showReimbursementModal(record) {
     pickedMergedLabel = ax ? reimbActivityLine(ax) : `场次 #${actId}`;
   }
 
-  title.textContent = rid ? `编辑付款申请 #${rid}` : '新建付款申请';
-  body.innerHTML = `
-    <input type="hidden" id="reimbRecordId" value="${rid}">
-    <input type="hidden" id="reimbActivityId" value="${actId || ''}">
-    <div id="reimbMergedNote" style="display:${merged ? 'block' : 'none'};margin-bottom:10px;padding:10px;background:var(--accent-soft);border-radius:var(--radius-sm);font-size:12px;color:var(--text-primary)" data-merged="${merged ? '1' : '0'}">
-      本单已同步到场次成本；保存时将按「报销金额 &gt; 0 的项覆盖场次对应字段」再次合并。不可更换关联场次。
-    </div>
-    <div class="form-group">
-      <label class="form-label">关联场次（可选）</label>
-      ${
-        merged
-          ? `<div style="font-size:13px;padding:10px;background:var(--bg-input);border-radius:var(--radius-sm)">${pickedMergedLabel}</div>`
-          : `<input type="text" class="form-control" id="reimbProjectCode" list="reimbProjectList" autocomplete="off" placeholder="输入关键字并从下拉选择项目编号（可留空）" oninput="reimbProjectInputChanged()">
-             <datalist id="reimbProjectList"></datalist>
-             <div id="reimbActivityPicked" style="display:none;margin-top:8px;font-size:12px;color:var(--text-secondary)"></div>`
-      }
-    </div>
-    <div class="form-grid" style="grid-template-columns:1fr 1fr 1fr">
-      <div class="form-group">
-        <label class="form-label">申请类型 <span class="required">*</span></label>
-        <select class="form-control" id="reimbPaymentType">${paymentTypeOptions}</select>
-      </div>
-      <div class="form-group">
-        <label class="form-label">成本板块 <span class="required">*</span></label>
-        <select class="form-control" id="reimbCostModule">${costModuleOptions}</select>
-      </div>
-      <div class="form-group">
-        <label class="form-label">申请状态 <span class="required">*</span></label>
-        <select class="form-control" id="reimbClaimStatus">${claimStatusOptions}</select>
-      </div>
-    </div>
-    <div class="form-grid" style="grid-template-columns:1fr 1fr 1fr">
-      <div class="form-group">
-        <label class="form-label">报销日期 <span class="required">*</span></label>
-        <input type="date" class="form-control" id="reimbDate" value="${dateVal}">
-      </div>
-      <div class="form-group">
-        <label class="form-label">品牌 <span class="required">*</span></label>
-        <select class="form-control" id="reimbBrand">
-          <option value="">请选择品牌</option>
-          ${brandOpts}
-        </select>
-      </div>
-      <div class="form-group">
-        <label class="form-label">是否有发票</label>
-        <div style="display:flex;gap:16px;align-items:center;height:38px">
-          <label style="display:flex;gap:6px;cursor:pointer;font-size:13px"><input type="radio" name="reimbHasInv" id="reimbHasInvY" value="1" ${hi ? 'checked' : ''} onchange="reimbToggleInvoiceSection()"> 有发票</label>
-          <label style="display:flex;gap:6px;cursor:pointer;font-size:13px"><input type="radio" name="reimbHasInv" id="reimbHasInvN" value="0" ${!hi ? 'checked' : ''} onchange="reimbToggleInvoiceSection()"> 无发票</label>
+  const isNonActivityRecord =
+    !!record && !merged && String(record.cost_module) === 'general' && !record.activity_id;
+  const paymentStatusVal = record && String(record.payment_status).toLowerCase() === 'paid' ? 'paid' : 'unpaid';
+
+  const titleText = rid ? `编辑报销登记 · #${rid}` : '报销登记';
+  host.hidden = false;
+  host.innerHTML = `
+    <section class="reimb-inline-panel" aria-label="付款申请登记">
+      <header class="reimb-inline-header">
+        <span class="reimb-inline-title">${escapeHtml(titleText)}</span>
+        <button type="button" class="modal-close" aria-label="收起" onclick="hideReimbursementInline()">✕</button>
+      </header>
+      <div class="reimb-form-body" id="reimbInlineBody">
+        <input type="hidden" id="reimbRecordId" value="${rid}">
+        <input type="hidden" id="reimbActivityId" value="${actId || ''}">
+        <div id="reimbMergedNote" style="display:${merged ? 'block' : 'none'};margin-bottom:10px;padding:10px;background:var(--accent-soft);border-radius:var(--radius-sm);font-size:12px;color:var(--text-primary)" data-merged="${merged ? '1' : '0'}">
+          本单已同步项目成本；保存时将按费用明细再次合并。不可更换关联项目。
+        </div>
+        <div class="reimb-attr-row" id="reimbAttrWrap" style="display:${merged ? 'none' : 'flex'}">
+          <span class="reimb-attr-label">成本归属</span>
+          <div class="reimb-attr-options">
+            <label class="reimb-attr-chip"><input type="radio" name="reimbCostAttribution" value="activity" ${!isNonActivityRecord ? 'checked' : ''} onchange="reimbOnCostAttributionChange()"><span>活动成本（可同步场次）</span></label>
+            <label class="reimb-attr-chip"><input type="radio" name="reimbCostAttribution" value="non_activity" ${isNonActivityRecord ? 'checked' : ''} onchange="reimbOnCostAttributionChange()"><span>统筹成本（不同步场次）</span></label>
+          </div>
+          <p class="reimb-attr-hint">统筹成本（不同步场次）：净额 = 费用合计 − 备用金；正值（蓝色）为应付报销人，负值（红色）为归还公司；不计入场次成本。</p>
+        </div>
+        <input type="hidden" id="reimbPaymentType" value="personal_reimbursement">
+        <div class="form-grid reimb-top-grid reimb-top-grid--dense">
+          <div class="form-group reimb-project-field reimb-span-3">
+            <label class="form-label" id="reimbProjectCodeLabel">项目编号</label>
+            ${
+              merged
+                ? `<div class="reimb-project-readonly">${pickedMergedLabel}</div>`
+                : `<input type="text" class="form-control" id="reimbProjectCode" list="reimbProjectList" autocomplete="off" placeholder="输入关键字并从下拉选择项目编号" oninput="reimbProjectInputChanged()">
+                   <datalist id="reimbProjectList"></datalist>
+                   <div id="reimbActivityPicked" style="display:none;margin-top:6px;font-size:12px;color:var(--text-secondary)"></div>`
+            }
+          </div>
+          <div class="form-group">
+            <label class="form-label">成本计入 <span class="required">*</span></label>
+            <select class="form-control" id="reimbCostModule">${costModuleOptions}</select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">状态 <span class="required">*</span></label>
+            <select class="form-control" id="reimbClaimStatus" onchange="reimbClaimStatusChanged()">${claimStatusOptions}</select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">付款状态</label>
+            <select class="form-control" id="reimbPaymentStatus">
+              <option value="unpaid" ${paymentStatusVal !== 'paid' ? 'selected' : ''}>未支付</option>
+              <option value="paid" ${paymentStatusVal === 'paid' ? 'selected' : ''}>已支付</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">申请日期 <span class="required">*</span></label>
+            <input type="date" class="form-control" id="reimbDate" value="${dateVal}">
+          </div>
+          <div class="form-group reimb-span-2">
+            <label class="form-label">收款方</label>
+            <input type="text" class="form-control" id="reimbPayeeName" placeholder="用于付款合并；生成付款单前必填" value="${escapeHtml(payeeVal)}">
+          </div>
+          <div class="form-group" id="reimbPaymentDateWrap" style="display:${claimStatusVal === 'paid' ? 'block' : 'none'}">
+            <label class="form-label">付款日期</label>
+            <input type="date" class="form-control" id="reimbPaymentDate" value="${escapeHtml(paymentDateVal)}">
+          </div>
+          <div class="form-group reimb-sync-row reimb-span-3" style="display:${merged ? 'none' : 'block'}">
+            <label class="form-label">条件选择</label>
+            <label class="reimb-option-row reimb-option-row--compact">
+              <input type="checkbox" id="reimbSyncToActivity" ${merged ? 'checked disabled' : ''} onchange="reimbOnSyncToActivityChange()">
+              <span>同步项目成本（默认不勾选；勾选时必须填写项目编号，所有费用只统计一次）</span>
+            </label>
+          </div>
+        </div>
+        <div class="form-group reimb-detail-section">
+          <div class="reimb-detail-section-head">
+            <span class="form-label" style="margin:0">费用明细</span>
+            <span class="reimb-detail-hint">每行可独立选择品牌；空品牌按「内部」入账</span>
+            <button type="button" class="btn btn-secondary btn-sm" onclick="reimbAppendDetailRow(null)">添加一行</button>
+          </div>
+          <div class="reimb-detail-table-wrap reimb-detail-table-wrap--compact">
+            <table class="data-table reimb-detail-table reimb-detail-table--compact" id="reimbDetailTable">
+              <thead>
+                <tr>
+                  <th>编号</th><th class="reimb-col-brand">品牌</th><th>板块</th><th>类别</th><th>内容说明</th><th>数量</th><th>单价</th><th>小计</th>
+                  <th>发票</th><th>发票日期</th><th>发票号码</th><th>申请人</th><th>备注</th><th></th>
+                </tr>
+              </thead>
+              <tbody id="reimbDetailRows"></tbody>
+            </table>
+          </div>
+        </div>
+        <div class="reimb-totals-row">
+          <label class="reimb-advance-card">
+            <input type="checkbox" id="reimbUseAdvance" ${useAdvance ? 'checked' : ''} onchange="reimbToggleAdvanceAmount()">
+            <span class="reimb-advance-copy">
+              <span class="reimb-advance-title">备用金</span>
+              <span class="reimb-advance-sub">勾选后填写抵扣金额</span>
+            </span>
+          </label>
+          <div class="form-group reimb-advance-amount" id="reimbAdvanceAmountWrap" style="display:${useAdvance ? 'block' : 'none'}">
+            <label class="form-label">备用金金额</label>
+            <input type="number" class="form-control" id="reimbAdvanceAmount" min="0" step="0.01" value="${advanceAmount > 0 ? advanceAmount.toFixed(2) : ''}" oninput="reimbUpdateDetailTotals()">
+          </div>
+          <div class="reimb-total-card">
+            <span style="color:var(--text-secondary);font-size:13px">费用合计</span>
+            <span class="amount" id="reimbGrossTotal">¥0.00</span>
+          </div>
+          <div class="reimb-total-card reimb-total-card-primary">
+            <span style="color:var(--text-secondary);font-size:13px">金额合计</span>
+            <span class="amount" style="font-weight:700;color:var(--accent)" id="reimbCostTotal">¥0.00</span>
+          </div>
+        </div>
+        <div class="form-group" style="margin-top:12px">
+          <label class="form-label">备注</label>
+          <textarea class="form-control" id="reimbRemarks" rows="2" placeholder="选填">${remarksEsc}</textarea>
         </div>
       </div>
-    </div>
-    <div class="form-group" id="reimbInvoiceSection" style="display:${hi ? 'block' : 'none'}">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
-        <span class="form-label" style="margin:0">发票明细</span>
-        <button type="button" class="btn btn-secondary btn-sm" onclick="reimbAppendInvoiceRow(null)">+ 添加发票行</button>
-      </div>
-      <div id="reimbInvoiceRows"></div>
-    </div>
-    <label class="form-group" style="display:flex;align-items:flex-start;gap:10px;padding:10px 12px;border:1px solid var(--border);border-radius:var(--radius-sm);cursor:pointer;margin-bottom:12px;background:var(--bg-input)">
-      <input type="checkbox" id="reimbSyncToActivity" ${merged ? 'checked disabled' : ''} style="margin-top:3px">
-      <span style="font-size:13px;color:var(--text-primary)">同步到场次成本（默认不勾选；勾选时必须选择关联场次。保存时将报销明细中金额<strong>大于 0</strong>的项写入该场次成本）</span>
-    </label>
-    <div class="form-label" style="margin-bottom:8px">费用明细（¥）</div>
-    ${renderCostDetailSections('reimb-cost-field', details, 'updateReimbCostTotal()')}
-    <div style="margin-top:14px;padding:12px;background:var(--accent-soft);border-radius:var(--radius-sm);display:flex;justify-content:space-between;align-items:center">
-      <span style="color:var(--text-secondary);font-size:13px">成本合计</span>
-      <span class="amount" style="font-size:18px;font-weight:700;color:var(--accent)" id="reimbCostTotal">${fmtMoney(calcCostDetailsTotal(details))}</span>
-    </div>
-    <div class="form-group" style="margin-top:12px">
-      <label class="form-label">备注</label>
-      <textarea class="form-control" id="reimbRemarks" rows="2" placeholder="选填">${remarksEsc}</textarea>
-    </div>
+      <footer class="reimb-inline-footer">
+        <button type="button" class="btn btn-secondary" onclick="hideReimbursementInline()">取消</button>
+        <button type="button" class="btn btn-primary" onclick="saveReimbursementForm()">保存</button>
+      </footer>
+    </section>
   `;
 
-  const wrap = document.getElementById('reimbInvoiceRows');
-  if (wrap) {
-    if (hi && invList.length) invList.forEach((iv) => reimbAppendInvoiceRow(iv));
-    else if (hi) reimbAppendInvoiceRow(null);
+  if (detailRows.length) {
+    detailRows.forEach((row) => reimbAppendDetailRow(row));
+  } else if (record) {
+    const parsed = reimbParseJsonObject(record.cost_details || {});
+    const restoredRows = Object.entries(parsed)
+      .filter(([key, value]) => key !== 'advance_offset' && roundMoney2(value) > 0)
+      .map(([key, value]) => {
+        const block = Object.keys(REIMB_DETAIL_CATEGORY_OPTIONS).find((b) =>
+          (REIMB_DETAIL_CATEGORY_OPTIONS[b] || []).some(([cat]) => cat === key)
+        ) || 'personnel';
+        return { brand: legacyBrandMapped || '', block, category: key, quantity: 1, unit_price: roundMoney2(value) };
+      });
+    (restoredRows.length ? restoredRows : [null, null, null]).forEach((row) => reimbAppendDetailRow(row));
+  } else {
+    for (let i = 0; i < 3; i += 1) reimbAppendDetailRow(null);
   }
   if (!merged) {
     reimbRenderActivityPicker();
@@ -6800,15 +9319,15 @@ async function showReimbursementModal(record) {
   } else if (document.getElementById('reimbActivityId') && actId) {
     document.getElementById('reimbActivityId').value = String(actId);
   }
-  const brandEl = document.getElementById('reimbBrand');
-  if (brandEl) {
-    if (brandVal) brandEl.value = brandVal;
-    if (!brandEl.value) brandEl.value = FIXED_BRAND_CODES[0] || 'PHD';
-  }
-  reimbToggleInvoiceSection();
-  openModal('modalReimbursement');
-  updateReimbCostTotal();
+  reimbClaimStatusChanged();
+  reimbToggleAdvanceAmount();
+  if (!merged) reimbOnCostAttributionChange();
+  reimbOnSyncToActivityChange();
+  reimbUpdateDetailTotals();
   renderLucideIcons();
+  try {
+    host.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  } catch (_) { /* ignore */ }
 }
 
 async function saveReimbursementForm() {
@@ -6817,58 +9336,94 @@ async function saveReimbursementForm() {
     return;
   }
   const rid = document.getElementById('reimbRecordId')?.value?.trim();
-  const actId = parseInt(document.getElementById('reimbActivityId')?.value, 10);
-  const hasAct = Number.isFinite(actId) && actId > 0;
-  const projectCodeInput = (document.getElementById('reimbProjectCode')?.value || '').replace(/^\uFEFF/, '').trim();
-  const brand = document.getElementById('reimbBrand')?.value?.trim() || '';
-  const date = document.getElementById('reimbDate')?.value;
-  const remarks = document.getElementById('reimbRemarks')?.value?.trim() || '';
-  const payment_type = document.getElementById('reimbPaymentType')?.value || 'personal_reimbursement';
-  const cost_module = document.getElementById('reimbCostModule')?.value || 'activity';
-  const claim_status = document.getElementById('reimbClaimStatus')?.value || 'draft';
-  const has_invoice = !!document.getElementById('reimbHasInvY')?.checked;
-  const invoices = has_invoice ? reimbCollectInvoicesFromForm() : [];
-  const cost_details = collectCostDetails('reimb-cost-field');
-  const total = roundMoney2(calcCostDetailsTotal(cost_details));
-  const syncEl = document.getElementById('reimbSyncToActivity');
   const mergedNote = document.getElementById('reimbMergedNote');
   const alreadyMerged = mergedNote && mergedNote.dataset.merged === '1';
-  const sync_to_activity = alreadyMerged ? true : !!syncEl?.checked;
+  const attribution = alreadyMerged
+    ? 'activity'
+    : document.querySelector('input[name="reimbCostAttribution"]:checked')?.value || 'activity';
+  const isNonActivity = !alreadyMerged && attribution === 'non_activity';
+  let actId = parseInt(document.getElementById('reimbActivityId')?.value, 10);
+  const projectCodeInput = (document.getElementById('reimbProjectCode')?.value || '').replace(/^\uFEFF/, '').trim();
+  const date = document.getElementById('reimbDate')?.value;
+  const payee_name = document.getElementById('reimbPayeeName')?.value?.trim() || '';
+  const remarks = document.getElementById('reimbRemarks')?.value?.trim() || '';
+  const payment_type = document.getElementById('reimbPaymentType')?.value || 'personal_reimbursement';
+  let cost_module = document.getElementById('reimbCostModule')?.value || 'activity';
+  const claim_status = document.getElementById('reimbClaimStatus')?.value || 'draft';
+  const payment_status = document.getElementById('reimbPaymentStatus')?.value === 'paid' ? 'paid' : 'unpaid';
+  const rows = reimbCollectDetailRows();
+  const use_advance = !!document.getElementById('reimbUseAdvance')?.checked;
+  const advance_amount = use_advance ? roundMoney2(document.getElementById('reimbAdvanceAmount')?.value) : 0;
+  const cost_details = reimbRowsToCostDetails(rows, advance_amount);
+  const grossTotal = roundMoney2(rows.reduce((s, row) => s + roundMoney2(row.subtotal), 0));
+  const total = roundMoney2(calcCostDetailsTotal(cost_details));
+  const payment_date = document.getElementById('reimbPaymentDate')?.value || '';
+  const brand = reimbResolveRecordBrand(rows);
+  const invoices = rows
+    .filter((row) => row.invoice_no && row.invoice_date)
+    .map((row) => ({
+      invoice_content: row.description,
+      invoice_no: row.invoice_no,
+      invoice_date: row.invoice_date,
+      invoice_kind: '普票',
+    }));
+  const has_invoice = invoices.length > 0;
+  const syncEl = document.getElementById('reimbSyncToActivity');
+  const sync_to_activity = alreadyMerged ? true : isNonActivity ? false : !!syncEl?.checked;
+  if (isNonActivity) {
+    actId = NaN;
+    cost_module = 'general';
+  }
+  const hasAct = Number.isFinite(actId) && actId > 0;
 
   if (!currentYearFrameId) {
     showToast('年框未就绪', 'warning');
     return;
   }
-  if (!brand) {
-    showToast('请选择品牌', 'warning');
-    return;
-  }
   if (!date) {
-    showToast('请选择报销日期', 'warning');
+    showToast('请选择申请日期', 'warning');
     return;
   }
   if (projectCodeInput && !hasAct) {
-    showToast('关联场次请从下拉候选中选中；若不关联请清空输入', 'warning');
+    showToast('项目编号请从下拉候选中选中；若不关联请清空输入', 'warning');
     return;
   }
-  if (total <= 0) {
-    showToast('费用明细合计须大于 0', 'warning');
+  if (claim_status === 'paid' && !payment_date) {
+    showToast('状态为已支付时，请填写付款日期', 'warning');
     return;
   }
-  if (has_invoice) {
-    const ok = invoices.some(
-      (x) =>
-        x.invoice_no &&
-        x.invoice_date &&
-        (x.invoice_kind === '专票' || x.invoice_kind === '普票')
-    );
-    if (!ok) {
-      showToast('有发票时至少一行需填写：发票号码、开票日期、专票/普票', 'warning');
-      return;
-    }
+  if (!rows.length) {
+    showToast('请至少填写一行费用明细', 'warning');
+    return;
+  }
+  if (total === 0) {
+    showToast('金额合计不能为 0', 'warning');
+    return;
+  }
+  if (!isNonActivity && total <= 0) {
+    showToast('活动成本模式下金额合计须大于 0', 'warning');
+    return;
+  }
+  if (total < 0 && !isNonActivity) {
+    showToast('负金额仅适用于「统筹成本（不同步场次）」归属', 'warning');
+    return;
+  }
+  if (use_advance && advance_amount <= 0) {
+    showToast('勾选备用金时，请填写备用金金额', 'warning');
+    return;
   }
   if (sync_to_activity && !hasAct) {
-    showToast('勾选同步到场次成本时，必须选择关联场次', 'warning');
+    showToast('勾选「同步项目成本」时，必须填写项目编号并从下拉中选中', 'warning');
+    const projInput = document.getElementById('reimbProjectCode');
+    if (projInput) {
+      projInput.classList.add('reimb-project-required-error');
+      try {
+        projInput.focus();
+      } catch (_) {
+        /* ignore */
+      }
+      setTimeout(() => projInput.classList.remove('reimb-project-required-error'), 2400);
+    }
     return;
   }
 
@@ -6877,7 +9432,9 @@ async function saveReimbursementForm() {
     activity_id: hasAct ? actId : null,
     brand,
     date,
-    remarks,
+    payee_name,
+    payment_status,
+    remarks: reimbRemarksWithMeta(remarks, { rows, use_advance, advance_amount, gross_total: grossTotal, payment_date }),
     payment_type,
     cost_module,
     claim_status,
@@ -6901,8 +9458,9 @@ async function saveReimbursementForm() {
       await api('POST', '/reimbursements', body);
       showToast('付款申请已保存', 'success');
     }
-    closeModal();
+    hideReimbursementInline();
     if (currentPage === 'reimbursement') await renderReimbursements();
+    if (currentPage === 'material') await renderMaterialPurchases();
     if (currentPage === 'cost') await renderCost();
     void updateBadges();
   } catch (e) {
@@ -6920,6 +9478,7 @@ async function deleteReimbursementRecord(id) {
     await api('DELETE', `/reimbursements/${id}`);
     showToast('已删除', 'success');
     if (currentPage === 'reimbursement') await renderReimbursements();
+    if (currentPage === 'material') await renderMaterialPurchases();
     void updateBadges();
     if (currentPage === 'cost') await renderCost();
   } catch (e) {
@@ -6936,10 +9495,39 @@ function reimbursementListFilterDebounced() {
   }, 220);
 }
 
+function reimbursementRowClick(ev, id) {
+  if (ev.target.closest('button') || ev.target.closest('input') || ev.target.closest('a')) return;
+  const k = Number(id);
+  if (!Number.isFinite(k)) return;
+  reimbursementOpenDetailModal(k);
+}
+
+function reimbursementExpandDetailHtml(r) {
+  const meta = reimbReadDetailMeta(r.remarks || '');
+  const rows = Array.isArray(meta.rows) ? meta.rows : [];
+  const adv = roundMoney2(meta.advance_amount);
+  const lines = rows.length
+    ? rows
+        .map(
+          (row, i) =>
+            `${i + 1}. ${escapeHtml(row.description || '')}　小计 ${fmtMoney(row.subtotal || 0)}`
+        )
+        .join('<br/>')
+    : '<span style="color:var(--text-muted)">无结构化明细（可能为旧数据）</span>';
+  return `<div class="reimb-inline-detail" style="font-size:12px;line-height:1.5;color:var(--text-primary)">
+    <div style="margin-bottom:6px"><strong>费用明细</strong></div>
+    <div>${lines}</div>
+    ${adv > 0 ? `<div style="margin-top:8px">备用金抵扣：<span class="amount">${fmtMoney(adv)}</span></div>` : ''}
+    <div style="margin-top:8px;color:var(--text-secondary)">${escapeHtml(reimbVisibleRemarks(r.remarks || '') || '—')}</div>
+  </div>`;
+}
+
 function reimbursementRenderListDom() {
   const container = document.getElementById('pageContainer');
   if (!container) return;
+  const view = reimbursementPageState.view || 'registrations';
   const rows = reimbursementPageState.rows || [];
+  const orders = reimbursementPageState.paymentOrders || [];
   const kw = (reimbursementPageState.filterInput || '').trim().toLowerCase();
   const filtered = !kw
     ? rows
@@ -6947,76 +9535,138 @@ function reimbursementRenderListDom() {
         const pc = String(r.related_project_code || '').toLowerCase();
         const brand = String(r.brand || '').toLowerCase();
         const city = String(r.city || '').toLowerCase();
-        const rm = String(r.remarks || '').toLowerCase();
+        const rm = reimbVisibleRemarks(r.remarks || '').toLowerCase();
         const tp = reimbPaymentTypeLabel(r.payment_type || '').toLowerCase();
         const mod = reimbCostModuleLabel(r.cost_module || '').toLowerCase();
         const st = reimbClaimStatusLabel(r.claim_status || '').toLowerCase();
         return pc.includes(kw) || brand.includes(kw) || city.includes(kw) || rm.includes(kw) || tp.includes(kw) || mod.includes(kw) || st.includes(kw) || String(r.id).includes(kw);
       });
   const fi = escapeHtml(reimbursementPageState.filterInput || '');
+  const ordersFiltered = orders.filter((o) => {
+    if (!kw) return true;
+    return [o.order_no, o.payee_name, o.remarks, o.status, o.id].some((x) => String(x || '').toLowerCase().includes(kw));
+  });
+  const paymentOrderRow = (o) => `<tr>
+          <td>${escapeHtml(o.order_no || `#${o.id}`)}</td>
+          <td>${escapeHtml(fmtDateShort(o.order_date))}</td>
+          <td>${escapeHtml(fmtDateShort(o.payment_date))}</td>
+          <td>${escapeHtml(o.payee_name || '—')}</td>
+          <td class="amount" style="text-align:left">${fmtMoney(o.total_amount)}</td>
+          <td><span class="badge badge-success">${String(o.status || '') === 'paid' ? '已支付' : escapeHtml(o.status || '—')}</span></td>
+          <td>${escapeHtml(o.item_count || 0)}</td>
+          <td style="max-width:220px;overflow:hidden;text-overflow:ellipsis" title="${escapeHtml(o.remarks || '')}">${escapeHtml(o.remarks || '—')}</td>
+          <td><button type="button" class="btn btn-secondary btn-sm" onclick="paymentOrderViewDetail(${o.id})">详情</button></td>
+        </tr>`;
+  const ordersUnpaid = ordersFiltered.filter((o) => String(o.status || '').toLowerCase() !== 'paid');
+  const ordersPaid = ordersFiltered.filter((o) => String(o.status || '').toLowerCase() === 'paid');
+  const listRowsHtml =
+    view === 'payment_orders'
+      ? ordersFiltered.length === 0
+        ? '<tr><td colspan="9" style="text-align:center;color:var(--text-muted);padding:24px">暂无付款单</td></tr>'
+        : `${ordersUnpaid.length ? `<tr><td colspan="9" style="padding:8px 12px;font-size:12px;font-weight:600;color:var(--text-secondary);background:var(--bg-input)">未支付 ${ordersUnpaid.length} 笔</td></tr>` : ''}${ordersUnpaid.map(paymentOrderRow).join('')}${ordersPaid.length ? `<tr><td colspan="9" style="padding:8px 12px;font-size:12px;font-weight:600;color:var(--text-secondary);background:var(--bg-input)">已支付 ${ordersPaid.length} 笔</td></tr>` : ''}${ordersPaid.map(paymentOrderRow).join('')}`
+      : '';
+
+  const registrationRowsHtml = (list) =>
+    list
+      .flatMap((r) => {
+        const m = r.merged_into_activity === 1 || r.merged_into_activity === true;
+        const paymentType = r.payment_type || 'personal_reimbursement';
+        const costModule = r.cost_module || 'activity';
+        const claimStatus = r.claim_status || 'draft';
+        const visibleRemarks = reimbVisibleRemarks(r.remarks || '');
+        const amt = parseFloat(r.amount) || 0;
+        const amtStyle =
+          amt > 0 ? 'color:var(--accent);font-weight:600' : amt < 0 ? 'color:var(--danger);font-weight:600' : '';
+        const main = `<tr class="reimb-list-row" style="cursor:pointer" onclick="reimbursementRowClick(event, ${r.id})">
+                    <td>${escapeHtml(fmtDateShort(r.date))}</td>
+                    <td>${escapeHtml(reimbPaymentTypeLabel(paymentType))}</td>
+                    <td>${escapeHtml(reimbCostModuleLabel(costModule))}</td>
+                    <td class="project-code reimbursement-list-code" title="${escapeHtml(r.related_project_code || '')}">${escapeHtml(r.related_project_code || '—')}</td>
+                    <td>${m ? '<span class="badge badge-success">已计入</span>' : '—'}</td>
+                    <td class="amount" style="text-align:left;${amtStyle}">${fmtMoney(r.amount)}</td>
+                    <td><span class="badge ${reimbClaimStatusBadgeClass(claimStatus)}">${escapeHtml(reimbClaimStatusLabel(claimStatus))}</span></td>
+                    <td>${paymentStatusHtml(r.payment_status, r.payment_order_id)}</td>
+                    <td class="reimbursement-list-payee" title="${escapeHtml(r.payee_name || '')}">${escapeHtml(r.payee_name || '—')}</td>
+                    <td class="reimbursement-list-remarks" title="${escapeHtml(visibleRemarks)}">${escapeHtml(visibleRemarks || '—')}</td>
+                    <td onclick="event.stopPropagation()">
+                      <div class="reimbursement-row-actions">
+                      <button type="button" class="btn btn-secondary btn-sm" onclick="reimbursementEditById(${r.id})">编辑</button>
+                      <button type="button" class="btn btn-danger btn-sm" onclick="deleteReimbursementRecord(${r.id})">删除</button>
+                      </div>
+                    </td>
+                  </tr>`;
+        return [main];
+      })
+      .join('');
+  const unpaidReg = filtered.filter((r) => String(r.payment_status || 'unpaid').toLowerCase() !== 'paid');
+  const paidReg = filtered.filter((r) => String(r.payment_status || 'unpaid').toLowerCase() === 'paid');
   container.innerHTML = `
-      <div class="page-toolbar" style="margin-bottom:16px;display:flex;flex-wrap:wrap;gap:10px;align-items:center">
-        <button type="button" class="btn btn-primary" onclick="showReimbursementModal(null)">新建付款申请</button>
-        <input type="search" class="form-control" id="reimbListFilter" placeholder="筛选：品牌 / 项目编号 / 城市 / 备注 / 类型" style="max-width:360px"
+    <div class="reimbursement-page">
+      <div class="page-toolbar reimbursement-toolbar">
+        <div class="reimb-tool-group" role="tablist" aria-label="付款申请视图切换">
+          <button type="button" class="btn reimb-tool-btn reimb-tool-btn--tab" role="tab" aria-selected="${view === 'registrations' ? 'true' : 'false'}" data-active="${view === 'registrations' ? 'true' : 'false'}" onclick="reimbursementPageState.view='registrations';reimbursementRenderListDom()">成本登记</button>
+          <button type="button" class="btn reimb-tool-btn reimb-tool-btn--tab" role="tab" aria-selected="${view === 'payment_orders' ? 'true' : 'false'}" data-active="${view === 'payment_orders' ? 'true' : 'false'}" onclick="reimbursementPageState.view='payment_orders';reimbursementRenderListDom()">付款单</button>
+        </div>
+        <span class="reimb-tool-divider" aria-hidden="true"></span>
+        <div class="reimb-tool-group reimb-tool-group--actions">
+          <button type="button" class="btn reimb-tool-btn reimb-tool-btn--action" onclick="showReimbursementForm(null)">
+            <i data-lucide="plus" class="reimb-tool-btn-icon" aria-hidden="true"></i>报销登记
+          </button>
+          <button type="button" class="btn reimb-tool-btn reimb-tool-btn--action" onclick="showCorporatePaymentTodo()">
+            <i data-lucide="file-text" class="reimb-tool-btn-icon" aria-hidden="true"></i>付款申请
+          </button>
+        </div>
+        <input type="search" class="form-control" id="reimbListFilter" placeholder="筛选：品牌 / 项目编号 / 城市 / 备注 / 类型" style="max-width:360px;margin-left:auto"
           value="${fi}"
           oninput="reimbursementPageState.filterInput=this.value;reimbursementListFilterDebounced()">
       </div>
-      <div class="card">
-        <div class="card-body" style="padding:0">
-          <div style="overflow-x:auto">
+      <div id="reimbInlineHost" class="reimbursement-inline-host" hidden></div>
+      <div class="reimbursement-list-panel">
+        <div class="table-wrapper reimbursement-list-wrap">
+            ${view === 'payment_orders' ? `
             <table class="data-table">
               <thead>
+                <tr><th>付款单号</th><th>申请日期</th><th>付款日期</th><th>收款方</th><th style="text-align:left">金额</th><th>状态</th><th>明细数</th><th>备注</th><th>操作</th></tr>
+              </thead>
+              <tbody>${listRowsHtml}</tbody>
+            </table>
+            ` : `
+            <table class="data-table reimbursement-registration-table reimbursement-table-compact">
+              <thead>
                 <tr>
-                  <th style="min-width:88px">日期</th>
-                  <th style="min-width:96px">申请类型</th>
-                  <th style="min-width:120px">成本板块</th>
-                  <th style="min-width:72px">品牌</th>
-                  <th style="min-width:120px;text-align:left">金额</th>
-                  <th style="min-width:140px">项目编号</th>
-                  <th style="min-width:88px">状态</th>
-                  <th style="min-width:88px">合并场次</th>
-                  <th style="min-width:72px">发票</th>
-                  <th style="min-width:180px">备注</th>
-                  <th style="min-width:120px">操作</th>
+                  <th>日期</th>
+                  <th>申请类型</th>
+                  <th>成本板块</th>
+                  <th>项目编号</th>
+                  <th>合并场次</th>
+                  <th style="text-align:left">金额</th>
+                  <th>状态</th>
+                  <th>付款状态</th>
+                  <th>收款方</th>
+                  <th>备注</th>
+                  <th>操作</th>
                 </tr>
               </thead>
               <tbody>
-                ${filtered
-                  .map((r) => {
-                    const m = r.merged_into_activity === 1 || r.merged_into_activity === true;
-                    const hi = r.has_invoice === 1 || r.has_invoice === true;
-                    const paymentType = r.payment_type || 'personal_reimbursement';
-                    const costModule = r.cost_module || 'activity';
-                    const claimStatus = r.claim_status || 'draft';
-                    return `<tr>
-                    <td style="white-space:nowrap">${escapeHtml(fmtDateShort(r.date))}</td>
-                    <td style="white-space:nowrap">${escapeHtml(reimbPaymentTypeLabel(paymentType))}</td>
-                    <td style="white-space:nowrap">${escapeHtml(reimbCostModuleLabel(costModule))}</td>
-                    <td style="white-space:nowrap">${escapeHtml(r.brand || '—')}</td>
-                    <td class="amount" style="text-align:left;white-space:nowrap">${fmtMoney(r.amount)}</td>
-                    <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis" title="${escapeHtml(r.related_project_code || '')}">${escapeHtml(r.related_project_code || '—')}</td>
-                    <td style="white-space:nowrap"><span class="badge ${reimbClaimStatusBadgeClass(claimStatus)}">${escapeHtml(reimbClaimStatusLabel(claimStatus))}</span></td>
-                    <td style="white-space:nowrap">${m ? '<span class="badge badge-success">已计入</span>' : '—'}</td>
-                    <td style="white-space:nowrap">${hi ? '有' : '无'}</td>
-                    <td style="max-width:220px;overflow:hidden;text-overflow:ellipsis" title="${escapeHtml(r.remarks || '')}">${escapeHtml(r.remarks || '—')}</td>
-                    <td onclick="event.stopPropagation()" style="white-space:nowrap">
-                      <button type="button" class="btn btn-secondary btn-sm" onclick="reimbursementEditById(${r.id})">编辑</button>
-                      <button type="button" class="btn btn-secondary btn-sm" onclick="reimbursementQuickExport(${r.id})">CSV预览</button>
-                      <button type="button" class="btn btn-danger btn-sm" onclick="deleteReimbursementRecord(${r.id})">删除</button>
-                    </td>
-                  </tr>`;
-                  })
-                  .join('')}
+                ${
+                  !filtered.length
+                    ? '<tr><td colspan="11" style="text-align:center;color:var(--text-muted);padding:24px">暂无记录</td></tr>'
+                    : `${unpaidReg.length ? `<tr><td colspan="11" style="padding:8px 12px;font-size:12px;font-weight:600;color:var(--text-secondary);background:var(--bg-input)">未支付 · ${unpaidReg.length} 笔（点击行展开明细）</td></tr>` : ''}
+                ${registrationRowsHtml(unpaidReg)}
+                ${paidReg.length ? `<tr><td colspan="11" style="padding:8px 12px;font-size:12px;font-weight:600;color:var(--text-secondary);background:var(--bg-input)">已支付 · ${paidReg.length} 笔</td></tr>` : ''}
+                ${registrationRowsHtml(paidReg)}`
+                }
               </tbody>
             </table>
-          </div>
+            `}
+        </div>
           ${
-            !filtered.length
+            view !== 'payment_orders' && !filtered.length
               ? '<div class="empty-state" style="padding:24px"><div class="empty-title">暂无付款申请记录</div></div>'
               : ''
           }
-        </div>
       </div>
+    </div>
     `;
   renderLucideIcons();
 }
@@ -7032,13 +9682,17 @@ async function renderReimbursements() {
   container.innerHTML = '<div class="empty-state"><div class="skeleton skeleton-title"></div></div>';
   try {
     const qs = `?yearFrameId=${currentYearFrameId}`;
-    const [rows, acts] = await Promise.all([
+    const [rows, acts, paymentOrders] = await Promise.all([
       api('GET', `/reimbursements${qs}`),
       api('GET', `/activities?yearFrameId=${currentYearFrameId}&sortBy=date&sortOrder=DESC&isVirtual=0`),
+      api('GET', `/payment-orders${qs}`),
     ]);
     reimbursementPageState.rows = rows;
     reimbursementPageState.activities = acts;
+    reimbursementPageState.paymentOrders = paymentOrders;
     if (reimbursementPageState.filterInput == null) reimbursementPageState.filterInput = '';
+    const idSet = new Set((rows || []).map((r) => Number(r.id)).filter(Number.isFinite));
+    reimbursementListExpanded = new Set([...reimbursementListExpanded].filter((id) => idSet.has(id)));
     reimbursementRenderListDom();
   } catch (e) {
     container.innerHTML = `<div class="empty-state"><div class="empty-title">加载失败</div><div class="empty-sub">${escapeHtml(e.message)}</div></div>`;
@@ -7048,22 +9702,7 @@ async function renderReimbursements() {
 async function reimbursementQuickExport(id) {
   try {
     const r = await api('GET', `/reimbursements/${id}`);
-    const p = {
-      id: r.id,
-      date: r.date,
-      remarks: r.remarks || '',
-      activity_id: r.activity_id,
-      brand: r.brand || '',
-      project_code: r.related_project_code || '',
-      payment_type: r.payment_type || 'personal_reimbursement',
-      cost_module: r.cost_module || 'activity',
-      claim_status: r.claim_status || 'draft',
-      has_invoice: !!(r.has_invoice === 1 || r.has_invoice === true),
-      invoices: Array.isArray(r.invoices) ? r.invoices : [],
-      cost_details: parseActivityCostDetails({ cost_details: r.cost_details }),
-      amount: parseFloat(r.amount) || 0,
-      merged_into_activity: !!(r.merged_into_activity === 1 || r.merged_into_activity === true),
-    };
+    const p = reimbursementPayloadFromRecord(r);
     const csvText = buildReimbursementCsvText(p);
     const filename = `付款申请_${p.id}_${(p.date || '').slice(0, 10)}.csv`;
     openReimbursementPreviewModal({
@@ -7079,12 +9718,11 @@ async function reimbursementQuickExport(id) {
 }
 
 /* =============================================
-   页面：道具维修（品牌 + 自定义项目 + 无成本）
+   页面：道具维修（品牌 + 明细项目 + 报价/成本 + 付款状态）
    ============================================= */
 function propRepairRowHtml(r) {
-  const rem = r.remarks ? String(r.remarks).slice(0, 48) + (String(r.remarks).length > 48 ? '…' : '') : '—';
   const noCost = r.no_cost === true || r.no_cost === 1 || String(r.no_cost) === '1';
-  const merged = isMergedFlag(r.merged_into_activity);
+  const payee = String(r.payee_name || '').trim();
   return `<tr>
     <td>${r.id}</td>
     <td>${escapeHtml(fmtDate(r.repair_date))}</td>
@@ -7092,10 +9730,8 @@ function propRepairRowHtml(r) {
     <td><span class="badge badge-${brandColor(r.brand_code || r.brand_name)}">${escapeHtml(r.brand_name || r.brand_code || '—')}</span></td>
     <td class="amount amount-revenue" style="text-align:right">${fmtMoney(r.quoted_price || 0)}</td>
     <td class="amount" style="text-align:right">${noCost ? '无成本' : fmtMoney(r.total_amount)}</td>
-    <td>${listActivityProjectHtml(r)}</td>
-    <td>${listAllocationNoteHtml(r.allocation_note)}</td>
-    <td>${merged ? '<span class="badge badge-success">已计入</span>' : '<span class="badge badge-gray">未计入</span>'}</td>
-    <td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;font-size:12px;color:var(--text-secondary)" title="${escapeHtml(r.remarks || '')}">${escapeHtml(rem)}</td>
+    <td>${payee ? escapeHtml(payee) : '—'}</td>
+    <td>${paymentStatusHtml(r.payment_status, r.payment_order_id)}</td>
     <td onclick="event.stopPropagation()" style="white-space:nowrap">
       <button type="button" class="btn btn-secondary btn-sm" onclick="showPropRepairModal(${r.id})">编辑</button>
       <button type="button" class="btn btn-danger btn-sm" onclick="deletePropRepairRecord(${r.id})">删除</button>
@@ -7105,11 +9741,6 @@ function propRepairRowHtml(r) {
 
 function propRepairSetBrandFilter(v) {
   propRepairPageState.filterBrandId = v || '';
-  renderPropRepairs();
-}
-
-function propRepairSetMergeFilter(v) {
-  propRepairPageState.mergeFilter = v || 'all';
   renderPropRepairs();
 }
 
@@ -7205,14 +9836,10 @@ async function renderPropRepairs() {
       )
       .join('');
 
-    const listRows = (propRepairPageState.mergeFilter === 'merged')
-      ? (rows || []).filter((r) => isMergedFlag(r.merged_into_activity))
-      : (propRepairPageState.mergeFilter === 'unmerged')
-        ? (rows || []).filter((r) => !isMergedFlag(r.merged_into_activity))
-        : (rows || []);
+    const listRows = rows || [];
     const listBody = listRows.length
       ? listRows.map((r) => propRepairRowHtml(r)).join('')
-      : '<tr><td colspan="11" style="text-align:center;color:var(--text-muted);padding:20px">暂无记录</td></tr>';
+      : '<tr><td colspan="9" style="text-align:center;color:var(--text-muted);padding:20px">暂无记录</td></tr>';
 
     container.innerHTML = `
       <div class="stats-grid" style="margin-bottom:16px">
@@ -7229,16 +9856,11 @@ async function renderPropRepairs() {
         <div class="card-header" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
           <div>
             <div class="card-title">维修登记记录</div>
-            <div class="card-sub">全部为自定义项目；支持“无成本”登记</div>
+            <div class="card-sub">明细金额自动汇总为维修成本（成本）；对公付款生成后状态为已支付</div>
           </div>
           <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
             <select class="filter-select" id="prListBrandFilter" onchange="propRepairSetBrandFilter(this.value)">
               <option value="">全部品牌</option>${brandOpts}
-            </select>
-            <select class="filter-select" id="prListMergeFilter" onchange="propRepairSetMergeFilter(this.value)">
-              <option value="all" ${propRepairPageState.mergeFilter === 'all' ? 'selected' : ''}>计入：全部</option>
-              <option value="unmerged" ${propRepairPageState.mergeFilter === 'unmerged' ? 'selected' : ''}>计入：未计入</option>
-              <option value="merged" ${propRepairPageState.mergeFilter === 'merged' ? 'selected' : ''}>计入：已计入</option>
             </select>
             <button type="button" class="btn btn-primary btn-sm" onclick="showPropRepairModal(null)">+ 新建登记</button>
           </div>
@@ -7246,7 +9868,7 @@ async function renderPropRepairs() {
         <div class="card-body" style="padding:0">
           <div class="table-wrapper">
             <table>
-              <thead><tr><th>ID</th><th>日期</th><th>区域</th><th>品牌</th><th style="text-align:right">报价</th><th style="text-align:right">维修费</th><th>关联项目</th><th>计入说明</th><th>计入状态</th><th>备注</th><th>操作</th></tr></thead>
+              <thead><tr><th>ID</th><th>日期</th><th>区域</th><th>品牌</th><th style="text-align:right">报价</th><th style="text-align:right">成本</th><th>收款方</th><th>付款状态</th><th>操作</th></tr></thead>
               <tbody>${listBody}</tbody>
             </table>
           </div>
@@ -7289,13 +9911,6 @@ async function showPropRepairModal(id) {
   } catch {
     brands = [];
   }
-  let projectOptions = '';
-  try {
-    const codes = await ensureActivityProjectIndex();
-    projectOptions = codes.map((c) => `<option value="${escapeHtml(c)}"></option>`).join('');
-  } catch {
-    projectOptions = '';
-  }
   const brandOpts = brands
     .map((b) => `<option value="${b.id}">${escapeHtml(b.brand_name || b.brand_code)}</option>`)
     .join('');
@@ -7308,11 +9923,9 @@ async function showPropRepairModal(id) {
   const customFromRecord = (record && Array.isArray(record.items) ? record.items : []).filter(
     (it) => it && it.name
   );
-  const remarksAttr = record && record.remarks ? escapeHtml(record.remarks) : '';
   const noCost = record && (record.no_cost === true || record.no_cost === 1 || String(record.no_cost) === '1');
   const quotedPrice = record && record.quoted_price != null ? roundMoney2(record.quoted_price).toFixed(2) : '';
-  const mergedPr = record && (record.merged_into_activity === true || record.merged_into_activity === 1 || String(record.merged_into_activity) === '1');
-  const prProject = record && record.activity_id ? (Array.from(logisticsProjectIndex.codeToId.entries()).find(([, idv]) => Number(idv) === Number(record.activity_id)) || [record.related_project_code || '', 0])[0] : '';
+  const prPaid = record && (String(record.payment_status || '').toLowerCase() === 'paid');
 
   body.innerHTML = `
     <input type="hidden" id="prRecordId" value="${record ? record.id : ''}">
@@ -7340,6 +9953,17 @@ async function showPropRepairModal(id) {
       <label class="form-label">报价 (¥)</label>
       <input type="number" class="form-control" id="prQuotedPrice" placeholder="0.00" step="0.01" min="0" value="${quotedPrice}">
     </div>
+    <div class="form-group">
+      <label class="form-label">收款方</label>
+      <input type="text" class="form-control" id="prPayeeName" placeholder="用于对公付款合并" value="${escapeHtml((record && record.payee_name) || '')}">
+    </div>
+    <div class="form-group">
+      <label class="form-label">付款状态</label>
+      <select class="form-control" id="prPaymentStatus">
+        <option value="unpaid" ${!prPaid ? 'selected' : ''}>未支付</option>
+        <option value="paid" ${prPaid ? 'selected' : ''}>已支付</option>
+      </select>
+    </div>
     <label style="display:flex;align-items:center;gap:8px;margin:0 0 10px;color:var(--text-secondary);cursor:pointer">
       <input type="checkbox" id="prNoCost" ${noCost ? 'checked' : ''} onchange="updatePrTotal()">
       <span>无成本（勾选后本条金额记 0）</span>
@@ -7351,25 +9975,8 @@ async function showPropRepairModal(id) {
       </div>
       <div id="prCustomRows"></div>
     </div>
-    <div class="form-group">
-      <label class="form-label">备注</label>
-      <input type="text" class="form-control" id="prRemarks" placeholder="选填" value="${remarksAttr}">
-    </div>
-    <div class="form-group">
-      <label class="form-label">关联项目编号（可选）</label>
-      <input type="text" class="form-control" id="prProjectCode" list="prProjectList" autocomplete="off" placeholder="输入并从下拉选择（仅允许活动项目编号）" value="${escapeHtml(prProject)}">
-      <datalist id="prProjectList">${projectOptions}</datalist>
-    </div>
-    <label style="display:flex;align-items:center;gap:8px;margin:0 0 10px;color:var(--text-secondary);cursor:pointer">
-      <input type="checkbox" id="prMergedIntoActivity" ${mergedPr ? 'checked' : ''}>
-      <span>计入活动成本（勾选时需选择关联项目编号）</span>
-    </label>
-    <div class="form-group">
-      <label class="form-label">计入说明</label>
-      <input type="text" class="form-control" id="prAllocationNote" placeholder="选填" value="${escapeHtml((record && record.allocation_note) || '')}">
-    </div>
     <div style="margin-top:12px;padding:12px;background:var(--accent-soft);border-radius:var(--radius-sm);display:flex;justify-content:space-between;align-items:center">
-      <span style="color:var(--text-secondary)">合计</span>
+      <span style="color:var(--text-secondary)">成本（明细合计）</span>
       <span class="amount" id="prTotalDisplay" style="font-size:18px;font-weight:700">${fmtMoney(0)}</span>
     </div>
   `;
@@ -7397,23 +10004,8 @@ async function savePropRepairForm() {
   const repair_date = document.getElementById('prRepairDate')?.value;
   const region = document.getElementById('prRegion')?.value;
   const quoted_price = roundMoney2(document.getElementById('prQuotedPrice')?.value);
-  const remarks = document.getElementById('prRemarks')?.value?.trim() || '';
   const no_cost = !!document.getElementById('prNoCost')?.checked;
-  const projectCode = (document.getElementById('prProjectCode')?.value || '').replace(/^\uFEFF/, '').trim();
-  const mergedIntoActivity = !!document.getElementById('prMergedIntoActivity')?.checked;
-  if (projectCode && !logisticsProjectIndex.codes.has(projectCode)) {
-    showToast('关联项目编号必须从活动项目编号中选择', 'warning');
-    return;
-  }
-  if (mergedIntoActivity && !projectCode) {
-    showToast('勾选计入活动成本时，必须选择关联项目编号', 'warning');
-    return;
-  }
-  const activityId = projectCode ? logisticsProjectIndex.codeToId.get(projectCode) : null;
-  if (mergedIntoActivity && !activityId) {
-    showToast('关联项目编号无效，请从下拉建议中选择', 'warning');
-    return;
-  }
+  const payment_status = document.getElementById('prPaymentStatus')?.value === 'paid' ? 'paid' : 'unpaid';
   const items = no_cost ? [] : collectPropRepairItemsFromForm();
   const total = no_cost ? 0 : roundMoney2(items.reduce((s, x) => s + x.amount, 0));
   if (!brand_id) {
@@ -7438,12 +10030,14 @@ async function savePropRepairForm() {
     repair_date,
     region,
     quoted_price,
+    payee_name: document.getElementById('prPayeeName')?.value?.trim() || null,
+    payment_status,
     items,
     no_cost: no_cost ? 1 : 0,
-    activity_id: activityId || null,
-    merged_into_activity: mergedIntoActivity ? 1 : 0,
-    allocation_note: document.getElementById('prAllocationNote')?.value?.trim() || null,
-    remarks,
+    activity_id: null,
+    merged_into_activity: 0,
+    allocation_note: null,
+    remarks: null,
   };
   try {
     if (id) {
@@ -7894,7 +10488,7 @@ async function invRenderAddItemCatalogModalContent() {
       </tr>`;
   });
   const whOpts = (invAddItemCatalogModalState.warehouses || [])
-    .map((w) => `<option value="${w.id}" ${Number(w.id) === whId ? 'selected' : ''}>${escapeHtml(`${invWarehouseBrandDisplay(w) || ''} · ${w.region || ''}${w.label ? ` · ${w.label}` : ''}`)}</option>`)
+    .map((w) => `<option value="${w.id}" ${Number(w.id) === whId ? 'selected' : ''}>${escapeHtml(`${invWarehouseFullLabel(w)}${w.label && w.label !== `${w.region}仓库` ? ` · ${w.label}` : ''}`)}</option>`)
     .join('');
   body.innerHTML = `
     <div class="form-group" style="margin-bottom:10px">
@@ -7904,7 +10498,7 @@ async function invRenderAddItemCatalogModalContent() {
       </select>
     </div>
     <div class="form-hint" style="margin:0 0 10px">
-      当前仓库：<strong>${escapeHtml(wh ? `${invWarehouseBrandDisplay(wh)} · ${wh.region}` : `#${whId}`)}</strong>。从目录选择物料加入仓库；数量可填 0，后续再调整。
+      当前仓库：<strong>${escapeHtml(wh ? invWarehouseFullLabel(wh) : `#${whId}`)}</strong>。从目录选择物料加入仓库；数量可填 0，后续再调整。
     </div>
     <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px">
       <button type="button" class="btn btn-secondary btn-xs" onclick="invAddItemCatalogToggleAll(true)">全选可添加</button>
@@ -8765,10 +11359,30 @@ function invStatQty(n) {
 function invWarehouseBrandDisplay(w) {
   const code = String(w?.brand_code || '').trim().toUpperCase();
   const region = String(w?.region || '').trim();
+  // X.O 的「北区/南区」是公司级跨品牌备货仓，单独显示 brand 时省略 X.O 前缀
   if (code === 'X.O' && (region === '北区' || region === '南区')) {
     return region;
   }
   return String(w?.brand_code || '').trim();
+}
+
+/**
+ * 仓库统一展示标签：用于「品牌 · 区域」组合显示，所有 UI 位置保持一致
+ *   X.O 北区 → 「北区仓库」
+ *   X.O 南区 → 「南区仓库」
+ *   其余 → 「{brand_code} {region}」
+ * 入参可为 inv_warehouses 行或仅有 brand_code/region 字段的对象（如出库单 join 结果）。
+ */
+function invWarehouseFullLabel(w) {
+  const code = String(w?.brand_code || '').trim();
+  const region = String(w?.region || '').trim();
+  if (code.toUpperCase() === 'X.O' && (region === '北区' || region === '南区')) {
+    return `${region}仓库`;
+  }
+  if (!code && !region) return '—';
+  if (!code) return region;
+  if (!region) return code;
+  return `${code} ${region}`;
 }
 
 function invReorderWarehouseCards(warehouses) {
@@ -8787,7 +11401,7 @@ function invReorderWarehouseCards(warehouses) {
 
 function invRenderWarehouseCardsHtml(warehouses, selectedId) {
   if (!warehouses.length) {
-    return '<div class="empty-state inv-wh-cards-empty">暂无仓库。请由管理员在数据库或迁移脚本中维护仓库。</div>';
+    return '<div class="empty-state inv-wh-cards-empty">暂无仓库。点击右上「+ 新建仓库」开始添加（仅管理员）。</div>';
   }
   const orderedWarehouses = invReorderWarehouseCards(warehouses);
   const sid = selectedId != null ? Number(selectedId) : null;
@@ -8797,12 +11411,17 @@ function invRenderWarehouseCardsHtml(warehouses, selectedId) {
         .map((w) => {
           const active = sid != null && Number(w.id) === sid;
           const label = w.label ? `<div class="inv-wh-card-label">${escapeHtml(w.label)}</div>` : '';
+          const city = w.city ? `<div class="inv-wh-card-city" title="所在城市">${escapeHtml(w.city)}</div>` : '';
           return `
-        <button type="button" class="inv-wh-card ${active ? 'active' : ''}" data-wh-id="${w.id}" onclick="invSelectWarehouse(${w.id})" role="listitem">
-          <div class="inv-wh-card-brand">${escapeHtml(invWarehouseBrandDisplay(w))}</div>
-          <div class="inv-wh-card-region">${escapeHtml(w.region)}</div>
-          ${label}
-        </button>`;
+        <div class="inv-wh-card-wrap">
+          <button type="button" class="inv-wh-card ${active ? 'active' : ''}" data-wh-id="${w.id}" onclick="invSelectWarehouse(${w.id})" role="listitem">
+            <div class="inv-wh-card-brand">${escapeHtml(invWarehouseBrandDisplay(w))}</div>
+            <div class="inv-wh-card-region">${escapeHtml(w.region)}</div>
+            ${city}
+            ${label}
+          </button>
+          <button type="button" class="inv-wh-card-edit inv-admin-only" title="编辑仓库" aria-label="编辑仓库" onclick="event.stopPropagation();invOpenWarehouseModal(${w.id})"><i data-lucide="pencil" aria-hidden="true"></i></button>
+        </div>`;
         })
         .join('')}
     </div>`;
@@ -8827,12 +11446,17 @@ function invRenderStockMasterCardsHtml(warehouses, selectedWarehouseId, stockMas
           .map((w) => {
             const active = smv === 'warehouse' && sid != null && Number(w.id) === sid;
             const label = w.label ? `<div class="inv-wh-card-label">${escapeHtml(w.label)}</div>` : '';
+            const city = w.city ? `<div class="inv-wh-card-city" title="所在城市">${escapeHtml(w.city)}</div>` : '';
             return `
-        <button type="button" class="inv-wh-card ${active ? 'active' : ''}" data-wh-id="${w.id}" onclick="invSelectWarehouse(${w.id})" role="listitem">
-          <div class="inv-wh-card-brand">${escapeHtml(invWarehouseBrandDisplay(w))}</div>
-          <div class="inv-wh-card-region">${escapeHtml(w.region)}</div>
-          ${label}
-        </button>`;
+        <div class="inv-wh-card-wrap">
+          <button type="button" class="inv-wh-card ${active ? 'active' : ''}" data-wh-id="${w.id}" onclick="invSelectWarehouse(${w.id})" role="listitem">
+            <div class="inv-wh-card-brand">${escapeHtml(invWarehouseBrandDisplay(w))}</div>
+            <div class="inv-wh-card-region">${escapeHtml(w.region)}</div>
+            ${city}
+            ${label}
+          </button>
+          <button type="button" class="inv-wh-card-edit inv-admin-only" title="编辑仓库" aria-label="编辑仓库" onclick="event.stopPropagation();invOpenWarehouseModal(${w.id})"><i data-lucide="pencil" aria-hidden="true"></i></button>
+        </div>`;
           })
           .join('');
   const wineActive = smv === 'wine';
@@ -8880,6 +11504,144 @@ function invSelectStockMasterView(mode) {
     localStorage.setItem('remy_stockMasterView', mode);
   } catch (_) { /* ignore */ }
   renderInventory();
+}
+
+/** 新建/编辑仓库的弹窗状态（编辑模式时记录目标 id） */
+let invWarehouseModalState = { id: null, brands: [] };
+
+const INV_WAREHOUSE_REGION_OPTIONS = ['东区', '南区', '北区', '东南区'];
+
+async function invOpenWarehouseModal(id) {
+  if (!hasWriteAccess()) {
+    showToast('仅管理员可维护仓库', 'warning');
+    return;
+  }
+  const targetId = Number.isFinite(parseInt(id, 10)) ? parseInt(id, 10) : null;
+  invWarehouseModalState = { id: targetId, brands: [] };
+
+  // 优先用前端 _brandCache，缺失则现拉
+  let brands = Array.isArray(_brandCache) && _brandCache.length ? _brandCache : null;
+  if (!brands) {
+    try {
+      brands = await api('GET', '/brand?active=true');
+      _brandCache = Array.isArray(brands) ? brands : [];
+    } catch (_) {
+      brands = [];
+    }
+  }
+  invWarehouseModalState.brands = Array.isArray(brands) ? brands : [];
+
+  // 编辑模式：拉取当前仓库详情
+  let current = null;
+  if (targetId) {
+    try {
+      const all = await api('GET', '/inventory/warehouses');
+      current = (Array.isArray(all) ? all : []).find((w) => Number(w.id) === targetId) || null;
+    } catch (_) {
+      current = null;
+    }
+    if (!current) {
+      showToast('未找到该仓库', 'error');
+      return;
+    }
+  }
+
+  const titleEl = document.getElementById('invWhModalTitle');
+  if (titleEl) titleEl.textContent = current ? `编辑仓库 #${current.id}` : '新建仓库';
+  const submitBtn = document.getElementById('invWhModalSubmit');
+  if (submitBtn) submitBtn.textContent = current ? '保存修改' : '创建仓库';
+
+  const brandOptions = invWarehouseModalState.brands
+    .map((b) => `<option value="${b.id}" ${current && Number(current.brand_id) === Number(b.id) ? 'selected' : ''}>${escapeHtml(b.brand_code || '')} ${escapeHtml(b.brand_name || '')}</option>`)
+    .join('');
+  const regionOptions = INV_WAREHOUSE_REGION_OPTIONS
+    .map((r) => `<option value="${r}" ${current && current.region === r ? 'selected' : ''}>${r}</option>`)
+    .join('');
+
+  const body = document.getElementById('invWhModalBody');
+  if (body) {
+    body.innerHTML = `
+      <div class="form-group">
+        <label class="form-label" for="invWhLabel">仓库名称 <span class="form-hint" style="font-weight:normal">（显示在卡片底部，例如：布赫拉迪 全国总仓）</span></label>
+        <input type="text" class="form-control" id="invWhLabel" maxlength="128" placeholder="可选；留空则只显示「品牌 区域」" value="${escapeHtml(current?.label || '')}">
+      </div>
+      <div class="form-row" style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+        <div class="form-group">
+          <label class="form-label" for="invWhBrand">品牌归属 <span class="required">*</span></label>
+          <select class="form-control" id="invWhBrand">
+            <option value="">请选择品牌</option>
+            ${brandOptions}
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="invWhRegion">区域 <span class="required">*</span></label>
+          <select class="form-control" id="invWhRegion">
+            <option value="">请选择区域</option>
+            ${regionOptions}
+          </select>
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="invWhCity">仓库所在城市</label>
+        <input type="text" class="form-control" id="invWhCity" maxlength="64" placeholder="例如：北京 / 上海 / 广州（用于后台检索）" value="${escapeHtml(current?.city || '')}">
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="invWhRemarks">备注 <span class="form-hint" style="font-weight:normal">（实际承载品牌、特殊用途等说明）</span></label>
+        <textarea class="form-control" id="invWhRemarks" rows="3" maxlength="500" placeholder="例：南区仓库虽挂在 X.O 名下，实际大多承载 PHD 物料；物流计入品牌请在物流页面手动调整。">${escapeHtml(current?.remarks || '')}</textarea>
+      </div>
+      <p class="form-hint" style="margin:0;font-size:12px;line-height:1.5;color:var(--text-secondary)">
+        ${current
+          ? '编辑后会立即生效；同一品牌下区域 <strong>唯一</strong>，调整请避免与已有仓库冲突。'
+          : '同一品牌下区域 <strong>唯一</strong>，不能与已有仓库重复。创建后可继续添加物料/酒品。'}
+      </p>
+    `;
+  }
+  openModal('modalInvWarehouse');
+  renderLucideIcons();
+}
+
+async function invSubmitWarehouseModal() {
+  if (!hasWriteAccess()) {
+    showToast('仅管理员可维护仓库', 'warning');
+    return;
+  }
+  const brandIdRaw = document.getElementById('invWhBrand')?.value || '';
+  const region = String(document.getElementById('invWhRegion')?.value || '').trim();
+  const label = String(document.getElementById('invWhLabel')?.value || '').trim();
+  const city = String(document.getElementById('invWhCity')?.value || '').trim();
+  const remarks = String(document.getElementById('invWhRemarks')?.value || '').trim();
+  const brandId = parseInt(brandIdRaw, 10);
+  if (!Number.isFinite(brandId)) {
+    showToast('请选择品牌', 'warning');
+    return;
+  }
+  if (!region) {
+    showToast('请选择区域', 'warning');
+    return;
+  }
+  const payload = {
+    brand_id: brandId,
+    region,
+    label: label || null,
+    city: city || null,
+    remarks: remarks || null,
+  };
+  const editId = invWarehouseModalState.id;
+  try {
+    if (editId) {
+      await api('PUT', `/inventory/warehouses/${editId}`, payload);
+      showToast('仓库已更新', 'success');
+    } else {
+      await api('POST', '/inventory/warehouses', payload);
+      showToast('仓库已创建', 'success');
+    }
+    closeModal();
+    invWarehouseModalState = { id: null, brands: [] };
+    inventoryPageState.outboundWarehousesCache = [];
+    await renderInventory();
+  } catch (e) {
+    showToast(e.message || (editId ? '更新失败' : '创建失败'), 'error');
+  }
 }
 
 function invSelectWarehouse(warehouseId) {
@@ -9187,6 +11949,8 @@ function invCaptureOutboundDraft() {
   of.project_code = g('invProjectCode')?.value ?? '';
   of.purpose = g('invPurpose')?.value ?? '';
   of.activity_id = g('invActivityId')?.value ?? '';
+  of.shipped_at = g('invObShipDate')?.value ?? '';
+  of.activity_date = g('invObActivityDate')?.value ?? '';
   of.recipient_city = g('invRecvCity')?.value ?? '';
   of.recipient_address = g('invRecvAddr')?.value ?? '';
   of.contact_name = g('invContactName')?.value ?? '';
@@ -9441,7 +12205,7 @@ function invBuildSelectedOutboundPreviewHtml() {
         inventoryPageState.outboundItemMetaByWarehouse?.[wid]?.[itemId] ||
         {};
       rows.push({
-        warehouse: wh ? `${invWarehouseBrandDisplay(wh)} · ${wh.region}` : `仓库#${wid}`,
+        warehouse: wh ? invWarehouseFullLabel(wh) : `仓库#${wid}`,
         name: meta.name || `物料#${idKey}`,
         dimensions: meta.dimensions || '—',
         quantity: qty,
@@ -9495,6 +12259,199 @@ function invBuildExtraLineRowsHtml(items, lines) {
     .join('');
 }
 
+/** 从收件地址文本中猜测「收件城市」（直辖市 / 省+市 / 市开头） */
+function invExtractCityFromChineseAddress(addr) {
+  const s = String(addr || '').trim();
+  if (!s) return '';
+  const muni = [
+    ['北京市', '北京'],
+    ['上海市', '上海'],
+    ['天津市', '天津'],
+    ['重庆市', '重庆'],
+  ];
+  for (const [full, short] of muni) {
+    if (s.startsWith(full)) return short;
+    if (s.startsWith(short) && s.length > short.length && /[市区县省]/.test(s[short.length])) return short;
+  }
+  const mProv = s.match(/^([\u4e00-\u9fa5]{2,8}省)([\u4e00-\u9fa5]{2,12}市)/);
+  if (mProv) return mProv[2].replace(/市$/, '') || mProv[2];
+  const mCity = s.match(/^([\u4e00-\u9fa5]{2,14}市)/);
+  if (mCity) return mCity[1].replace(/市$/, '') || mCity[1];
+  return '';
+}
+
+function invStripUsedCityPrefixFromAddress(addr, cityShort) {
+  const s = String(addr || '').trim();
+  const c = String(cityShort || '').trim();
+  if (!s || !c) return s;
+  const muniFull = { 北京: '北京市', 上海: '上海市', 天津: '天津市', 重庆: '重庆市' };
+  const prefixes = [];
+  if (muniFull[c]) prefixes.push(muniFull[c]);
+  prefixes.push(c.endsWith('市') ? c : `${c}市`, c);
+  let rest = s;
+  for (const p of prefixes) {
+    if (p && rest.startsWith(p)) {
+      rest = rest.slice(p.length).replace(/^[，,、\s]+/, '');
+      return rest || s;
+    }
+  }
+  const m = s.match(/^[\u4e00-\u9fa5]{2,8}省([\u4e00-\u9fa5]{2,12}市)/);
+  if (m && c && (m[1] === `${c}市` || m[1].startsWith(c))) {
+    rest = s.slice(m[0].length).replace(/^[，,、\s]+/, '');
+    return rest || s;
+  }
+  return s;
+}
+
+/**
+ * 智能填写解析：从一段任意顺序/格式的文本中识别出 { name, phone, address, city }。
+ *
+ * 设计目标：兼容用户从淘宝/京东/微信/聊天记录复制的多种顺序与噪声格式。
+ *  - 11 位手机号（1[3-9]xxxxxxxxx）优先识别；其次 7-12 位带分隔符的固话
+ *  - "姓名 + 公司"用以下启发式分辨：2-8 位纯中文 / 英文人名 / 含「公司/有限/集团/工作室」等
+ *  - 「地址」候选：含「省/市/区/县/镇/街/道/路/弄/巷/号/楼/层/室/苑/园/栋/单元/大厦/广场/花园/小区」等关键字
+ *    或长度 ≥ 8 的兜底
+ *  - 噪声标签自动去除：「收件人」「电话」「地址」「联系人」「Tel」「Phone」「Address」等前后缀
+ *
+ * 不依赖姓名 → 电话 → 地址的固定顺序；多行/单行/逗号分隔均可处理。
+ */
+function invParseOutboundRecipientPaste(raw) {
+  const text0 = String(raw || '')
+    .replace(/\u00a0/g, ' ')
+    .replace(/\u3000/g, ' ')
+    .replace(/[\t\f\v]/g, ' ')
+    .trim();
+  if (!text0) return { name: '', phone: '', address: '', city: '' };
+
+  // 去掉常见字段标签前缀（不影响内容）：将 "收件人：xxx" 中的 "收件人：" 直接抹掉
+  const labelRe = /(收件人|发件人|联系人|姓名|客户|电话|手机|联系电话|联系方式|tel|phone|地址|收货地址|收件地址|address)\s*[:：]\s*/gi;
+  const cleaned = text0.replace(labelRe, ' ');
+
+  // 1) 抽取手机号 / 固话
+  const mobileRe = /1[3-9]\d{9}/g;
+  const landlineRe = /\b\d{3,4}[-\s]?\d{7,8}\b/g;
+  let phone = '';
+  const mobs = cleaned.match(mobileRe);
+  if (mobs && mobs.length) {
+    phone = mobs[0];
+  } else {
+    const lls = cleaned.match(landlineRe);
+    if (lls && lls.length) phone = lls[0].replace(/[\s-]/g, '');
+  }
+
+  // 2) 把所有手机号 / 固话从文本中移除（统一变空格）
+  const withoutPhone = cleaned
+    .replace(mobileRe, ' ')
+    .replace(landlineRe, ' ')
+    .replace(/[，,;；、|｜]/g, ' ')
+    .replace(/[\r\n]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  // 3) 切片：按空白分；保留每个 token
+  const tokens = withoutPhone.split(/\s+/).filter(Boolean);
+
+  // 4) 分类判定
+  const addrKeywordRe = /(省|市|区|县|镇|乡|村|街道|大道|街|路|弄|巷|号|楼|层|室|栋|苑|园|单元|大厦|广场|花园|公寓|小区|商业|开发区|新区|工业园|科技园|路口|站)/;
+  const companyRe = /(公司|集团|有限|股份|工厂|工作室|事务所|商行|商贸|餐厅|酒店|店|铺|超市|药房|医院|学校|大学|中学|小学|大酒店|分公司|总公司)/;
+  const purelyChineseNameRe = /^[\u4e00-\u9fa5·•．\.]{2,6}$/;
+  const englishNameRe = /^[A-Za-z][A-Za-z\.\-]{0,20}(\s+[A-Za-z][A-Za-z\.\-]{0,20}){0,3}$/;
+
+  const addrParts = [];
+  const nameParts = [];
+  const unknownParts = [];
+
+  for (const tok of tokens) {
+    if (!tok) continue;
+    // 含地址关键字 → 地址
+    if (addrKeywordRe.test(tok)) {
+      addrParts.push(tok);
+      continue;
+    }
+    // 含数字（如 "45-7" "1号" "6层"）但无地址关键字 → 倾向地址兜底
+    if (/\d/.test(tok) && tok.length >= 2) {
+      // 但纯数字小段（如门牌 "12"）单独可能是姓名前的编号，仍归地址
+      addrParts.push(tok);
+      continue;
+    }
+    // 公司名 → 姓名（作为收件单位）
+    if (companyRe.test(tok)) {
+      nameParts.push(tok);
+      continue;
+    }
+    // 2-6 字纯中文 → 姓名
+    if (purelyChineseNameRe.test(tok)) {
+      nameParts.push(tok);
+      continue;
+    }
+    // 英文姓名（首字母大写）→ 姓名
+    if (englishNameRe.test(tok) && tok.length <= 24) {
+      nameParts.push(tok);
+      continue;
+    }
+    // 长 token（≥8）兜底为地址
+    if (tok.length >= 8) {
+      addrParts.push(tok);
+      continue;
+    }
+    unknownParts.push(tok);
+  }
+
+  // 兜底 1：没有地址命中，但 unknown 里有长字符串 → 当作地址
+  if (!addrParts.length) {
+    for (let i = unknownParts.length - 1; i >= 0; i--) {
+      if (unknownParts[i].length >= 4) {
+        addrParts.unshift(unknownParts.splice(i, 1)[0]);
+      }
+    }
+  }
+  // 剩余 unknown 进入 name
+  for (const u of unknownParts) nameParts.push(u);
+
+  // 兜底 2：完全没识别出 name，但 address 里包含明显的人名子串（首段 2-4 字中文 + 后续大量地址关键字）
+  if (!nameParts.length && addrParts.length) {
+    const first = addrParts[0];
+    const m = first.match(/^([\u4e00-\u9fa5]{2,4})(?=[\u4e00-\u9fa5]*(省|市|区|县|镇))/);
+    if (m && !addrKeywordRe.test(m[1])) {
+      nameParts.push(m[1]);
+      addrParts[0] = first.slice(m[1].length).trim();
+      if (!addrParts[0]) addrParts.shift();
+    }
+  }
+
+  let name = nameParts.join(' ').replace(/\s+/g, ' ').trim();
+  let address = addrParts.join(' ').replace(/\s+/g, ' ').trim();
+  const city = invExtractCityFromChineseAddress(address);
+  const addrNorm = invStripUsedCityPrefixFromAddress(address, city);
+  return {
+    name,
+    phone,
+    city,
+    address: (addrNorm || address).trim(),
+  };
+}
+
+function invOpenOutboundSmartFill() {
+  const ta = document.getElementById('invObSmartFillPaste');
+  if (ta) ta.value = '';
+  openModal('modalInvObSmartFill');
+}
+
+function invApplyOutboundSmartFill() {
+  const ta = document.getElementById('invObSmartFillPaste');
+  const { name, phone, address, city } = invParseOutboundRecipientPaste(ta?.value || '');
+  const nEl = document.getElementById('invContactName');
+  const pEl = document.getElementById('invContactPhone');
+  const aEl = document.getElementById('invRecvAddr');
+  const cEl = document.getElementById('invRecvCity');
+  if (nEl) nEl.value = name;
+  if (pEl) pEl.value = phone;
+  if (aEl) aEl.value = address;
+  if (cEl && city) cEl.value = city;
+  closeModal();
+  showToast(city ? '已填入（已识别收件城市）' : '已填入', 'success');
+}
+
 function invBuildOutboundModalMarkup(warehouses, items, of, modalOpts) {
   modalOpts = modalOpts || {};
   invSeedOutboundItemMetaFromItems(inventoryPageState.warehouseId, items);
@@ -9507,7 +12464,7 @@ function invBuildOutboundModalMarkup(warehouses, items, of, modalOpts) {
     <div class="inv-ob-warehouse-buttons">
       ${warehouses
         .map(
-          (w) => `<button type="button" class="btn btn-sm inv-ob-wh-btn ${w.id === inventoryPageState.warehouseId ? 'btn-primary' : 'btn-secondary'}" data-wh-id="${w.id}" onclick="invOnModalWarehouseChange(${w.id})">${escapeHtml(invWarehouseBrandDisplay(w))} · ${escapeHtml(w.region)}</button>`,
+          (w) => `<button type="button" class="btn btn-sm inv-ob-wh-btn ${w.id === inventoryPageState.warehouseId ? 'btn-primary' : 'btn-secondary'}" data-wh-id="${w.id}" title="brand_id=${w.brand_id || ''} ${escapeHtml(w.brand_code || '')} / ${escapeHtml(w.region || '')}" onclick="invOnModalWarehouseChange(${w.id})">${escapeHtml(invWarehouseFullLabel(w))}</button>`,
         )
         .join('')}
     </div>`;
@@ -9516,6 +12473,8 @@ function invBuildOutboundModalMarkup(warehouses, items, of, modalOpts) {
   const commonSearch = String((inventoryPageState.outboundCommonSearchByWarehouse || {})[whKey] || '');
   const listFlt = inventoryPageState.outboundListFilter || 'common';
   const hintMsg = String(of.hint_msg || '').trim();
+  const shipDateOut = String(of.shipped_at || '').trim() || todayDateInputValue();
+  const activityDateOut = String(of.activity_date || '').trim();
   const selectedPreview = invBuildSelectedOutboundPreviewHtml();
   return `
     <div class="inv-ob-modal-form">
@@ -9577,11 +12536,21 @@ function invBuildOutboundModalMarkup(warehouses, items, of, modalOpts) {
                 <input type="text" class="form-control" id="invTrackingNo" placeholder="物流单号可后续补填" value="${escapeHtml(of.tracking_number || '')}">
               </div>
             </div>
-            <div class="inv-ob-modal-row">
+            <div class="inv-ob-modal-row inv-ob-row-recv">
+              <div class="form-group inv-ob-field-short">
+                <label class="form-label">出库日期</label>
+                <input type="date" class="form-control" id="invObShipDate" value="${escapeHtml(shipDateOut)}">
+              </div>
+              <div class="form-group inv-ob-field-short">
+                <label class="form-label" title="关联活动的真实活动日期；非活动出库可留空">活动日期</label>
+                <input type="date" class="form-control" id="invObActivityDate" value="${escapeHtml(activityDateOut)}" placeholder="可留空">
+              </div>
               <div class="form-group inv-ob-field-short">
                 <label class="form-label">收件城市</label>
                 <input type="text" class="form-control" id="invRecvCity" value="${escapeHtml(of.recipient_city || '')}">
               </div>
+            </div>
+            <div class="inv-ob-modal-row inv-ob-row-addr">
               <div class="form-group inv-ob-field-short">
                 <label class="form-label">联系人</label>
                 <input type="text" class="form-control" id="invContactName" value="${escapeHtml(of.contact_name || '')}">
@@ -9590,11 +12559,13 @@ function invBuildOutboundModalMarkup(warehouses, items, of, modalOpts) {
                 <label class="form-label">联系电话</label>
                 <input type="text" class="form-control" id="invContactPhone" value="${escapeHtml(of.contact_phone || '')}">
               </div>
-            </div>
-            <div class="inv-ob-modal-row inv-ob-modal-row-full">
-              <div class="form-group inv-ob-field-full">
+              <div class="form-group inv-ob-field-full inv-ob-field-addr-grow">
                 <label class="form-label">收件地址</label>
                 <input type="text" class="form-control" id="invRecvAddr" value="${escapeHtml(of.recipient_address || '')}">
+              </div>
+              <div class="form-group inv-ob-smartfill-btn-wrap">
+                <label class="form-label">智能填写</label>
+                <button type="button" class="btn btn-secondary btn-sm" onclick="invOpenOutboundSmartFill()">智能填写</button>
               </div>
             </div>
             <div class="inv-ob-modal-row inv-ob-modal-row-full">
@@ -9772,6 +12743,8 @@ async function invOpenOutboundModal() {
       project_code: '',
       purpose: '',
       activity_id: '',
+      shipped_at: '',
+      activity_date: '',
       recipient_city: '',
       recipient_address: '',
       contact_name: '',
@@ -9857,6 +12830,8 @@ async function invToggleOutboundInlineForm(forceOpen) {
       project_code: '',
       purpose: '',
       activity_id: '',
+      shipped_at: '',
+      activity_date: '',
       recipient_city: '',
       recipient_address: '',
       contact_name: '',
@@ -9892,11 +12867,93 @@ async function invToggleOutboundInlineForm(forceOpen) {
   }
 }
 
-function invRenderOutboundOrderTable(orders) {
+/**
+ * 物品出库台账本地过滤：按搜索词在多个字段（包括 items_summary 物品名摘要）做不区分大小写包含匹配。
+ * 支持多关键字（用空格分隔为 AND 关系），便于同时锁定"品鉴杯 北京"等场景。
+ */
+function invFilterOutboundOrders(orders, query) {
+  const arr = Array.isArray(orders) ? orders : [];
+  const q = String(query || '').trim().toLowerCase();
+  if (!q) return arr;
+  const terms = q.split(/\s+/).filter(Boolean);
+  return arr.filter((o) => {
+    const blob = [
+      o.items_summary,
+      o.project_code,
+      o.purpose,
+      o.contact_name,
+      o.contact_phone,
+      o.tracking_number,
+      o.logistics_method,
+      o.recipient_city,
+      o.recipient_address,
+      o.brand_code,
+      o.region,
+      o.remarks,
+      invWarehouseFullLabel(o),
+      o.shipped_at ? String(o.shipped_at).slice(0, 10) : '',
+      `#${o.id}`,
+    ]
+      .filter(Boolean)
+      .join(' ')
+      .toLowerCase();
+    return terms.every((t) => blob.includes(t));
+  });
+}
+
+/**
+ * 物品出库台账搜索框输入处理：更新 state 并就地重渲表格，避免重拉接口。
+ * 同时同步搜索框 value（防止外部清除按钮调用时输入框残留旧值）。
+ */
+function invOnOutboundSearchInput(value) {
+  const v = String(value == null ? '' : value);
+  inventoryPageState.outboundSearch = v;
+  const input = document.getElementById('invOutboundSearch');
+  if (input && input.value !== v) input.value = v;
+  const host = document.getElementById('invObTableHost');
+  if (!host) return;
+  const cache = Array.isArray(inventoryPageState._outboundListCache)
+    ? inventoryPageState._outboundListCache
+    : [];
+  const filtered = invFilterOutboundOrders(cache, v);
+  host.innerHTML = invRenderOutboundOrderTable(filtered, {
+    total: cache.length,
+    filtered: filtered.length,
+    search: v,
+  });
+  // 切换 toolbar 上的清除按钮可见性
+  const headActions = document.querySelector('.inv-out-page-head-actions .inv-ob-search');
+  if (headActions) {
+    const existed = headActions.querySelector('.inv-ob-search-clear');
+    if (v && !existed) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'inv-ob-search-clear';
+      btn.setAttribute('aria-label', '清除搜索');
+      btn.innerHTML = '<i data-lucide="x" aria-hidden="true"></i>';
+      btn.addEventListener('click', () => invOnOutboundSearchInput(''));
+      headActions.appendChild(btn);
+    } else if (!v && existed) {
+      existed.remove();
+    }
+  }
+  renderLucideIcons();
+}
+
+function invRenderOutboundOrderTable(orders, opts) {
+  opts = opts || {};
+  const q = String(opts.search || '').trim();
   if (!orders.length) {
+    if (q) {
+      return `<div class="empty-state" style="margin-top:8px">没有匹配「${escapeHtml(q)}」的出库单（当前年度共 ${Number(opts.total) || 0} 条）。</div>`;
+    }
     return '<div class="empty-state" style="margin-top:8px">暂无物品出库记录，可点击「新建出库」创建。</div>';
   }
+  const hintHtml = q
+    ? `<div class="inv-ob-search-result-hint">已筛选出 <strong>${orders.length}</strong> / ${Number(opts.total) || orders.length} 条匹配「${escapeHtml(q)}」</div>`
+    : '';
   return `
+    ${hintHtml}
     <div class="table-wrapper">
       <table class="data-table inv-ob-order-table">
         <thead>
@@ -9925,7 +12982,9 @@ function invRenderOutboundOrderTable(orders) {
                 st === 'closed'
                   ? '<span class="badge badge-success">已归还</span>'
                   : '<span class="badge badge-warning">出库中</span>';
-              return `<tr>
+              const itemsSummary = String(o.items_summary || '').trim();
+              const trTitle = itemsSummary ? ` title="${escapeHtml(itemsSummary)}"` : '';
+              return `<tr${trTitle}>
             <td>${shipDate}</td>
             <td>${proj}</td>
             <td>${escapeHtml(o.logistics_method || '—')}</td>
@@ -9934,7 +12993,7 @@ function invRenderOutboundOrderTable(orders) {
                 ? `<a href="https://www.sf-express.com/cn/sc/dynamic_function/waybill/#search/bill-number/${encodeURIComponent(String(o.tracking_number))}" target="_blank" style="color:var(--accent);font-family:monospace;font-size:12px">${escapeHtml(o.tracking_number)}</a>`
                 : '<span style="color:var(--text-muted)">—</span>'
             }</td>
-            <td>${escapeHtml(o.brand_code)} ${escapeHtml(o.region)}</td>
+            <td title="${escapeHtml((o.brand_code || '') + ' / ' + (o.region || ''))}">${escapeHtml(invWarehouseFullLabel(o))}</td>
             <td>${escapeHtml(o.recipient_city || '—')}</td>
             <td class="inv-ob-order-actions">
               <button type="button" class="btn btn-xs btn-secondary" onclick="event.stopPropagation();invOpenOutboundOrderDetail(${o.id})">出库单详情</button>
@@ -9986,7 +13045,10 @@ function invRenderInboundLedgerTable(rows) {
                 ? `入库 ×${r._qty || 0}`
                 : `归${r.sum_qty_return} 空${r.sum_qty_empty_recovered} 留${r.sum_qty_customer_keep} 丢${r.sum_qty_lost} 损${r.sum_qty_damaged}`;
               const detailBtn = isDirect
-                ? `<button type="button" class="btn btn-xs btn-danger" onclick="invDeleteInboundRecord(${r.batch_id})" title="删除并回退库存">删除</button>`
+                ? `<div class="inv-row-actions">
+                    <button type="button" class="btn btn-xs btn-secondary" onclick="invOpenInboundEditModal(${r.batch_id})">编辑</button>
+                    <button type="button" class="btn btn-xs btn-danger" onclick="invDeleteInboundRecord(${r.batch_id})" title="删除并回退库存">删除</button>
+                  </div>`
                 : `<button type="button" class="btn btn-xs btn-secondary" onclick="invOpenInboundReceiptDetail(${r.batch_id})">详情</button>`;
               return `<tr>
               <td>${r.return_date ? String(r.return_date).slice(0, 10) : '—'}</td>
@@ -10007,7 +13069,7 @@ function invRenderInboundLedgerTable(rows) {
 
 async function invOpenInboundReceiptDetail(batchId) {
   const titleEl = document.getElementById('modalInvInboundTitle');
-  const body = document.getElementById('modalInvInboundBody');
+  const body = document.getElementById('modalInvInboundReceiptBody');
   if (titleEl) titleEl.textContent = `入库单 #${batchId}`;
   if (!body) return;
   body.innerHTML = '<div class="empty-state">加载中…</div>';
@@ -10111,13 +13173,13 @@ async function invOpenOutboundOrderDetail(orderId) {
     const html = `
         <div class="inv-ob-shell">
           <div class="inv-ob-head-fixed">
-            <div class="inv-ob-detail-head">出库单 #${ord.id} · ${ord.shipped_at ? String(ord.shipped_at).slice(0, 16) : '—'} · ${escapeHtml(ord.brand_code)} ${escapeHtml(ord.region)} · ${ord.status === 'closed' ? '已结清' : '待归还'}</div>
+            <div class="inv-ob-detail-head">出库单 #${ord.id} · ${ord.shipped_at ? String(ord.shipped_at).slice(0, 16) : '—'} · ${escapeHtml(invWarehouseFullLabel(ord))} · ${ord.status === 'closed' ? '已结清' : '待归还'}</div>
             <div class="activity-detail-grid" style="margin-bottom:12px">
               <section class="activity-detail-card">
                 <h4>基础信息</h4>
                 ${activityDetailRow('关联方式', ord.link_mode === 'standalone' ? '非项目出库' : '项目编号')}
                 ${activityDetailRow(ord.link_mode === 'standalone' ? '用途说明' : '项目编号', ord.link_mode === 'standalone' ? (ord.purpose || '—') : (ord.project_code || '—'))}
-                ${activityDetailRow('发货仓', `${ord.brand_code || ''} ${ord.region || ''}`.trim() || '—')}
+                ${activityDetailRow('发货仓', invWarehouseFullLabel(ord))}
                 ${activityDetailRow('状态', ord.status === 'closed' ? '已归还' : '出库中')}
               </section>
               <section class="activity-detail-card">
@@ -10244,6 +13306,17 @@ async function invOpenOutboundEditModal(orderId) {
     of.project_code = o.project_code || '';
     of.purpose = o.purpose || '';
     of.activity_id = o.activity_id != null ? String(o.activity_id) : '';
+    of.shipped_at =
+      o.shipped_at != null && String(o.shipped_at).trim()
+        ? String(o.shipped_at).slice(0, 10)
+        : todayDateInputValue();
+    // 编辑回填优先用单据上保存的 activity_date；
+    // 若旧单没填则取关联活动日期 activity_date_link 作为默认值（保存后会固化到出库单上）。
+    {
+      const ownActDate = o.activity_date != null && String(o.activity_date).trim() ? String(o.activity_date).slice(0, 10) : '';
+      const linkActDate = o.activity_date_link != null && String(o.activity_date_link).trim() ? String(o.activity_date_link).slice(0, 10) : '';
+      of.activity_date = ownActDate || linkActDate || '';
+    }
     of.recipient_city = o.recipient_city || '';
     of.recipient_address = o.recipient_address || '';
     of.contact_name = o.contact_name || '';
@@ -10293,8 +13366,13 @@ async function invDeleteOutboundOrder(orderId) {
     return;
   }
   try {
-    await api('DELETE', `/inventory/outbound/${orderId}`);
-    showToast('已删除', 'success');
+    const resp = await api('DELETE', `/inventory/outbound/${orderId}`);
+    const cleaned = Number((resp && resp.cleaned_logistics) || 0);
+    if (cleaned > 0) {
+      showToast(`已删除出库单，并联动清理 ${cleaned} 条物流成本`, 'success');
+    } else {
+      showToast('已删除', 'success');
+    }
     updateBadges();
     await renderInventory();
   } catch (e) {
@@ -10462,7 +13540,16 @@ async function renderInventory() {
           </div>
         </div>`;
     }
-    panelHtml = `${inlineFormHtml}${invRenderOutboundOrderTable(Array.isArray(allOrders) ? allOrders : [])}`;
+    inventoryPageState._outboundListCache = Array.isArray(allOrders) ? allOrders : [];
+    const filteredOrders = invFilterOutboundOrders(
+      inventoryPageState._outboundListCache,
+      inventoryPageState.outboundSearch,
+    );
+    panelHtml = `${inlineFormHtml}<div id="invObTableHost">${invRenderOutboundOrderTable(filteredOrders, {
+      total: inventoryPageState._outboundListCache.length,
+      filtered: filteredOrders.length,
+      search: inventoryPageState.outboundSearch,
+    })}</div>`;
   } else if (invPage === 'inbound') {
     let openOrders = [];
     try {
@@ -10485,6 +13572,7 @@ async function renderInventory() {
         _kind: 'direct',
         _qty: r.quantity || 0,
         return_date: r.inbound_date || r.created_at,
+        inbound_date: r.inbound_date || '',
         display_main: `${r.item_name || '—'} — ${r.item_dimensions || '—'}`,
         brand_code: r.brand_code || '—',
         region: r.region || '—',
@@ -10492,8 +13580,10 @@ async function renderInventory() {
         batch_remarks: r.remarks || '',
         source: r.source || null,
       }));
+      inventoryPageState.inboundDirectRows = directInbound;
     } catch (_) {
       directInbound = [];
+      inventoryPageState.inboundDirectRows = [];
     }
     const ledgerArr = [...(Array.isArray(inboundLedger) ? inboundLedger : []), ...directInbound];
     panelHtml = `
@@ -10522,7 +13612,7 @@ async function renderInventory() {
               return `
               <tr>
                 <td>#${o.id}</td>
-                <td>${escapeHtml(o.brand_code)} ${escapeHtml(o.region)}</td>
+                <td title="${escapeHtml((o.brand_code || '') + ' / ' + (o.region || ''))}">${escapeHtml(invWarehouseFullLabel(o))}</td>
                 <td>${projLine}</td>
                 <td>${o.shipped_at ? String(o.shipped_at).slice(0, 10) : '—'}</td>
                 <td>
@@ -10542,11 +13632,12 @@ async function renderInventory() {
       ${invRenderStockMasterCardsHtml(warehouses, inventoryPageState.warehouseId, inventoryPageState.stockMasterView)}
     </div>
     <div class="inv-toolbar inv-toolbar-master">
+      <button type="button" class="btn btn-secondary btn-sm inv-admin-only" onclick="invOpenWarehouseModal()">+ 新建仓库</button>
       <button type="button" class="btn btn-primary btn-sm inv-admin-only" onclick="invOpenNewItemModal()" ${inventoryPageState.warehouseId ? '' : 'disabled'}>添加物料</button>
       <button type="button" class="btn btn-secondary btn-sm inv-admin-only" onclick="invOpenAddItemCatalogModal()" ${inventoryPageState.warehouseId ? '' : 'disabled'}>物品目录</button>
       <button type="button" class="btn btn-secondary btn-sm inv-admin-only" onclick="invOpenAddWineModal()" ${inventoryPageState.warehouseId ? '' : 'disabled'}>酒品目录</button>
       <button type="button" class="btn btn-secondary btn-sm inv-admin-only" onclick="invOpenInboundModal()" ${inventoryPageState.warehouseId ? '' : 'disabled'}>物料入库</button>
-      <span class="form-hint" style="flex:1;min-width:200px;margin:0">仓库与物料为 <strong>25/26 财年共用</strong>；仓库增删请由管理员在库表或脚本中维护。按项目编号匹配场次时请先选左侧年度。</span>
+      <span class="form-hint" style="flex:1;min-width:200px;margin:0">仓库与物料为 <strong>25/26 财年共用</strong>；点击「+ 新建仓库」可补建；点击仓库卡片右上「编辑」可改名称/品牌/区域/城市/备注。按项目编号匹配场次时请先选左侧年度。</span>
     </div>`;
   const masterToolbarWine = `
     <div class="inv-master-warehouse-block">
@@ -10580,12 +13671,25 @@ async function renderInventory() {
         ? masterToolbarEmpty
         : masterToolbarWh;
 
+  const outboundSearchVal = String(inventoryPageState.outboundSearch || '');
   const outboundPageHeader = `
     <div class="inv-out-page-head">
       <div class="inv-out-page-head-main">
         <span class="form-hint" style="margin:0">按项目编号汇总已出库记录；<strong>出库日期</strong>按发货时间，无则按创建时间。主数据请在 <strong>库存管理</strong> 维护。</span>
       </div>
-      <button type="button" class="btn btn-primary btn-sm" onclick="invToggleOutboundInlineForm()">${inventoryPageState.outboundInlineOpen ? '收起新建' : '新建出库'}</button>
+      <div class="inv-out-page-head-actions">
+        <div class="inv-ob-search">
+          <i data-lucide="search" class="inv-ob-search-icon" aria-hidden="true"></i>
+          <input type="search" id="invOutboundSearch" class="form-control form-control-sm inv-ob-search-input"
+            placeholder="关键词检索"
+            value="${escapeHtml(outboundSearchVal)}"
+            oninput="invOnOutboundSearchInput(this.value)"
+            aria-label="出库单内容搜索"
+            title="可按物品名 / 项目编号 / 收件人 / 物流单号 / 用途 / 仓库 / 城市 模糊搜索；空格分隔多关键字（AND）">
+          ${outboundSearchVal ? `<button type="button" class="inv-ob-search-clear" aria-label="清除搜索" onclick="invOnOutboundSearchInput('')"><i data-lucide="x" aria-hidden="true"></i></button>` : ''}
+        </div>
+        <button type="button" class="btn btn-primary btn-sm" onclick="invToggleOutboundInlineForm()">${inventoryPageState.outboundInlineOpen ? '收起新建' : '新建出库'}</button>
+      </div>
     </div>`;
 
   const inboundOpsToolbar = `<div class="inv-toolbar"></div>`;
@@ -10748,17 +13852,30 @@ function invPatchOutboundLineByDisplay(idx, displayVal) {
 function invOnCommonSearchInput(val) {
   const whId = Number(inventoryPageState.warehouseId || 0);
   const key = String(whId || 'global');
+  if (inventoryPageState.editOutboundOrderId && document.getElementById('invObCommonTbody')) {
+    inventoryPageState.outboundEditCommonPreset = {
+      ...(inventoryPageState.outboundEditCommonPreset || {}),
+      ...invSnapshotCommonPresetFromDom(),
+    };
+  } else {
+    invSaveCurrentWarehouseDraftFromModal();
+  }
   inventoryPageState.outboundCommonSearchByWarehouse = inventoryPageState.outboundCommonSearchByWarehouse || {};
   inventoryPageState.outboundCommonSearchByWarehouse[key] = String(val || '');
+  inventoryPageState.outboundCommonSearchSeq = (inventoryPageState.outboundCommonSearchSeq || 0) + 1;
+  const seq = inventoryPageState.outboundCommonSearchSeq;
   const commonTbody = document.getElementById('invObCommonTbody');
   if (!commonTbody) return;
   const wh = inventoryPageState.warehouseId;
   if (!wh) return;
   api('GET', `/inventory/items?inv_warehouse_id=${wh}`)
     .then((items) => {
+      if (seq !== inventoryPageState.outboundCommonSearchSeq) return;
       const arr = Array.isArray(items) ? items : [];
       invSeedOutboundItemMetaFromItems(wh, arr);
-      const preset = inventoryPageState.outboundEditCommonPreset;
+      const preset = inventoryPageState.editOutboundOrderId
+        ? inventoryPageState.outboundEditCommonPreset
+        : inventoryPageState.outboundCommonByWarehouse[Number(wh)] || null;
       commonTbody.innerHTML = invBuildCommonRowsHtml(arr, preset);
       invRefreshSelectedPreview();
     })
@@ -10906,12 +14023,20 @@ async function invSubmitOutbound() {
   if (ws && Number.isFinite(whId)) inventoryPageState.warehouseId = whId;
   invSaveCurrentWarehouseDraftFromModal();
   const lm = document.getElementById('invLinkMode')?.value === 'standalone' ? 'standalone' : 'activity';
+  const shipDateRaw = (document.getElementById('invObShipDate')?.value || '').trim();
+  if (!shipDateRaw) {
+    showToast('请选择出库日期', 'warning');
+    return;
+  }
+  const activityDateRaw = (document.getElementById('invObActivityDate')?.value || '').trim();
   const baseBody = {
     link_mode: lm,
     project_code: lm === 'activity' ? (document.getElementById('invProjectCode')?.value || '').trim() : null,
     purpose: lm === 'standalone' ? (document.getElementById('invPurpose')?.value || '').trim() : null,
     year_frame_id: currentYearFrameId || null,
     activity_id: document.getElementById('invActivityId')?.value || null,
+    shipped_at: shipDateRaw,
+    activity_date: activityDateRaw || null,
     recipient_city: document.getElementById('invRecvCity')?.value || null,
     recipient_address: document.getElementById('invRecvAddr')?.value || null,
     contact_name: document.getElementById('invContactName')?.value || null,
@@ -10982,6 +14107,8 @@ async function invSubmitOutbound() {
         project_code: '',
         purpose: '',
         activity_id: '',
+        shipped_at: '',
+        activity_date: '',
         recipient_city: '',
         recipient_address: '',
         contact_name: '',
@@ -11020,7 +14147,7 @@ async function invSubmitOutbound() {
       const ord = created && created.order ? created.order : null;
       if (ord) {
         const whMap = new Map((inventoryPageState.outboundWarehousesCache || []).map((w) => [Number(w.id), w]));
-        const logisticsCompany = baseBody.logistics_method || '物流';
+        const { unit, express } = invOutboundMethodToLogisticsUnitExpress(baseBody.logistics_method);
         let sampleWh = null;
         for (const line of created.lines || []) {
           const c = whMap.get(Number(line.inv_warehouse_id));
@@ -11029,22 +14156,33 @@ async function invSubmitOutbound() {
             break;
           }
         }
+        const cn = String(baseBody.contact_name || '').trim();
+        const cp = String(baseBody.contact_phone || '').trim();
+        const address = [baseBody.recipient_city, baseBody.recipient_address].filter(Boolean).join(' ').trim();
+        const senderHint = sampleWh ? `${String(sampleWh.region || '').trim() || '仓库'}`.replace(/仓$/, '') + '仓发运' : '';
+        const purposeLine = [baseBody.purpose, baseBody.remarks].filter(Boolean).join('；').trim();
+        const addrLine = buildLogisticsAddrMetaV2('', '', senderHint, cn, cp, address, purposeLine).replace(/\n$/, '');
+        const remarkPieces = [];
+        if (addrLine) remarkPieces.push(addrLine);
+        remarkPieces.push(`[INV-OB:${ord.id}]`);
         try {
           await api('POST', '/logistics', {
             year_frame_id: currentYearFrameId || null,
             activity_id: null,
             merged_into_activity: 0,
-            allocation_note: '物品出库-非活动用',
-            logistics_company: logisticsCompany,
+            allocation_note: null,
+            logistics_company: unit,
             brand: sampleWh?.brand_code || 'PHD',
-            express_company: logisticsCompany,
+            express_company: express,
             tracking_number: baseBody.tracking_number || null,
-            origin_city: sampleWh ? `${sampleWh.region || ''}仓` : null,
+            origin_city: senderHint || null,
             destination_city: baseBody.recipient_city || null,
-            shipping_date: todayDateInputValue(),
+            shipping_date: (baseBody.shipped_at || '').trim() || todayDateInputValue(),
             fee: 0,
+            payee_name: express || '物流公司',
+            payment_status: 'unpaid',
             related_project_code: null,
-            remarks: `${baseBody.purpose || ''}${baseBody.remarks ? `；${baseBody.remarks}` : ''} [INV-OB:${ord.id}]`,
+            remarks: remarkPieces.join('\n'),
             special_car: 0,
             monthly_settlement: 0,
           });
@@ -11065,6 +14203,8 @@ async function invSubmitOutbound() {
       project_code: '',
       purpose: '',
       activity_id: '',
+      shipped_at: '',
+      activity_date: '',
       recipient_city: '',
       recipient_address: '',
       contact_name: '',
@@ -11337,6 +14477,8 @@ async function invOpenInboundModal() {
     showToast('仅管理员可操作物料入库', 'warning');
     return;
   }
+  const submitBtn = document.getElementById('invInboundSubmitBtn');
+  if (submitBtn) submitBtn.disabled = false;
   const whId = Number(inventoryPageState.warehouseId || 0);
   if (!whId) {
     showToast('请先点击仓库卡片', 'warning');
@@ -11365,7 +14507,7 @@ function invRenderInboundModal() {
   const body = document.getElementById('modalInvInboundBody');
   if (!body) return;
   const whOpts = invInboundState.warehouses
-    .map((w) => `<option value="${w.id}" ${Number(w.id) === invInboundState.warehouseId ? 'selected' : ''}>${escapeHtml(`${invWarehouseBrandDisplay(w) || ''} · ${w.region || ''}${w.label ? ` · ${w.label}` : ''}`)}</option>`)
+    .map((w) => `<option value="${w.id}" ${Number(w.id) === invInboundState.warehouseId ? 'selected' : ''}>${escapeHtml(`${invWarehouseFullLabel(w)}${w.label && w.label !== `${w.region}仓库` ? ` · ${w.label}` : ''}`)}</option>`)
     .join('');
   const today = new Date().toISOString().slice(0, 10);
   const rowHtml = invInboundState.rows
@@ -11486,6 +14628,68 @@ async function invDeleteInboundRecord(id) {
   }
 }
 
+function invOpenInboundEditModal(id) {
+  if (!hasWriteAccess()) {
+    showToast('仅管理员可编辑入库记录', 'warning');
+    return;
+  }
+  const row = (inventoryPageState.inboundDirectRows || []).find((r) => Number(r.batch_id) === Number(id));
+  if (!row) {
+    showToast('未找到该入库记录，请刷新后重试', 'warning');
+    return;
+  }
+  inventoryPageState.inboundEditId = Number(id);
+  const body = document.getElementById('modalInvInboundEditBody');
+  if (!body) return;
+  body.innerHTML = `
+    <div class="form-group" style="margin-bottom:10px">
+      <label class="form-label">入库内容</label>
+      <div style="padding:10px;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--bg-input);font-size:13px">
+        <div style="font-weight:700">${escapeHtml(row.display_main || '—')}</div>
+        <div style="margin-top:4px;color:var(--text-secondary)">数量：${escapeHtml(row._qty || 0)} ｜ 仓库：${escapeHtml(`${row.brand_code || ''} ${row.region || ''}`.trim() || '—')}</div>
+      </div>
+    </div>
+    <div class="form-group" style="margin-bottom:10px">
+      <label class="form-label">入库日期</label>
+      <input type="date" class="form-control" id="invInboundEditDate" value="${escapeHtml(String(row.inbound_date || row.return_date || '').slice(0, 10))}">
+    </div>
+    <div class="form-group" style="margin-bottom:10px">
+      <label class="form-label">入库来源</label>
+      <input type="text" class="form-control" id="invInboundEditSource" placeholder="例如：采购入库、调拨入库、盘盈入库" value="${escapeHtml(row.source || '')}">
+    </div>
+    <div class="form-group" style="margin-bottom:0">
+      <label class="form-label">备注</label>
+      <input type="text" class="form-control" id="invInboundEditRemarks" placeholder="选填" value="${escapeHtml(row.batch_remarks || '')}">
+    </div>
+  `;
+  openModal('modalInvInboundEdit');
+}
+
+async function invSubmitInboundEdit() {
+  if (!hasWriteAccess()) {
+    showToast('仅管理员可编辑入库记录', 'warning');
+    return;
+  }
+  const id = Number(inventoryPageState.inboundEditId || 0);
+  if (!id) {
+    showToast('未找到要编辑的入库记录', 'warning');
+    return;
+  }
+  try {
+    await api('PUT', `/inventory/inbound/${id}`, {
+      inbound_date: document.getElementById('invInboundEditDate')?.value || null,
+      source: document.getElementById('invInboundEditSource')?.value?.trim() || null,
+      remarks: document.getElementById('invInboundEditRemarks')?.value?.trim() || null,
+    });
+    showToast('入库信息已更新', 'success');
+    inventoryPageState.inboundEditId = null;
+    closeModal();
+    await renderInventory();
+  } catch (e) {
+    showToast(e.message || '更新失败', 'error');
+  }
+}
+
 async function invOnInboundWarehouseChange(val) {
   const wid = parseInt(val, 10);
   if (!Number.isFinite(wid)) return;
@@ -11523,6 +14727,7 @@ async function invSubmitInbound() {
       inbound_date: dateEl?.value || null,
     });
     showToast('入库成功', 'success');
+    if (btn) btn.disabled = false;
     closeModal();
     await renderInventory();
   } catch (e) {
@@ -11623,7 +14828,7 @@ async function invRenderAddWineModalContent() {
       </tr>`;
   });
   const whOpts = (invAddWineModalState.warehouses || [])
-    .map((w) => `<option value="${w.id}" ${Number(w.id) === whId ? 'selected' : ''}>${escapeHtml(`${invWarehouseBrandDisplay(w) || ''} · ${w.region || ''}${w.label ? ` · ${w.label}` : ''}`)}</option>`)
+    .map((w) => `<option value="${w.id}" ${Number(w.id) === whId ? 'selected' : ''}>${escapeHtml(`${invWarehouseFullLabel(w)}${w.label && w.label !== `${w.region}仓库` ? ` · ${w.label}` : ''}`)}</option>`)
     .join('');
   body.innerHTML = `
     <div class="form-group" style="margin-bottom:10px">
@@ -11633,7 +14838,7 @@ async function invRenderAddWineModalContent() {
       </select>
     </div>
     <div class="form-hint" style="margin:0 0 10px">
-      当前仓库：<strong>${escapeHtml(wh ? `${invWarehouseBrandDisplay(wh)} · ${wh.region}` : `#${whId}`)}</strong>。可手动勾选目录酒品加入该仓库；数量可填 0，后续再调整。
+      当前仓库：<strong>${escapeHtml(wh ? invWarehouseFullLabel(wh) : `#${whId}`)}</strong>。可手动勾选目录酒品加入该仓库；数量可填 0，后续再调整。
     </div>
     <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px">
       <button type="button" class="btn btn-secondary btn-xs" onclick="invAddWineToggleAll(true)">全选可添加</button>
@@ -12140,5 +15345,3 @@ async function invDownloadPdf(id) {
     showToast(e.message || 'PDF 加载失败', 'error');
   }
 }
-
-

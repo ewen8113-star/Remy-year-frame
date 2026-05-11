@@ -30,6 +30,11 @@ function roundMoney(v) {
   return Math.round((parseFloat(v) || 0) * 100) / 100;
 }
 
+function normPaymentStatus(v) {
+  const s = String(v || '').toLowerCase();
+  return s === 'paid' ? 'paid' : 'unpaid';
+}
+
 function canonicalRegion(raw) {
   if (raw == null) return null;
   const s = String(raw).replace(/^\uFEFF/, '').trim().normalize('NFKC');
@@ -151,9 +156,24 @@ router.get('/:id', async (req, res) => {
 
 router.post('/', async (req, res) => {
   try {
-    const { year_frame_id, activity_id, merged_into_activity, allocation_note, brand_id, repair_date, region, items, quoted_price, remarks, no_cost } = req.body || {};
+    const {
+      year_frame_id,
+      activity_id,
+      merged_into_activity,
+      allocation_note,
+      brand_id,
+      repair_date,
+      region,
+      items,
+      quoted_price,
+      remarks,
+      no_cost,
+      payee_name,
+      payment_status,
+    } = req.body || {};
     const activityId = activity_id != null && String(activity_id).trim() !== '' ? parseInt(activity_id, 10) : null;
     const mergedFlag = merged_into_activity === true || merged_into_activity === 1 || String(merged_into_activity) === '1' ? 1 : 0;
+    const payStatus = normPaymentStatus(payment_status);
     const yf = parseInt(year_frame_id, 10);
     const bid = parseInt(brand_id, 10);
     const regionNorm = canonicalRegion(region);
@@ -168,9 +188,24 @@ router.post('/', async (req, res) => {
     if (!isNoCost && total <= 0) return res.status(400).json({ error: '合计金额须大于 0' });
 
     const [result] = await db.query(
-      `INSERT INTO prop_repairs (year_frame_id, activity_id, merged_into_activity, allocation_note, brand_id, repair_date, region, items, quoted_price, total_amount, no_cost, remarks)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [yf, Number.isFinite(activityId) ? activityId : null, mergedFlag, allocation_note || null, bid, repair_date, regionNorm, JSON.stringify(parsed), quotedPrice, total, isNoCost ? 1 : 0, remarks || null]
+      `INSERT INTO prop_repairs (year_frame_id, activity_id, merged_into_activity, allocation_note, brand_id, repair_date, region, items, quoted_price, total_amount, no_cost, remarks, payee_name, payment_status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        yf,
+        Number.isFinite(activityId) ? activityId : null,
+        mergedFlag,
+        allocation_note || null,
+        bid,
+        repair_date,
+        regionNorm,
+        JSON.stringify(parsed),
+        quotedPrice,
+        total,
+        isNoCost ? 1 : 0,
+        remarks || null,
+        payee_name ? String(payee_name).trim() : null,
+        payStatus,
+      ]
     );
     const [rows] = await db.query(`${LIST_SQL} AND pr.id = ?`, [result.insertId]);
     const row = rows[0];
@@ -185,9 +220,23 @@ router.put('/:id', async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
     if (!id) return res.status(400).json({ error: '无效 ID' });
-    const { activity_id, merged_into_activity, allocation_note, brand_id, repair_date, region, items, quoted_price, remarks, no_cost } = req.body || {};
+    const {
+      activity_id,
+      merged_into_activity,
+      allocation_note,
+      brand_id,
+      repair_date,
+      region,
+      items,
+      quoted_price,
+      remarks,
+      no_cost,
+      payee_name,
+      payment_status,
+    } = req.body || {};
     const activityId = activity_id != null && String(activity_id).trim() !== '' ? parseInt(activity_id, 10) : null;
     const mergedFlag = merged_into_activity === true || merged_into_activity === 1 || String(merged_into_activity) === '1' ? 1 : 0;
+    const payStatus = normPaymentStatus(payment_status);
     const bid = parseInt(brand_id, 10);
     const regionNorm = canonicalRegion(region);
     const isNoCost = no_cost === true || no_cost === 1 || String(no_cost) === '1';
@@ -202,9 +251,24 @@ router.put('/:id', async (req, res) => {
 
     const [ret] = await db.query(
       `UPDATE prop_repairs
-       SET activity_id = ?, merged_into_activity = ?, allocation_note = ?, brand_id = ?, repair_date = ?, region = ?, items = ?, quoted_price = ?, total_amount = ?, no_cost = ?, remarks = ?
+       SET activity_id = ?, merged_into_activity = ?, allocation_note = ?, brand_id = ?, repair_date = ?, region = ?, items = ?, quoted_price = ?, total_amount = ?, no_cost = ?, remarks = ?, payee_name = ?, payment_status = ?
        WHERE id = ?`,
-      [Number.isFinite(activityId) ? activityId : null, mergedFlag, allocation_note || null, bid, repair_date, regionNorm, JSON.stringify(parsed), quotedPrice, total, isNoCost ? 1 : 0, remarks || null, id]
+      [
+        Number.isFinite(activityId) ? activityId : null,
+        mergedFlag,
+        allocation_note || null,
+        bid,
+        repair_date,
+        regionNorm,
+        JSON.stringify(parsed),
+        quotedPrice,
+        total,
+        isNoCost ? 1 : 0,
+        remarks || null,
+        payee_name ? String(payee_name).trim() : null,
+        payStatus,
+        id,
+      ]
     );
     if (!ret.affectedRows) return res.status(404).json({ error: '记录不存在' });
     const [rows] = await db.query(`${LIST_SQL} AND pr.id = ?`, [id]);

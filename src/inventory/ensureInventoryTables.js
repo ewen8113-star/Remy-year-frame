@@ -126,6 +126,54 @@ async function ensureInvReturnLinesEmptyBottleItemIdColumn(db) {
   }
 }
 
+let _invWarehousesCityEnsured = false;
+async function ensureInvWarehousesCityColumn(db) {
+  if (_invWarehousesCityEnsured) return;
+  try {
+    const [tc] = await db.query(
+      `SELECT COUNT(*) AS c FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'inv_warehouses'`
+    );
+    if (!Number(tc[0].c)) return;
+    if (!(await columnExistsQuery(db, 'inv_warehouses', 'city'))) {
+      try {
+        await db.query('ALTER TABLE inv_warehouses ADD COLUMN city VARCHAR(64) NULL AFTER label');
+      } catch (e) {
+        if (!(e && (e.code === 'ER_DUP_FIELDNAME' || /Duplicate column name/i.test(String(e.message || ''))))) {
+          throw e;
+        }
+      }
+    }
+    _invWarehousesCityEnsured = true;
+  } catch (e) {
+    console.error('inv_warehouses.city 补列失败:', e);
+    throw e;
+  }
+}
+
+let _invWarehousesRemarksEnsured = false;
+async function ensureInvWarehousesRemarksColumn(db) {
+  if (_invWarehousesRemarksEnsured) return;
+  try {
+    const [tc] = await db.query(
+      `SELECT COUNT(*) AS c FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'inv_warehouses'`
+    );
+    if (!Number(tc[0].c)) return;
+    if (!(await columnExistsQuery(db, 'inv_warehouses', 'remarks'))) {
+      try {
+        await db.query('ALTER TABLE inv_warehouses ADD COLUMN remarks VARCHAR(500) NULL AFTER city');
+      } catch (e) {
+        if (!(e && (e.code === 'ER_DUP_FIELDNAME' || /Duplicate column name/i.test(String(e.message || ''))))) {
+          throw e;
+        }
+      }
+    }
+    _invWarehousesRemarksEnsured = true;
+  } catch (e) {
+    console.error('inv_warehouses.remarks 补列失败:', e);
+    throw e;
+  }
+}
+
 let _invOutboundTrackingEnsured = false;
 async function ensureInvOutboundTrackingColumn(db) {
   if (_invOutboundTrackingEnsured) return;
@@ -150,6 +198,35 @@ async function ensureInvOutboundTrackingColumn(db) {
   }
 }
 
+let _invOutboundActivityDateEnsured = false;
+/**
+ * 幂等补列：inv_outbound_orders.activity_date
+ * 用于区分「出库日期」（实际发货日）与「活动日期」（关联场次的真实活动日期）。
+ * PDF 文件名规则依赖此字段：无项目编号时按 YYMMDD(activity_date) + 城市 命名。
+ */
+async function ensureInvOutboundActivityDateColumn(db) {
+  if (_invOutboundActivityDateEnsured) return;
+  try {
+    const [tc] = await db.query(
+      `SELECT COUNT(*) AS c FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'inv_outbound_orders'`
+    );
+    if (!Number(tc[0].c)) return;
+    if (!(await columnExistsQuery(db, 'inv_outbound_orders', 'activity_date'))) {
+      try {
+        await db.query('ALTER TABLE inv_outbound_orders ADD COLUMN activity_date DATE NULL AFTER shipped_at');
+      } catch (e) {
+        if (!(e && (e.code === 'ER_DUP_FIELDNAME' || /Duplicate column name/i.test(String(e.message || ''))))) {
+          throw e;
+        }
+      }
+    }
+    _invOutboundActivityDateEnsured = true;
+  } catch (e) {
+    console.error('inv_outbound_orders.activity_date 补列失败:', e);
+    throw e;
+  }
+}
+
 async function ensureInventoryTables(db) {
   await ensureInvItemsCommonColumn(db);
   await ensureInvItemsStatsOverrideColumns(db);
@@ -157,6 +234,9 @@ async function ensureInventoryTables(db) {
   await ensureInvReturnLinesEmptyRecoveredColumn(db);
   await ensureInvReturnLinesEmptyBottleItemIdColumn(db);
   await ensureInvOutboundTrackingColumn(db);
+  await ensureInvOutboundActivityDateColumn(db);
+  await ensureInvWarehousesCityColumn(db);
+  await ensureInvWarehousesRemarksColumn(db);
   if (_ensured) return;
   if (_ensuring) return _ensuring;
   _ensuring = (async () => {
@@ -166,6 +246,8 @@ async function ensureInventoryTables(db) {
         brand_id INT NOT NULL,
         region VARCHAR(32) NOT NULL,
         label VARCHAR(128) NULL,
+        city VARCHAR(64) NULL,
+        remarks VARCHAR(500) NULL,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
         UNIQUE KEY uq_inv_wh_global (brand_id, region),
@@ -222,6 +304,7 @@ async function ensureInventoryTables(db) {
         tracking_number VARCHAR(100) NULL,
         status ENUM('shipped','closed') NOT NULL DEFAULT 'shipped',
         shipped_at DATETIME NULL,
+        activity_date DATE NULL,
         operator VARCHAR(100),
         remarks TEXT,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,

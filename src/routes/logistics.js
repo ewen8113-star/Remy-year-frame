@@ -40,6 +40,8 @@ function serializeLogisticsRow(row) {
     'express_company',
     'settlement_month',
     'brand',
+    'payee_name',
+    'payment_status',
   ];
   textKeys.forEach((k) => {
     if (out[k] != null && Buffer.isBuffer(out[k])) out[k] = out[k].toString('utf8');
@@ -58,6 +60,44 @@ function serializeLogisticsRow(row) {
   return out;
 }
 
+function parseInventoryOutboundIdFromRemarks(remarks) {
+  const m = String(remarks || '').match(/\[INV-OB:(\d+)\]/);
+  if (!m) return null;
+  const id = parseInt(m[1], 10);
+  return Number.isFinite(id) ? id : null;
+}
+
+async function enrichLogisticsRowsWithOutboundTracking(rows) {
+  const serializedRows = (rows || []).map(serializeLogisticsRow);
+  const outboundIds = [
+    ...new Set(
+      serializedRows
+        .filter((row) => !String(row.tracking_number || '').trim())
+        .map((row) => parseInventoryOutboundIdFromRemarks(row.remarks))
+        .filter(Number.isFinite)
+    ),
+  ];
+  if (!outboundIds.length) return serializedRows;
+
+  const [orders] = await db.query(
+    `SELECT id, tracking_number FROM inv_outbound_orders WHERE id IN (${outboundIds.map(() => '?').join(',')})`,
+    outboundIds
+  );
+  const trackingByOutboundId = new Map(
+    orders
+      .map((row) => [Number(row.id), row.tracking_number != null ? String(row.tracking_number).trim() : ''])
+      .filter(([, trackingNumber]) => trackingNumber)
+  );
+  if (!trackingByOutboundId.size) return serializedRows;
+
+  return serializedRows.map((row) => {
+    if (String(row.tracking_number || '').trim()) return row;
+    const outboundId = parseInventoryOutboundIdFromRemarks(row.remarks);
+    const trackingNumber = trackingByOutboundId.get(outboundId);
+    return trackingNumber ? { ...row, tracking_number: trackingNumber } : row;
+  });
+}
+
 function canonicalBrand(brand) {
   const v = String(brand || '').trim();
   return LOGISTICS_BRANDS.has(v) ? v : 'PHD';
@@ -67,7 +107,8 @@ async function fetchLogisticsRowById(id) {
   const nid = parseInt(id, 10);
   if (!Number.isFinite(nid)) return null;
   const [rows] = await db.query(LOGISTICS_ROW_SQL, [nid]);
-  return rows.length ? serializeLogisticsRow(rows[0]) : null;
+  const enrichedRows = await enrichLogisticsRowsWithOutboundTracking(rows);
+  return enrichedRows.length ? enrichedRows[0] : null;
 }
 
 // 获取物流列表
@@ -95,7 +136,7 @@ router.get('/', async (req, res) => {
     sql += ' ORDER BY l.shipping_date DESC';
     
     const [rows] = await db.query(sql, params);
-    res.json(rows.map(serializeLogisticsRow));
+    res.json(await enrichLogisticsRowsWithOutboundTracking(rows));
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -150,7 +191,7 @@ router.get('/:id', async (req, res) => {
 // 创建物流记录
 router.post('/', async (req, res) => {
   try {
-    const { year_frame_id, activity_id, merged_into_activity, allocation_note, logistics_company, express_company, tracking_number, origin_city, destination_city, shipping_date, fee, remarks, special_car, monthly_settlement, settlement_month, brand } = req.body;
+    const { year_frame_id, activity_id, merged_into_activity, allocation_note, payee_name, logistics_company, express_company, tracking_number, origin_city, destination_city, shipping_date, fee, remarks, special_car, monthly_settlement, settlement_month, brand } = req.body;
     const relatedProjectCode = parseRelatedProjectCodeFromBody(req.body);
     const yfid = parseInt(year_frame_id, 10);
     const activityId = activity_id != null && String(activity_id).trim() !== '' ? parseInt(activity_id, 10) : null;
@@ -174,13 +215,14 @@ router.post('/', async (req, res) => {
     const logisticsBrand = canonicalBrand(brand);
 
     const [result] = await db.query(`
-      INSERT INTO logistics (year_frame_id, activity_id, merged_into_activity, allocation_note, logistics_company, brand, express_company, tracking_number, settlement_month, origin_city, destination_city, shipping_date, fee, related_project_code, remarks, special_car, monthly_settlement)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO logistics (year_frame_id, activity_id, merged_into_activity, allocation_note, payee_name, logistics_company, brand, express_company, tracking_number, settlement_month, origin_city, destination_city, shipping_date, fee, related_project_code, remarks, special_car, monthly_settlement)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `, [
       yfid,
       Number.isFinite(activityId) ? activityId : null,
       mergedFlag,
       allocation_note || null,
+      payee_name || null,
       logistics_company,
       logisticsBrand,
       expressCompany,
@@ -226,7 +268,7 @@ router.put('/:id', async (req, res) => {
     if (!Number.isFinite(nid)) {
       return res.status(400).json({ error: '无效的记录 ID' });
     }
-    const { activity_id, merged_into_activity, allocation_note, logistics_company, express_company, tracking_number, origin_city, destination_city, shipping_date, fee, remarks, special_car, monthly_settlement, settlement_month, brand } = req.body;
+    const { activity_id, merged_into_activity, allocation_note, payee_name, logistics_company, express_company, tracking_number, origin_city, destination_city, shipping_date, fee, remarks, special_car, monthly_settlement, settlement_month, brand } = req.body;
     const activityId = activity_id != null && String(activity_id).trim() !== '' ? parseInt(activity_id, 10) : null;
     const mergedFlag = merged_into_activity === true || merged_into_activity === 1 || String(merged_into_activity) === '1' ? 1 : 0;
     const relatedProjectCode = parseRelatedProjectCodeFromBody(req.body);
@@ -246,7 +288,7 @@ router.put('/:id', async (req, res) => {
 
     await db.query(`
       UPDATE logistics SET
-        activity_id = ?, merged_into_activity = ?, allocation_note = ?,
+        activity_id = ?, merged_into_activity = ?, allocation_note = ?, payee_name = ?,
         logistics_company = ?, brand = ?, express_company = ?, tracking_number = ?, settlement_month = ?,
         origin_city = ?, destination_city = ?, shipping_date = ?,
         fee = ?, related_project_code = ?, remarks = ?, special_car = ?, monthly_settlement = ?
@@ -255,6 +297,7 @@ router.put('/:id', async (req, res) => {
       Number.isFinite(activityId) ? activityId : null,
       mergedFlag,
       allocation_note || null,
+      payee_name || null,
       logistics_company,
       logisticsBrand,
       expressCompany,

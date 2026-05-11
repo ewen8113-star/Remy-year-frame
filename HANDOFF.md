@@ -7,13 +7,42 @@
 
 ## 日期
 
-- **交接日**：2026-04-25（周六）
-- **下一工作日**：2026-04-26（周日，优先调整出库单格式并验收新建出库弹窗交互）。
+- **交接日**：2026-05-11（周一）
+- **下一工作日**：2026-05-12（周二，优先验收字典管理首批数据录入 + 物料采购详情弹窗实拍核对）。
 
 ---
 
 ## 当天完成
 
+- **2026-05-11 版本留痕（工作日志）**
+  - **付款申请（报销登记）整体重构**
+    - 行操作区从「编辑/删除」改为整行点击 → 详情弹窗（PDF 预览 / 编辑 / 删除）；PDF 预览模态 z-index 抬至 230 以覆盖详情。
+    - 「报销登记」由弹窗改为列表下方内联展开，标题「报销登记 / 编辑报销登记 · #ID」；顶部工具栏改 Ghost 风格 Lucide 图标；上半部分压缩为密集 6 列 grid。
+    - 「品牌」字段从 hero 移除，并入项目编号下拉（含 `N230530-RM Club / N220630-RC PHD / N230901-RM XO / 内部 / Remy-RC / 其他`），明细表格新增「品牌」列；勾选「同步项目成本」时自动隐藏品牌列、强制要求项目编号（红星 + 输入框高亮 + 校验失败抖动）。
+    - 成本归属「非活动成本」改名「统筹成本（不同步场次）」；成本计入「项目成本」改名「活动成本」；项目编号下方提示文案移除。
+    - 报销 PDF：无项目编号时按品牌映射对应年框编号；样式压缩，禁止换行。
+  - **物品出库重构**
+    - 表单：行 1 出库日期 / 活动日期 / 收件城市，行 2 联系人 / 联系电话 / 收件地址（grow）/ 智能填写；按 UI/UX `field-grouping` 分组。
+    - 「智能填写」重写为剪贴板启发式解析：电话→姓名/公司→地址，识别顺序无关，自动判定城市。
+    - 列表：新增搜索框（关键词检索，多关键字 AND，覆盖物品摘要/项目编号/用途/物流单号等）；缓存全量列表客户端过滤；删除单据时联动清理对应物流成本，新增「清理出库残留」管理员工具按钮（`POST /api/inventory/cleanup-orphan-logistics`）。
+    - PDF 文件名规则：无项目编号 → `活动日期 + 收件城市 + 出库单（仓库名称）.pdf`；有项目编号 → `项目内容 + 出库单（仓库名称）.pdf`（项目内容 = 项目编号后空格之后的活动描述）。
+    - 后端 `inv_outbound_orders` 表新增 `activity_date DATE` 字段（幂等迁移），并在列表 / 详情用 `COALESCE` 回退至活动表的 `activity_date`。
+  - **仓库管理（库存）**
+    - 新增「新建仓库」（admin only）按钮 + 卡片右上角铅笔编辑图标（鼠标 hover 修复，Lucide 替换后 SVG 与 i 双选择器）。
+    - `inv_warehouses` 表幂等新增 `city VARCHAR(64)` 与 `remarks VARCHAR(500)` 字段；接口 `GET/POST/PUT /api/inventory/warehouses` 扩展。
+    - 仓库标签统一用 `invWarehouseFullLabel`（前端）/ `formatWarehouseLabel`（后端），解决「南区仓库」在物流/PDF 显示为「X.O 南区」的口径不一致。
+  - **物流编辑**：取消「费用」必填项，仅校验非负。
+  - **侧边栏调整**：将「仓库管理」分组上移、「成本管理」分组下移；「系统」分组下新增「字典管理」入口（admin only）。
+  - **字典管理（新模块）**
+    - 后端：新表 `dict_entries`（单表 + JSON content + 类别索引），路由 `src/routes/dict.js`（GET 列表 / 类别统计 / 单条详情；POST/PUT/DELETE；`POST /:id/touch` 使用计数+1）；`src/dict/ensureDictTables.js` 幂等建表与补列。
+    - 前端：左侧导航 = 通讯录（收件人 / 发件方 / 供应商 / 收款人 / 报销人员）+ 表单选项（年框编号 / 活动类型 / 时段 / 区域 / 归属 / 执行人员 / 状态），后者复用现有 `/api/lookups`；动态 schema 编辑弹窗按类别生成字段；置顶、停用、彻底删除、调用次数排序；样式 ~450 行（`.dict-*`），亮/暗主题与小屏单列适配。
+  - **物料采购页改造（badge + 详情同步）**
+    - 修复侧边栏「物料采购」badge 与列表不同步：合并 `material_purchases` 直接登记 + reimbursement 中 `cost_module='material_purchase'` 派生记录的计数。
+    - 列表「操作」列移除（含「编辑报销 / 编辑 / 删除」），整行点击进详情；报销派生行 → `reimbursementOpenDetailModal`，直接登记 → 新建 `materialPurchaseOpenDetailModal` 复用同一 modal 容器，footer 按上下文派发（PDF 预览仅付款申请显示）。
+    - 详情明细表脱离全局 `.reimb-detail-table { min-width: 1520px }` 的样式冲突：换专属类 `.reimb-ro-table` + 横向滚动 wrap `.reimb-ro-scroll`，单元格 `white-space: nowrap`，长字段（描述/备注）`max-width: 280px` 自动省略 + tooltip。
+  - **影响文件**
+    - 前端：`public/index.html`（侧边栏顺序 / 字典入口 / 物流弹窗费用必填移除）、`public/app.js`（约 +900 行：字典管理模块、物料采购详情、详情样式类替换、badge 同步、出库表单/搜索/智能填写、仓库 modal、报销内联表单等）、`public/style.css`（约 +500 行：字典样式 + 只读详情表 + 出库表单 grid + 搜索框 webkit decoration 重置 + 仓库卡片铅笔图标）。
+    - 后端：`src/server.js`（注册 `/api/dict`）、`src/routes/dict.js`（新增）、`src/dict/ensureDictTables.js`（新增）、`src/routes/inventory.js`（`activity_date`、`extractProjectContent`、PDF 命名、`cleanup-orphan-logistics`、`formatWarehouseLabel`、仓库 city/remarks）、`src/inventory/ensureInventoryTables.js`（出库 `activity_date` 列 + 仓库补列）、`src/routes/reimbursement.js`（数据回读 / 品牌-年框映射相关）。
 - **2026-04-25 版本留痕（工作日志）**
   - **新建/编辑出库弹窗字段错位修复**：重构出库弹窗首行布局并统一输入控件高度，修复项目编号长内容下的错位与挤压问题。
   - **项目编号下拉交互修复**：将原生 `datalist` 改为自定义下拉建议，统一箭头样式；补充失焦收起逻辑，修复“点击别处后下拉不消失”的问题。

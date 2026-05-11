@@ -3,16 +3,17 @@ const router = express.Router();
 const db = require('../config/database');
 
 const PAYMENT_TYPES = ['personal_reimbursement', 'corporate_payment'];
-const COST_MODULES = ['activity', 'warehouse', 'logistics', 'prop_repair', 'general'];
+const COST_MODULES = ['activity', 'warehouse', 'logistics', 'prop_repair', 'material_purchase', 'general'];
 const CLAIM_STATUSES = ['draft', 'submitted', 'paid', 'rejected'];
 
-/** 与 public/app.js COST_DETAIL_GROUPS 键一致 */
+/** 报销申请保存的成本键：兼容活动成本字段，并补充付款申请明细专用类别 */
 const COST_DETAIL_KEYS = [
-  'supervisor', 'pg', 'parttime', 'bartender', 'photo', 'cloud_album_edit', 'performance',
+  'supervisor', 'pg', 'parttime', 'bartender', 'photo', 'cloud_album_edit', 'performance', 'makeup',
   'travel_supervisor', 'travel_company',
-  'structure', 'print', 'spray',
-  'floral', 'payment', 'tasting',
+  'structure', 'av', 'print', 'spray',
+  'floral', 'payment', 'tasting', 'venue_fee', 'meal_fee', 'other_advance',
   'warehouse', 'express', 'logistics',
+  'advance_offset',
 ];
 
 function round2(n) {
@@ -52,13 +53,13 @@ function parseJsonArray(v) {
   return [];
 }
 
-/** 仅当报销某键金额 > 0 时覆盖场次对应键 */
+/** 报销同步项目成本：非 0 明细写入场次，备用金抵扣等负数也需要同步 */
 function mergeCostDetailsIntoActivity(activityDetails, reimbDetails) {
   const base = parseJsonObject(activityDetails);
   const r = parseJsonObject(reimbDetails);
   COST_DETAIL_KEYS.forEach((k) => {
     const v = round2(r[k]);
-    if (v > 0) base[k] = v;
+    if (v !== 0) base[k] = v;
   });
   return base;
 }
@@ -96,6 +97,7 @@ function serializeRow(row) {
   r.payment_type = PAYMENT_TYPES.includes(String(r.payment_type || '')) ? String(r.payment_type) : 'personal_reimbursement';
   r.cost_module = COST_MODULES.includes(String(r.cost_module || '')) ? String(r.cost_module) : 'activity';
   r.claim_status = CLAIM_STATUSES.includes(String(r.claim_status || '')) ? String(r.claim_status) : 'draft';
+  r.payment_status = normalizePaymentStatus(r.payment_status);
   return r;
 }
 
@@ -110,6 +112,11 @@ function normalizeCostModule(v) {
 function normalizeClaimStatus(v) {
   const s = v == null ? '' : String(v).trim();
   return CLAIM_STATUSES.includes(s) ? s : 'draft';
+}
+
+function normalizePaymentStatus(v) {
+  const s = String(v || '').toLowerCase();
+  return s === 'paid' ? 'paid' : 'unpaid';
 }
 
 async function mergeReimbIntoActivity(conn, activityId, reimbCostDetails) {
@@ -199,6 +206,7 @@ router.post('/', async (req, res) => {
       city,
       brand,
       date,
+      payee_name,
       related_project_code,
       remarks,
       has_invoice,
@@ -212,15 +220,14 @@ router.post('/', async (req, res) => {
       return res.status(400).json({ error: '缺少 date' });
     }
     const brandVal = brand != null ? String(brand).trim() : '';
+    const payeeName = payee_name != null ? String(payee_name).trim() : '';
     if (!brandVal) {
       return res.status(400).json({ error: '请选择品牌' });
     }
 
     const cost_details = normalizeCostDetailsInput(req.body);
     const amount = sumCostDetails(cost_details);
-    if (amount <= 0) {
-      return res.status(400).json({ error: '费用明细合计须大于 0' });
-    }
+    const payStatus = normalizePaymentStatus(req.body.payment_status);
 
     const hi = !!(has_invoice === true || has_invoice === 1 || String(has_invoice) === '1');
     let invoices = normalizeInvoices(req.body);
@@ -240,6 +247,12 @@ router.post('/', async (req, res) => {
     const actId = activity_id == null || activity_id === '' ? null : Number(activity_id);
     if (sync && !actId) {
       return res.status(400).json({ error: '勾选同步到场次成本时，必须选择关联场次' });
+    }
+    if (amount === 0) {
+      return res.status(400).json({ error: '金额合计不能为 0' });
+    }
+    if (sync && amount <= 0) {
+      return res.status(400).json({ error: '同步到场次时金额合计须大于 0' });
     }
 
     const paymentType = normalizePaymentType(payment_type);
@@ -275,9 +288,10 @@ router.post('/', async (req, res) => {
     const [result] = await conn.query(
       `INSERT INTO reimbursements (
         year_frame_id, activity_id, reimbursement_type, payment_type, cost_module, claim_status, city, brand, amount, date, related_project_code,
+        payee_name, payment_status,
         props, printing, express, other,
         cost_details, merged_into_activity, has_invoice, invoices, remarks
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, 0, ?, ?, ?, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, 0, ?, ?, ?, ?, ?)`,
       [
         year_frame_id,
         actId,
@@ -290,6 +304,8 @@ router.post('/', async (req, res) => {
         amount,
         date,
         rpc,
+        payeeName || null,
+        payStatus,
         costJson,
         sync ? 1 : 0,
         hi ? 1 : 0,
@@ -336,6 +352,7 @@ router.put('/:id', async (req, res) => {
       city,
       brand,
       date,
+      payee_name,
       related_project_code,
       remarks,
       has_invoice,
@@ -348,9 +365,6 @@ router.put('/:id', async (req, res) => {
 
     const cost_details = normalizeCostDetailsInput(req.body);
     const amount = sumCostDetails(cost_details);
-    if (amount <= 0) {
-      return res.status(400).json({ error: '费用明细合计须大于 0' });
-    }
 
     const hi = !!(has_invoice === true || has_invoice === 1 || String(has_invoice) === '1');
     let invoices = normalizeInvoices(req.body);
@@ -370,6 +384,10 @@ router.put('/:id', async (req, res) => {
     const paymentType = normalizePaymentType(payment_type != null ? payment_type : ex.payment_type);
     const costModule = normalizeCostModule(cost_module != null ? cost_module : ex.cost_module);
     const claimStatus = normalizeClaimStatus(claim_status != null ? claim_status : ex.claim_status);
+    const payStatus =
+      req.body && Object.prototype.hasOwnProperty.call(req.body, 'payment_status')
+        ? normalizePaymentStatus(req.body.payment_status)
+        : normalizePaymentStatus(ex.payment_status);
     const incomingActId = activity_id == null || activity_id === '' ? null : Number(activity_id);
     const actId = incomingActId == null ? (ex.activity_id ? Number(ex.activity_id) : null) : incomingActId;
     if (alreadyMerged) {
@@ -378,6 +396,13 @@ router.put('/:id', async (req, res) => {
       }
     } else if (sync && !actId) {
       return res.status(400).json({ error: '勾选同步到场次成本时，必须选择关联场次' });
+    }
+
+    if (amount === 0) {
+      return res.status(400).json({ error: '金额合计不能为 0' });
+    }
+    if (sync && amount <= 0) {
+      return res.status(400).json({ error: '同步到场次时金额合计须大于 0' });
     }
 
     let act = null;
@@ -395,6 +420,7 @@ router.put('/:id', async (req, res) => {
       act = acts[0];
     }
     const brandVal = brand != null ? String(brand).trim() : String(ex.brand || '').trim();
+    const payeeName = payee_name != null ? String(payee_name).trim() : String(ex.payee_name || '').trim();
     if (!brandVal) {
       return res.status(400).json({ error: '请选择品牌' });
     }
@@ -417,6 +443,7 @@ router.put('/:id', async (req, res) => {
         reimbursement_type = ?, payment_type = ?, cost_module = ?, claim_status = ?,
         city = ?, brand = ?, amount = ?,
         date = ?, related_project_code = ?,
+        payee_name = ?, payment_status = ?,
         props = 0, printing = 0, express = 0, other = 0,
         cost_details = ?, merged_into_activity = ?, has_invoice = ?, invoices = ?,
         remarks = ?
@@ -432,6 +459,8 @@ router.put('/:id', async (req, res) => {
         amount,
         date,
         rpc,
+        payeeName || null,
+        payStatus,
         costJson,
         mergedFlag,
         hi ? 1 : 0,

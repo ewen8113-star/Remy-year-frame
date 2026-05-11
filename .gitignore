@@ -11,3 +11,6 @@ Date Backup/
 Quote/
 *.xlsx
 .tmp_*
+backups/
+*.docx
+*.doc
