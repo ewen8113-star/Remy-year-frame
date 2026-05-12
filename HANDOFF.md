@@ -7,13 +7,58 @@
 
 ## 日期
 
-- **交接日**：2026-05-11（周一）
-- **下一工作日**：2026-05-12（周二，优先验收字典管理首批数据录入 + 物料采购详情弹窗实拍核对）。
+- **交接日**：2026-05-12（周二）
+- **下一工作日**：2026-05-13（周三，优先回归测试物料分析仪表盘在多张报销单 + 多 brand 桶下的金额/数量准确性，并确认导出功能是否需要纳入下一迭代）。
 
 ---
 
 ## 当天完成
 
+- **2026-05-12 版本留痕（工作日志）**
+  - **板块改名：物料采购 → 额外成本**
+    - 侧边栏 / 顶部页面标题 / 顶部合计卡 / 列表标题 全部改名：
+      - 侧边栏 "物料采购" → "额外成本"（`index.html`）
+      - 顶部 page title 映射 `material: '额外成本'`（`navigate` 函数 title map）
+      - 顶部合计卡 "物料采购合计（当前年框）" → "额外成本合计（当前年框）"
+      - 列表标题 "采购记录" → "成本记录"
+    - 新增页面顶部 banner 说明文字："额外成本：不计入具体场次的成本统计（物料采购 / 物流 / 道具维修 / 统筹支出等，按"成本归属 ≠ 活动成本"的报销与直接登记汇总）"
+    - "新建物料采购" / 物料采购详情弹窗 / 报销 cost_module 下拉项的"物料采购"标签保持不变（这是数据登记/分类语义，不影响业务理解）。
+  - **数据范围扩展**
+    - 旧逻辑：仪表盘 + 5 桶卡仅取报销单 `cost_module='material_purchase'` 且 `block='purchase'` 的明细。
+    - 新逻辑：取 `cost_module && cost_module ≠ 'activity'` 的所有报销单（含 material_purchase / logistics / prop_repair / general 等）的**全部 block 明细行**（不再限定 purchase）。原本被遗漏的"画面制作 · 印刷/快印"、"物流 · 快递/闪送"、"差旅"等支出现在都被统计。
+    - 仪表盘明细行的 `category` key 改为 `block:category` 组合，避免跨 block 同名子类冲突；`categoryLabel` 改为 "区块 · 子类" 拼接（如 "画面制作 · 印刷/快印"）。
+    - 类别下拉按 `REIMB_DETAIL_BLOCKS` 中的顺序排序（人员 / 差旅 / 舞美 / 画面 / 采购 / 物流 / 垫付），再按子类标签的中文 collation 排序。
+    - 侧边栏 "物料采购" badge 计数同步扩展：`material_purchases` 表 + 报销单 `cost_module ≠ 'activity'` 的全部条数。
+    - 仪表盘 / 列表派生函数 `materialPurchaseDetailRowsFromReimbursements` 与 `materialPurchaseRowsFromReimbursements` 都同步放宽过滤；后者派生的"采购明细 items"按 "区块 · 子类" 标签合成显示名。
+    - 关键字检索从仅匹配 `description` 扩展到 `description | categoryLabel | blockLabel`，让 "印刷" 等关键字能直接命中"画面制作 · 印刷/快印"类别下的明细（虽然 description 字段写的是"打印费"）。
+  - **仪表盘命名与小字调整**
+    - 卡标题 "物料分析（报销明细）" → "成本分析"。
+    - 财年小字 "2026-04 ~ 2027-03" → "26财年"（用 `${startYear.slice(-2)}财年`，鼠标 hover 通过 `title` 属性显示完整跨度 "2026-04 ~ 2027-03"）。
+    - 仪表盘子表 "物料 Top N" 改名 "成本明细 Top N"；表头 "物料名称" → "项目名称"；命中明细表头同步调整。
+    - 搜索框 placeholder 改为 "按物料/项目名称检索，如：腰果、印刷、快递..."。
+  - **样式补强**
+    - 新增 `.mp-hits-scroll / .mp-hits-table` 样式，命中明细表强制 `white-space:nowrap` + 横向滚动，避免窄屏下"画面制作·印刷/快印"被挤成竖排单字。
+    - 项目名称列 `max-width: 220px + ellipsis + 鼠标 hover 显示完整文案`。
+  - **物料采购品牌归桶（方案 B：明细行级）**
+    - 新增 `detectBrandBucket()` —— 使用 `includes` 优先级匹配（PHD > X.O > CLUB > RC > 其他），解决「N220630-RC PHD」被旧前缀匹配错判为 RC 的问题；项目编码型字符串（`N230530-RM Club`、`Remy-RC` 等）也能正确识别。
+    - `materialPurchaseBrandBucket()` 保留为旧名兼容包装，内部转发到 `detectBrandBucket`。
+    - 新增 `materialPurchaseAggFiveBuckets()` —— 接受"明细行级"或"整条级"统一输入（`subtotal` 或 `total_amount`），输出 5 桶（PHD / X.O / CLUB / RC / 其他）；旧 `materialPurchaseAggFourBuckets()` 改为转发到 5 桶版本。
+    - 顶部 5 桶卡数据源：`material_purchases` 表（直接登记，按整条 `brand_code/brand_name/brand` 归桶）+ `reimbursement` 表 `cost_module='material_purchase'` 的 `block='purchase'` 明细行（按 `row.brand` 归桶）。两者合并后落入对应桶。
+    - 5 桶卡顺序调整为 PHD / X.O / CLUB / RC / 其他；颜色映射（accent / warning / blue / success / gray）。
+  - **物料分析仪表盘（嵌入物料采购主页）**
+    - 新增 `currentFiscalYearRange(now)` —— 当年 4 月 1 日 ~ 次年 3 月 31 日；提供 `inRange(dateStr)` 与 `monthsList()`（生成 12 个月连续标签）。
+    - 新增 `materialPurchaseDetailRowsFromReimbursements(rows, { fiscalYear })` —— 扁平化报销明细行，只保留 `cost_module='material_purchase'` + `block='purchase'` 且小计 > 0 的行；按财年过滤；输出含 `brandBucket / category / categoryLabel / description / quantity / unitPrice / subtotal / month / reimbId / reimbDate` 的统计单元。
+    - 新增 `aggregateMaterialDashboardData(detailRows, keyword)` —— 聚合概览（金额、笔数、数量、占比、张数）+ 月度 Map + 5 桶分布 + 类别分布 + Top 单品（按 description 聚合，金额降序）+ 命中明细。
+    - UI：`materialDashboardSectionHtml()` + `materialDashboardMount()` + `materialDashboardRender()`；可折叠卡片 `📊 物料分析（报销明细）`，标题栏显示财年（如 `2026-04 ~ 2027-03`）+ 明细数 + 合计金额。
+    - 筛选条：关键字搜索（防抖 220ms，input 焦点保持）+ 全部品牌桶下拉 + 全部类别下拉（动态从财年明细生成）+ Top N（5/10/20/50）。
+    - 图表：Chart.js 月度走势柱图（12 月连续）+ 品牌占比 doughnut；销毁旧实例避免内存泄漏；按 `--text-secondary` CSS 变量自适应亮/暗主题。
+    - 表格：品牌明细（5 桶 金额/明细数）+ 类别分布 + 物料 Top N + 关键字命中明细（前 50 条，可点击跳转到对应报销详情）。
+    - `materialDashboardState`：`open / keyword / brand / category / detailRowsFY / fy / topLimit`，独立状态不污染 `materialPageState`。
+    - 数据范围严格只取报销单录入数据（与活动成本数据分离，后者另做活动成本分析）；当前财年（26.04-27.03）外的数据不进仪表盘。
+    - 导出功能本期未实现（按用户要求）。
+  - **辅助工具**
+    - 新增 `fmtNumber()` —— 数量格式化（整数无小数；含小数最多保留 2 位）。
+    - `style.css` 末尾追加 `.mp-dash-card / .mp-dash-header / .mp-dash-chart` 样式与 ≤1024px 单列响应式。
 - **2026-05-11 版本留痕（工作日志）**
   - **付款申请（报销登记）整体重构**
     - 行操作区从「编辑/删除」改为整行点击 → 详情弹窗（PDF 预览 / 编辑 / 删除）；PDF 预览模态 z-index 抬至 230 以覆盖详情。

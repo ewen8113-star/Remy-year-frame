@@ -1647,6 +1647,19 @@ body.modal-open {
   color: var(--text-secondary);
   line-height: 1.4;
 }
+.inv-inbound-summary {
+  margin: 0 0 8px;
+  padding: 6px 10px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  background: var(--bg-elevated, rgba(0,0,0,0.02));
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.inv-inbound-summary strong {
+  color: var(--text-primary);
+  font-weight: 700;
+}
 .inv-inbound-divider {
   margin: 22px 0;
   border: none;
@@ -4276,17 +4289,54 @@ textarea.form-control {
 }
 
 /* 付款申请：筛选与待付款列表 */
-.payment-order-filter-grid {
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 10px;
-  margin-bottom: 12px;
+.payment-order-wizard {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+.payment-order-wizard-label {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-right: 2px;
+  white-space: nowrap;
 }
 
-.payment-order-meta-grid {
-  grid-template-columns: 160px 160px 1fr;
-  gap: 10px;
-  margin-bottom: 12px;
+.payment-order-filter-grid {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr)) auto;
+  gap: 8px;
+  margin-bottom: 8px;
+  align-items: center;
 }
+.payment-order-filter-grid .form-control { min-width: 0; }
+.payment-order-filter-btn { white-space: nowrap; }
+
+.payment-order-meta-grid {
+  display: grid;
+  grid-template-columns: minmax(180px, 220px) minmax(180px, 220px) minmax(220px, 1fr);
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.po-inline-field {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.po-inline-field .po-inline-label {
+  font-size: 12px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  flex: 0 0 auto;
+}
+.po-inline-field .form-control {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.po-inline-field--grow { flex: 1 1 auto; }
 
 .payment-order-table-wrap {
   max-height: 360px;
@@ -4294,43 +4344,52 @@ textarea.form-control {
 }
 
 .payment-order-table {
-  min-width: 1120px;
+  min-width: 1020px;
   table-layout: fixed;
 }
 
+.payment-order-table th,
+.payment-order-table td {
+  padding: 6px 8px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 列宽：复选 / 日期 / 板块 / 收款方 / 品牌 / 项目编号 / 说明(弹性) / 金额 */
 .payment-order-table th:nth-child(1),
 .payment-order-table td:nth-child(1) {
-  width: 42px;
+  width: 36px;
   text-align: center;
+  padding: 6px 4px;
 }
 
 .payment-order-table th:nth-child(2),
-.payment-order-table td:nth-child(2) { width: 72px; }
+.payment-order-table td:nth-child(2) { width: 64px; }
 .payment-order-table th:nth-child(3),
-.payment-order-table td:nth-child(3) { width: 92px; }
+.payment-order-table td:nth-child(3) { width: 84px; }
 .payment-order-table th:nth-child(4),
-.payment-order-table td:nth-child(4) { width: 150px; }
+.payment-order-table td:nth-child(4) { width: 130px; }
 .payment-order-table th:nth-child(5),
-.payment-order-table td:nth-child(5) { width: 70px; }
+.payment-order-table td:nth-child(5) { width: 170px; }
 .payment-order-table th:nth-child(6),
-.payment-order-table td:nth-child(6) { width: 140px; }
-.payment-order-table th:nth-child(7),
-.payment-order-table td:nth-child(7) { width: 90px; }
-.payment-order-table th:nth-child(9),
-.payment-order-table td:nth-child(9) { width: 118px; }
+.payment-order-table td:nth-child(6) { width: 170px; }
+.payment-order-table th:nth-child(8),
+.payment-order-table td:nth-child(8) { width: 112px; }
 
 .payment-order-check {
-  width: 18px;
-  height: 18px;
+  width: 16px;
+  height: 16px;
   accent-color: var(--accent);
   cursor: pointer;
+  margin: 0;
 }
 
 .payment-order-desc-cell {
-  min-width: 280px;
-  white-space: normal;
-  line-height: 1.45;
-  word-break: break-word;
+  min-width: 240px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .inv-row-actions {
@@ -4340,8 +4399,16 @@ textarea.form-control {
   white-space: nowrap;
 }
 
-@media (max-width: 960px) {
-  .payment-order-filter-grid,
+@media (max-width: 1200px) {
+  .payment-order-filter-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr)) auto;
+  }
+}
+@media (max-width: 720px) {
+  .payment-order-filter-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .payment-order-filter-btn { grid-column: 1 / -1; }
   .payment-order-meta-grid {
     grid-template-columns: 1fr;
   }
@@ -4467,6 +4534,31 @@ textarea.form-control {
 .reimbursement-registration-table tbody tr.reimb-list-row:hover .reimbursement-list-payee,
 .reimbursement-registration-table tbody tr.reimb-list-row:hover .reimbursement-list-remarks {
   color: var(--text-primary);
+}
+
+.reimbursement-registration-table .reimb-select-cell {
+  padding-left: 8px;
+  padding-right: 4px;
+}
+
+.reimbursement-registration-table .reimb-select-cell input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+  accent-color: var(--accent, #2563eb);
+}
+
+.reimbursement-registration-table .reimb-select-cell input[type="checkbox"]:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.reimbursement-registration-table tbody tr.reimb-list-row--selected td {
+  background: color-mix(in srgb, var(--accent, #2563eb) 8%, var(--bg-card, #fff));
+}
+
+.reimbursement-registration-table tbody tr.reimb-list-row--selected:hover td {
+  background: color-mix(in srgb, var(--accent, #2563eb) 14%, var(--bg-card, #fff));
 }
 
 .reimbursement-row-actions {
@@ -6770,5 +6862,28 @@ tbody td {
   }
   .dict-search-input {
     width: 100%;
+  }
+}
+
+/* ===== 额外成本：成本分析仪表盘 ===== */
+.mp-dash-card .mp-dash-header { transition: background-color .15s ease; }
+.mp-dash-card .mp-dash-header:hover { background: var(--bg-input); }
+.mp-dash-card .mp-dash-body { border-top: 1px solid var(--border); }
+.mp-dash-chart .card-body { background: var(--bg-card); }
+
+/* 命中明细表：横向滚动 + 不换行，避免类别长文本竖排 */
+.mp-hits-scroll { overflow-x: auto; }
+.mp-hits-table { width: 100%; min-width: 720px; border-collapse: collapse; }
+.mp-hits-table th, .mp-hits-table td {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.mp-hits-table td:nth-child(5) { max-width: 220px; }
+
+@media (max-width: 1024px) {
+  #mpDashBody > div[style*="grid-template-columns:1.4fr 1fr"],
+  #mpDashBody > div[style*="grid-template-columns:1fr 1fr"] {
+    grid-template-columns: 1fr !important;
   }
 }

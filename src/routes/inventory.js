@@ -1483,7 +1483,7 @@ router.get('/outbound', async (req, res) => {
              COALESCE(o.activity_date, act.activity_date) AS activity_date,
              act.city AS activity_city,
              (SELECT COUNT(*) FROM inv_outbound_lines ol WHERE ol.order_id = o.id) AS line_count,
-             (SELECT GROUP_CONCAT(DISTINCT CONCAT_WS(' ', it.name, NULLIF(it.dimensions, '')) ORDER BY it.name SEPARATOR ' / ')
+             (SELECT GROUP_CONCAT(CONCAT_WS(' ', it.name, CONCAT('×', ol2.quantity), NULLIF(it.dimensions, '')) ORDER BY it.name SEPARATOR ' / ')
                 FROM inv_outbound_lines ol2
                 JOIN inv_items it ON it.id = ol2.item_id
                 WHERE ol2.order_id = o.id) AS items_summary
@@ -1669,7 +1669,23 @@ router.get('/inbound-receipts', async (req, res) => {
         COALESCE(agg.sum_qty_empty_recovered, 0) AS sum_qty_empty_recovered,
         COALESCE(agg.sum_qty_customer_keep, 0) AS sum_qty_customer_keep,
         COALESCE(agg.sum_qty_lost, 0) AS sum_qty_lost,
-        COALESCE(agg.sum_qty_damaged, 0) AS sum_qty_damaged
+        COALESCE(agg.sum_qty_damaged, 0) AS sum_qty_damaged,
+        (SELECT GROUP_CONCAT(
+                  CONCAT_WS(' ', it.name,
+                    CONCAT('×',
+                      COALESCE(rl.qty_return,0)
+                      + COALESCE(rl.qty_empty_recovered,0)
+                      + COALESCE(rl.qty_customer_keep,0)
+                      + COALESCE(rl.qty_lost,0)
+                      + COALESCE(rl.qty_damaged,0)
+                    ),
+                    NULLIF(it.dimensions, '')
+                  )
+                  ORDER BY it.name SEPARATOR ' / ')
+           FROM inv_return_lines rl
+           JOIN inv_outbound_lines ol ON ol.id = rl.outbound_line_id
+           JOIN inv_items it ON it.id = ol.item_id
+           WHERE rl.batch_id = rb.id) AS items_summary
       FROM inv_return_batches rb
       INNER JOIN inv_outbound_orders o ON o.id = rb.outbound_order_id
       INNER JOIN inv_warehouses wh ON wh.id = o.inv_warehouse_id

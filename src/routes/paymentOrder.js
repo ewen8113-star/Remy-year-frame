@@ -16,7 +16,7 @@ const COST_MODULE_LABELS = {
   warehouse: '仓储成本',
   logistics: '物流成本',
   prop_repair: '道具维修成本',
-  material_purchase: '物料采购',
+  material_purchase: '额外成本',
   general: '内部成本',
 };
 
@@ -328,6 +328,50 @@ router.post('/', async (req, res) => {
   } catch (e) {
     await conn.rollback();
     res.status(e.statusCode || 500).json({ error: e.message || '创建付款单失败' });
+  } finally {
+    conn.release();
+  }
+});
+
+/**
+ * 删除付款单：先把所有 items 对应来源表回退到 unpaid，再删除明细 + 主单。
+ * 仅回退 payment_order_id 仍指向本单的源记录，避免影响之后已被重新归属到其它付款单的记录。
+ */
+router.delete('/:id', async (req, res) => {
+  const conn = await db.getConnection();
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (!Number.isFinite(id)) return res.status(400).json({ error: '无效 ID' });
+    const [orders] = await conn.query('SELECT id FROM payment_orders WHERE id = ?', [id]);
+    if (!orders.length) return res.status(404).json({ error: '付款单不存在' });
+    const [items] = await conn.query(
+      'SELECT id, source_type, source_id FROM payment_order_items WHERE payment_order_id = ?',
+      [id]
+    );
+
+    await conn.beginTransaction();
+    for (const item of items) {
+      const table = SOURCE_TABLES[item.source_type];
+      if (!table) continue;
+      await conn.query(
+        `UPDATE ${table} SET payment_status = 'unpaid', payment_order_id = NULL, paid_at = NULL
+         WHERE id = ? AND payment_order_id = ?`,
+        [item.source_id, id]
+      );
+      if (item.source_type === 'reimbursement') {
+        await conn.query(
+          `UPDATE reimbursements SET claim_status = 'submitted' WHERE id = ? AND claim_status = 'paid'`,
+          [item.source_id]
+        );
+      }
+    }
+    await conn.query('DELETE FROM payment_order_items WHERE payment_order_id = ?', [id]);
+    await conn.query('DELETE FROM payment_orders WHERE id = ?', [id]);
+    await conn.commit();
+    res.json({ message: '付款单已删除；已回退所属成本记录为未支付' });
+  } catch (e) {
+    await conn.rollback();
+    res.status(e.statusCode || 500).json({ error: e.message || '删除付款单失败' });
   } finally {
     conn.release();
   }
