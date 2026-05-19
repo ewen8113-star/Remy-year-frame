@@ -10,7 +10,9 @@ const pool = mysql.createPool({
   waitForConnections: true,
   connectionLimit: 10,
   queueLimit: 0,
-  charset: 'utf8mb4'
+  charset: 'utf8mb4',
+  // 与业务一致：读写 TIMESTAMP/DATETIME 按北京时间（上海）
+  timezone: '+08:00',
 });
 
 // 测试连接

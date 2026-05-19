@@ -253,11 +253,21 @@ let inventoryPageState = {
   outboundListFilter: 'common',
   /** 物品出库台账搜索关键词：可按物品名/项目编号/收件人/单号/用途/仓库等模糊过滤 */
   outboundSearch: '',
+  outboundMonthFilter: 'all',
   /** 物品出库台账数据缓存：用于搜索时本地过滤，避免重复请求 */
   _outboundListCache: [],
   inboundDirectRows: [],
   inboundEditId: null,
+  /** 物品入库：已入库 / 待入库 月份筛选与分页 */
+  inboundLedgerMonthFilter: 'all',
+  inboundPendingMonthFilter: 'all',
+  inboundLedgerPage: 1,
+  inboundPendingPage: 1,
+  _inboundLedgerCache: [],
+  _inboundPendingCache: [],
 };
+
+const INV_INBOUND_PAGE_SIZE = 10;
 
 function invLoadCommonOrderStore() {
   try {
@@ -640,6 +650,7 @@ function switchYear(year) {
     region: '',
     activityType: '',
     executionFlag: '',
+    pgFlag: '',
     period: '',
     dateStart: defaultDashboardDateRange.start,
     dateEnd: defaultDashboardDateRange.end,
@@ -702,6 +713,7 @@ function navigate(page) {
   const titles = {
     dashboard: '数据看板',
     activities: '场次记录',
+    'activity-quotes': '活动报价',
     'virtual-activities': '虚拟场次',
     calendar: '排期日历',
     cost: '活动成本',
@@ -731,6 +743,7 @@ function navigate(page) {
   const renders = {
     dashboard: renderDashboard,
     activities: renderActivities,
+    'activity-quotes': renderActivityQuotes,
     'virtual-activities': renderVirtualActivities,
     calendar: renderCalendar,
     cost: renderCost,
@@ -763,6 +776,7 @@ function expandSidebarGroupForPage(page) {
   const map = {
     dashboard: 'sys',
     activities: 'rec',
+    'activity-quotes': 'rec',
     'virtual-activities': 'rec',
     calendar: 'rec',
     cost: 'cost',
@@ -936,6 +950,7 @@ async function checkConnection() {
 
 // ===== Toast =====
 function showToast(msg, type = 'info') {
+  const t = type === 'danger' ? 'error' : type;
   const icons = {
     success: '<i data-lucide="circle-check-big" style="width:14px;height:14px"></i>',
     error: '<i data-lucide="circle-x" style="width:14px;height:14px"></i>',
@@ -943,8 +958,8 @@ function showToast(msg, type = 'info') {
     info: '<i data-lucide="info" style="width:14px;height:14px"></i>',
   };
   const el = document.createElement('div');
-  el.className = `toast ${type}`;
-  el.innerHTML = `<span>${icons[type]}</span><span>${msg}</span>`;
+  el.className = `toast ${t}`;
+  el.innerHTML = `<span>${icons[t] || ''}</span><span>${msg}</span>`;
   const toastContainer = document.getElementById('toastContainer');
   toastContainer.appendChild(el);
   applyHarmonySurfaceAnimations(toastContainer);
@@ -1040,6 +1055,17 @@ function openActivityCloudAlbum(rawUrl) {
   }
 }
 
+/** 有云相册链接：可点击；无链接：灰显禁用（列表与详情统一） */
+function activityCloudAlbumButtonHtml(rawUrl, opts) {
+  const o = opts || {};
+  const hasLink = !!normalizeCloudAlbumUrl(rawUrl || '');
+  const label = o.detailLabel && hasLink ? '查看云相册' : '云相册';
+  if (hasLink) {
+    return `<button type="button" class="btn btn-secondary btn-sm" onclick="openActivityCloudAlbum('${escapeJsSingleQuoted(rawUrl || '')}')">${label}</button>`;
+  }
+  return `<button type="button" class="btn btn-secondary btn-sm btn-cloud-album-muted" disabled title="未填写云相册地址">${label}</button>`;
+}
+
 // ===== 工具函数 =====
 function parseWineDetails(raw) {
   if (raw == null || raw === '') return {};
@@ -1089,46 +1115,62 @@ function escapeJsSingleQuoted(s) {
     .replace(/\n/g, ' ');
 }
 
+/** 业务时区：北京时间（上海，UTC+8） */
+const BUSINESS_TZ_OFFSET_MS = 8 * 3600 * 1000;
+
+function beijingParts(raw) {
+  if (raw == null || raw === '') return null;
+  const s = String(raw).trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) {
+    const [year, month, day] = s.split('-').map((x) => parseInt(x, 10));
+    return Number.isFinite(year) && Number.isFinite(month) && Number.isFinite(day)
+      ? { year, month, day, hours: 0, minutes: 0, seconds: 0 }
+      : null;
+  }
+  const dt = raw instanceof Date ? raw : new Date(s);
+  if (Number.isNaN(dt.getTime())) return null;
+  const bj = new Date(dt.getTime() + BUSINESS_TZ_OFFSET_MS);
+  return {
+    year: bj.getUTCFullYear(),
+    month: bj.getUTCMonth() + 1,
+    day: bj.getUTCDate(),
+    hours: bj.getUTCHours(),
+    minutes: bj.getUTCMinutes(),
+    seconds: bj.getUTCSeconds(),
+  };
+}
+
 function fmtDate(d) {
-  if (!d) return '—';
-  const dt = new Date(d);
-  if (isNaN(dt)) return '—';
-  // 加8小时修正时区
-  const local = new Date(dt.getTime() + 8*3600*1000);
-  return `${local.getUTCFullYear()}-${String(local.getUTCMonth()+1).padStart(2,'0')}-${String(local.getUTCDate()).padStart(2,'0')}`;
+  const p = beijingParts(d);
+  if (!p) return '—';
+  return `${p.year}-${String(p.month).padStart(2, '0')}-${String(p.day).padStart(2, '0')}`;
 }
 
 function fmtDateShort(d) {
-  if (!d) return '—';
-  const dt = new Date(d);
-  if (isNaN(dt)) return d;
-  const local = new Date(dt.getTime() + 8*3600*1000);
-  return `${local.getUTCMonth()+1}/${local.getUTCDate()}`;
+  const p = beijingParts(d);
+  if (!p) return '—';
+  return `${p.month}/${p.day}`;
+}
+
+/** 场次业务日历（北京时间），用于年月筛选 */
+function activityBusinessYm(raw) {
+  const p = beijingParts(raw);
+  return p ? { year: p.year, month: p.month } : null;
 }
 
 /**
- * 填入 <input type="date">：与列表 fmtDate（+8）一致的业务日历日。
- * 仅当整段为 YYYY-MM-DD 时直接采用；若含 T/时区（如 …15T16:00:00.000Z 表示东八区 16 日 0 点），
- * 不能截取前缀，须用本地年月日，否则会少一天（如 260316 场次被存成 3/15）。
+ * 填入 <input type="date">：与列表 fmtDate 一致（北京时间）
  */
 function toDateInputValue(raw) {
-  if (raw == null || raw === '') return '';
-  const s = String(raw).trim();
-  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
-  const dt = new Date(s);
-  if (Number.isNaN(dt.getTime())) return '';
-  const y = dt.getFullYear();
-  const mo = String(dt.getMonth() + 1).padStart(2, '0');
-  const day = String(dt.getDate()).padStart(2, '0');
-  return `${y}-${mo}-${day}`;
+  const p = beijingParts(raw);
+  if (!p) return '';
+  return `${p.year}-${String(p.month).padStart(2, '0')}-${String(p.day).padStart(2, '0')}`;
 }
 
 function todayDateInputValue() {
-  const now = new Date();
-  const y = now.getFullYear();
-  const mo = String(now.getMonth() + 1).padStart(2, '0');
-  const day = String(now.getDate()).padStart(2, '0');
-  return `${y}-${mo}-${day}`;
+  const p = beijingParts(new Date());
+  if (!p) return '';
+  return `${p.year}-${String(p.month).padStart(2, '0')}-${String(p.day).padStart(2, '0')}`;
 }
 
 function statusBadge(s) {
@@ -1242,6 +1284,7 @@ let dashboardState = {
   region: '',
   activityType: '',
   executionFlag: '',
+  pgFlag: '',
   period: '',
   dateStart: getDashboardDefaultDateRange().start,
   dateEnd: getDashboardDefaultDateRange().end,
@@ -1527,6 +1570,7 @@ function filterDashboard() {
   dashboardState.region = document.getElementById('dashFilterRegion')?.value || '';
   dashboardState.brand = document.getElementById('dashFilterBrand')?.value || '';
   dashboardState.executionFlag = document.getElementById('dashFilterExecution')?.value || '';
+  dashboardState.pgFlag = document.getElementById('dashFilterPg')?.value || '';
   dashboardState.compareRegion = document.getElementById('dashCompareRegion')?.value || '';
   if (dashboardState.dateStart && dashboardState.dateEnd && dashboardState.dateStart > dashboardState.dateEnd) {
     showToast('结束日期不能早于开始日期', 'warning');
@@ -1616,6 +1660,8 @@ async function populateDashboardFilterSelects() {
 
   const exSel = document.getElementById('dashFilterExecution');
   if (exSel) exSel.value = dashboardState.executionFlag || '';
+  const pgSel = document.getElementById('dashFilterPg');
+  if (pgSel) pgSel.value = dashboardState.pgFlag || '';
 }
 
 function resetDashboardFilters() {
@@ -1625,6 +1671,7 @@ function resetDashboardFilters() {
     region: '',
     activityType: '',
     executionFlag: '',
+    pgFlag: '',
     period: '',
     dateStart: defaultDashboardDateRange.start,
     dateEnd: defaultDashboardDateRange.end,
@@ -1701,6 +1748,7 @@ function dashboardQueryString() {
   if (dashboardState.region) sp.set('regions', dashboardState.region);
   if (dashboardState.activityType) sp.set('activityTypes', dashboardState.activityType);
   if (dashboardState.executionFlag) sp.set('executionFlags', dashboardState.executionFlag);
+  if (dashboardState.pgFlag) sp.set('pgFlags', dashboardState.pgFlag);
   if (dashboardState.period) sp.set('periods', dashboardState.period);
   if (dashboardState.dateStart) sp.set('dateStart', dashboardState.dateStart);
   if (dashboardState.dateEnd) sp.set('dateEnd', dashboardState.dateEnd);
@@ -1945,6 +1993,14 @@ async function renderDashboard() {
                 <option value="无">无</option>
               </select>
             </div>
+            <div class="dash-field">
+              <label class="dash-label" for="dashFilterPg">PG礼仪</label>
+              <select class="dash-control" id="dashFilterPg" onchange="filterDashboard()">
+                <option value="">PG礼仪</option>
+                <option value="有">有</option>
+                <option value="无">无</option>
+              </select>
+            </div>
           </div>
           <div class="dash-filter-compare-slot">
             <div class="dash-field dash-field--compare">
@@ -1957,6 +2013,7 @@ async function renderDashboard() {
 
       <div class="stats-grid page-dashboard__stats">
         <div class="stat-card accent"><div class="stat-label">本期场次总数</div><div class="stat-value">${overview.totalSessions || 0}</div><div class="stat-sub">当前筛选条件</div></div>
+        <div class="stat-card danger"><div class="stat-label">含 PG 礼仪场次</div><div class="stat-value">${overview.pgSessions ?? 0}</div><div class="stat-sub">cost_details.pg &gt; 0（不含 PG 筛选）</div></div>
         <div class="stat-card success"><div class="stat-label">本期项目总收入</div><div class="stat-value sm">${fmtMoney(overview.totalRevenue || 0)}</div><div class="stat-sub">${escapeHtml(metricDefinition.revenue || '')}</div></div>
         <div class="stat-card warning"><div class="stat-label">本期总成本</div><div class="stat-value sm">${fmtMoney(overview.totalCost || 0)}</div><div class="stat-sub">${escapeHtml(metricDefinition.cost || '')}</div></div>
         <div class="stat-card blue"><div class="stat-label">本期项目毛利率</div><div class="stat-value">${formatPercent(overview.grossMarginRate || 0)}</div><div class="stat-sub">${escapeHtml(metricDefinition.grossMarginRate || '')}</div></div>
@@ -2503,6 +2560,63 @@ function withAlphaHex(hex, alpha) {
 /* =============================================
    页面：场次记录（原活动记录）
    ============================================= */
+function triggerActivityImport() {
+  const inp = document.getElementById('actImportFile');
+  if (!inp) return;
+  inp.value = '';
+  inp.click();
+}
+
+async function onActivityImportFileSelected(ev) {
+  const file = ev.target && ev.target.files && ev.target.files[0];
+  if (!file) return;
+  const name = String(file.name || '').toLowerCase();
+  if (!name.endsWith('.xlsx') && !name.endsWith('.xls')) {
+    showToast('请选择 Excel 文件（.xlsx 或 .xls）', 'warning');
+    return;
+  }
+  const fd = new FormData();
+  fd.append('file', file);
+  if (currentYearFrameId) fd.append('yearFrameId', String(currentYearFrameId));
+  try {
+    showToast('正在导入场次，请稍候…', 'info');
+    const res = await fetch('/api/activities/import', {
+      method: 'POST',
+      credentials: 'same-origin',
+      body: fd,
+    });
+    const payload = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(payload.error || res.statusText || '导入失败');
+    const data = payload.data || payload;
+    const failed = data.failed || [];
+    const skipped = data.skipped || [];
+    const created = data.created || [];
+    const msg =
+      payload.message ||
+      `导入完成：成功 ${data.createdCount || 0} 条，跳过 ${data.skippedCount || 0} 条，失败 ${data.failedCount || 0} 条`;
+    const hasIssue = failed.length || skipped.length;
+    showToast(msg, hasIssue ? 'warning' : 'success');
+    const detailLines = [];
+    created.forEach((c) => detailLines.push(`第 ${c.row} 行：已导入 ${c.project_code || ''}`));
+    skipped.forEach((s) =>
+      detailLines.push(`第 ${s.row} 行：已跳过 — ${s.reason || ''}${s.project_code ? `（${s.project_code}）` : ''}`)
+    );
+    failed.forEach((f) => detailLines.push(`第 ${f.row} 行：失败 — ${f.error || ''}`));
+    if (detailLines.length) {
+      console.info('场次导入明细\n' + detailLines.join('\n'));
+    }
+    if (hasIssue && detailLines.length) {
+      alert(`导入明细：\n\n${detailLines.join('\n')}\n\n若「已跳过」为项目编号已存在，说明该场次此前已导入；若列表少一条，请检查「月份/年框」筛选是否过滤掉了另一条。`);
+    }
+    if (currentPage === 'activities') await loadActivities();
+    else if (currentPage === 'calendar' && typeof window._calYear === 'number') drawCalendar(window._calYear, window._calMonth);
+  } catch (err) {
+    showToast('导入失败: ' + (err.message || err), 'error');
+  } finally {
+    ev.target.value = '';
+  }
+}
+
 async function renderActivities() {
   const container = document.getElementById('pageContainer');
 
@@ -2553,8 +2667,11 @@ async function renderActivities() {
           日期 <span id="sortIcon">${activitiesState.sortOrder === 'DESC' ? '↓' : '↑'}</span>
         </button>
       </div>
-      <div class="toolbar-right">
-        <button class="btn btn-primary btn-sm" onclick="showActivityModal()">+ 新建活动</button>
+      <div class="toolbar-right" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+        <a class="btn btn-secondary btn-sm" href="/templates/activity-import-template.xlsx" download="场次导入模板.xlsx">下载导入模板</a>
+        <input type="file" id="actImportFile" accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel" style="display:none" onchange="onActivityImportFileSelected(event)">
+        <button type="button" class="btn btn-secondary btn-sm" onclick="triggerActivityImport()">排期导入</button>
+        <button type="button" class="btn btn-primary btn-sm" onclick="showActivityModal()">+ 新建活动</button>
       </div>
     </div>
 
@@ -2730,19 +2847,19 @@ async function loadActivities() {
       );
     }
 
-    // 年份筛选
+    // 年份筛选（业务日历 UTC+8，与列表日期显示一致）
     if (activitiesState.year) {
-      filtered = filtered.filter(a => {
-        const d = new Date(a.date || a.activity_date);
-        return d.getFullYear().toString() === activitiesState.year;
+      filtered = filtered.filter((a) => {
+        const ym = activityBusinessYm(a.date || a.activity_date);
+        return ym && String(ym.year) === activitiesState.year;
       });
     }
 
-    // 月份筛选
+    // 月份筛选（业务日历 UTC+8）
     if (activitiesState.month) {
-      filtered = filtered.filter(a => {
-        const d = new Date(a.date || a.activity_date);
-        return (d.getMonth() + 1).toString() === activitiesState.month;
+      filtered = filtered.filter((a) => {
+        const ym = activityBusinessYm(a.date || a.activity_date);
+        return ym && String(ym.month) === activitiesState.month;
       });
     }
     // 时段筛选
@@ -2807,7 +2924,7 @@ async function loadActivities() {
             </td>
             <td onclick="event.stopPropagation()">
               <div style="display:flex;gap:4px;flex-wrap:wrap">
-                <button type="button" class="btn btn-secondary btn-sm" onclick="openActivityCloudAlbum('${escapeJsSingleQuoted(a.cloud_album_url || '')}')">云相册</button>
+                ${activityCloudAlbumButtonHtml(a.cloud_album_url)}
                 <button class="btn btn-secondary btn-sm" onclick="showActivityModal(${a.id})">编辑</button>
                 <button type="button" class="btn btn-danger btn-sm activity-row-remove-btn" onclick="openRemoveActivityDialog(${a.id})">删除</button>
               </div>
@@ -3928,7 +4045,7 @@ async function showActivityDetail(id, opts = {}) {
             ${activityDetailRow('归属', belRaw ? belLabel : '')}
             ${activityDetailRow('场地', a.venue)}
             ${activityDetailRow('客户', a.client || a.client_name)}
-            ${activityDetailRowHtml('云相册', a.cloud_album_url ? `<button type="button" class="btn btn-secondary btn-sm" onclick="openActivityCloudAlbum('${escapeJsSingleQuoted(a.cloud_album_url || '')}')">查看云相册</button>` : '<span style="color:var(--text-muted)">无相册</span>')}
+            ${activityDetailRowHtml('云相册', activityCloudAlbumButtonHtml(a.cloud_album_url, { detailLabel: true }))}
             ${guestLine}
           </section>
           <section class="activity-detail-card">
@@ -3949,7 +4066,7 @@ async function showActivityDetail(id, opts = {}) {
         ${
           !isVirt
             ? `<div class="activity-detail-actions">
-          <button type="button" class="btn btn-success btn-sm" onclick="closeModal();setTimeout(()=>showCostFill(${id}),100)"><i data-lucide="wallet" style="width:13px;height:13px"></i>填写成本</button>
+          <button type="button" class="btn btn-success btn-sm" onclick="closeModal();setTimeout(()=>showCostFill(${id}),100)"><i data-lucide="circle-dollar-sign" style="width:13px;height:13px"></i>填写报价</button>
         </div>`
             : `<div class="activity-detail-block" style="margin-top:12px;font-size:12px;color:var(--text-secondary)">此为虚拟预估场次，不参与排期日历；报价计入上方「虚拟场次」页预存统计。</div>`
         }
@@ -4058,16 +4175,16 @@ async function renderCalendar() {
   let calMonth = now.getMonth(); // 0-indexed
 
   container.innerHTML = `
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px">
-      <div style="display:flex;align-items:center;gap:12px">
-        <button class="btn btn-secondary" onclick="prevCalMonth()">‹ 上月</button>
-        <h2 id="calTitle" style="font-size:18px;font-weight:700;min-width:120px;text-align:center"></h2>
-        <button class="btn btn-secondary" onclick="nextCalMonth()">下月 ›</button>
+    <div class="cal-toolbar">
+      <div class="cal-toolbar-nav">
+        <button type="button" class="btn btn-secondary" onclick="prevCalMonth()">‹ 上月</button>
+        <h2 id="calTitle" class="cal-toolbar-title"></h2>
+        <button type="button" class="btn btn-secondary" onclick="nextCalMonth()">下月 ›</button>
       </div>
-      <button class="btn btn-secondary btn-sm" onclick="goCalToday()">今天</button>
+      <button type="button" class="btn btn-secondary btn-sm" onclick="goCalToday()">今天</button>
     </div>
     <div class="calendar-grid" id="calHeader"></div>
-    <div id="calGrid" style="display:grid;grid-template-columns:repeat(7,1fr);gap:4px;margin-top:4px"></div>
+    <div class="calendar-grid cal-body-grid" id="calGrid"></div>
   `;
 
   window._calYear = calYear;
@@ -4117,34 +4234,59 @@ async function drawCalendar(year, month) {
     const today = new Date();
     let html = '';
 
+    function calBrandClass(brand) {
+      return String(brand || '').toLowerCase().replace(/\./g, '');
+    }
+    function calEventTitle(a) {
+      const parts = [a.city, a.client || a.client_name, a.activity_type];
+      if (a.status === 'deferred') parts.push('延期');
+      return parts.filter(Boolean).join('｜');
+    }
+    function calEventLabel(a) {
+      return [a.city, a.brand, a.activity_type].filter(Boolean).join(' ').trim() || '场次';
+    }
+    function calDayCellHtml(dayNum, opts) {
+      const { isToday, isOtherMonth, acts } = opts;
+      const countBadge =
+        !isOtherMonth && acts.length ? `<span class="cal-date-count">${acts.length}场</span>` : '';
+      const eventsHtml = isOtherMonth
+        ? ''
+        : `<div class="cal-cell-events">${acts
+            .map(
+              (a) => `<div class="cal-event brand-${calBrandClass(a.brand)}${
+                a.status === 'deferred' ? ' cal-event-deferred' : ''
+              }" title="${escapeHtml(calEventTitle(a))}" onclick="showActivityDetail(${a.id})">${escapeHtml(
+                calEventLabel(a)
+              )}</div>`
+            )
+            .join('')}</div>`;
+      return `<div class="cal-cell${isOtherMonth ? ' other-month' : ''}${isToday ? ' today' : ''}">
+        <div class="cal-date-row">
+          <span class="cal-date">${dayNum}</span>
+          ${countBadge}
+        </div>
+        ${eventsHtml}
+      </div>`;
+    }
+
     // 上月填充
     for (let i = startWeekDay - 1; i >= 0; i--) {
-      html += `<div class="cal-cell other-month"><div class="cal-date">${daysInPrevMonth-i}</div></div>`;
+      html += calDayCellHtml(daysInPrevMonth - i, { isOtherMonth: true, acts: [] });
     }
 
     // 当月
     for (let d = 1; d <= daysInMonth; d++) {
-      const isToday = today.getFullYear()===year && today.getMonth()===month && today.getDate()===d;
-      const key = `${year}-${month+1}-${d}`;
+      const isToday = today.getFullYear() === year && today.getMonth() === month && today.getDate() === d;
+      const key = `${year}-${month + 1}-${d}`;
       const acts = actMap[key] || [];
-
-      html += `<div class="cal-cell ${isToday?'today':''}">
-        <div class="cal-date">${d}</div>
-        ${acts.slice(0,3).map(a => `
-          <div class="cal-event brand-${(a.brand||'').toLowerCase().replace('.','')}${a.status === 'deferred' ? ' cal-event-deferred' : ''}" title="${a.city}｜${a.client||a.client_name||''}｜${a.activity_type}${a.status === 'deferred' ? '｜延期' : ''}"
-            onclick="showActivityDetail(${a.id})">
-            ${a.city||''} ${a.brand||''} ${a.activity_type||''}
-          </div>
-        `).join('')}
-        ${acts.length > 3 ? `<div class="cal-event" style="background:var(--bg-input);color:var(--text-muted)">+${acts.length-3}场</div>` : ''}
-      </div>`;
+      html += calDayCellHtml(d, { isToday, acts });
     }
 
     // 下月填充
     const totalCells = startWeekDay + daysInMonth;
     const remaining = (7 - totalCells % 7) % 7;
     for (let d = 1; d <= remaining; d++) {
-      html += `<div class="cal-cell other-month"><div class="cal-date">${d}</div></div>`;
+      html += calDayCellHtml(d, { isOtherMonth: true, acts: [] });
     }
 
     grid.innerHTML = html;
@@ -5897,7 +6039,7 @@ function applyWarehouseFormMode(mode) {
   } else {
     periodWrap.style.display = 'none';
     monthLegacy.style.display = '';
-    if (qtyLabel) qtyLabel.innerHTML = '数量（天） <span class="required">*</span>';
+    if (qtyLabel) qtyLabel.innerHTML = '数量（月） <span class="required">*</span>';
     if (qtyEl) qtyEl.readOnly = false;
     if (yfHint) yfHint.style.display = 'none';
     if (yfWrap) yfWrap.style.display = '';
@@ -6023,7 +6165,7 @@ async function loadWarehouse() {
                   <td>${escapeHtml(w.month || '—')}</td>
                   <td><span class="badge badge-gray">${escapeHtml((w.brand != null && String(w.brand).trim() !== '' ? String(w.brand).trim() : 'PHD'))}</span></td>
                   <td><span class="badge badge-accent">${(() => { const r = normalizeWarehouseRegion(w.region); return r ? escapeHtml(r) : '—'; })()}</span></td>
-                  <td>${qtySafe}<span style="font-size:11px;color:var(--text-muted);margin-left:3px">${String(w.month || '').includes('~') ? '月' : '天'}</span></td>
+                  <td>${qtySafe}<span style="font-size:11px;color:var(--text-muted);margin-left:3px">月</span></td>
                   <td>${hasUnitPrice ? fmtMoney(upNum) : '—'}</td>
                   <td class="amount amount-revenue">${fmtMoney(w.quoted_price)}</td>
                   <td class="amount ${w.no_actual_cost ? 'amount-neutral' : (parseFloat(w.actual_cost)>0?'amount-cost':'amount-neutral')}">${w.no_actual_cost ? '无' : (parseFloat(w.actual_cost)>0?fmtMoney(w.actual_cost):'—')}</td>
@@ -6412,7 +6554,7 @@ async function saveWarehouse() {
     monthVal = document.getElementById('warMonth')?.value?.trim() || null;
     qty = parseInt(document.getElementById('warQty').value, 10) || 0;
     if (qty <= 0) {
-      showToast('数量（天）须大于 0', 'error');
+      showToast('数量（月）须大于 0', 'error');
       return;
     }
   }
@@ -6563,6 +6705,31 @@ const DICT_CATEGORY_DEFS = {
 
 const DICT_BUILTIN_CATEGORIES = Object.keys(DICT_CATEGORY_DEFS);
 
+/**
+ * 用 dict_categories 表中 is_builtin 记录覆盖本地硬编码的 DICT_CATEGORY_DEFS。
+ * 仅覆盖 label / icon / desc / fields（若 DB 有值），保持 nameField 等不变。
+ */
+function dictApplyBuiltinOverrides() {
+  (dictPageState.customCategories || []).forEach((cc) => {
+    if (!DICT_BUILTIN_CATEGORIES.includes(cc.code)) return;
+    const def = DICT_CATEGORY_DEFS[cc.code];
+    if (!def) return;
+    if (cc.label) def.label = cc.label;
+    if (cc.icon) def.icon = cc.icon;
+    if (cc.description) def.desc = cc.description;
+    const schema = Array.isArray(cc.fields_schema) ? cc.fields_schema : [];
+    if (schema.length) {
+      def.fields = schema.map((f) => ({
+        key: f.key || '',
+        label: f.label || f.key || '',
+        type: f.type || 'text',
+        required: !!f.required,
+        placeholder: f.placeholder || '',
+      }));
+    }
+  });
+}
+
 /** 表单下拉选项类别（复用现有 lookup_options） */
 const DICT_LOOKUP_DEFS = [
   { category: 'activity_year_frame_code', label: '年框编号', icon: 'tag' },
@@ -6575,7 +6742,7 @@ const DICT_LOOKUP_DEFS = [
 ];
 
 const dictPageState = {
-  /** 'dict' | 'lookup' */
+  /** 'dict' | 'lookup' | 'custom' */
   group: 'dict',
   /** category 名称（属于 group 的子项） */
   category: 'recipient',
@@ -6589,6 +6756,8 @@ const dictPageState = {
   includeInactive: false,
   /** 加载中 */
   loading: false,
+  /** 自定义类别列表（从 dict_categories 表加载） */
+  customCategories: [],
 };
 
 function dictCurrentCategoryLabel() {
@@ -6596,12 +6765,34 @@ function dictCurrentCategoryLabel() {
     const def = DICT_CATEGORY_DEFS[dictPageState.category];
     return def ? def.label : dictPageState.category;
   }
+  if (dictPageState.group === 'custom') {
+    const cc = (dictPageState.customCategories || []).find((c) => c.code === dictPageState.category);
+    return cc ? cc.label : dictPageState.category;
+  }
   const def = DICT_LOOKUP_DEFS.find((d) => d.category === dictPageState.category);
   return def ? def.label : dictPageState.category;
 }
 
 function dictCurrentCategoryDef() {
   if (dictPageState.group === 'dict') return DICT_CATEGORY_DEFS[dictPageState.category];
+  if (dictPageState.group === 'custom') {
+    const cc = (dictPageState.customCategories || []).find((c) => c.code === dictPageState.category);
+    if (!cc) return null;
+    const schema = Array.isArray(cc.fields_schema) ? cc.fields_schema : [];
+    return {
+      label: cc.label,
+      icon: cc.icon || 'tag',
+      desc: cc.description || '',
+      fields: schema.map((f) => ({
+        key: f.key || f.name || '',
+        label: f.label || f.key || '',
+        type: f.type || 'text',
+        required: !!f.required,
+      })),
+      nameField: schema.length ? (schema[0].key || schema[0].name || '') : 'name',
+      _customCategoryId: cc.id,
+    };
+  }
   return DICT_LOOKUP_DEFS.find((d) => d.category === dictPageState.category);
 }
 
@@ -6611,6 +6802,13 @@ async function renderDictManager() {
     document.getElementById('pageContainer').innerHTML =
       '<div class="empty-state">仅管理员可访问字典管理</div>';
     return;
+  }
+  try {
+    const ccList = await api('GET', '/dict/custom-categories');
+    dictPageState.customCategories = Array.isArray(ccList) ? ccList : [];
+    dictApplyBuiltinOverrides();
+  } catch (_) {
+    dictPageState.customCategories = [];
   }
   const container = document.getElementById('pageContainer');
   container.innerHTML = `
@@ -6634,13 +6832,19 @@ function dictSidebarHtml() {
     const active = dictPageState.group === 'dict' && dictPageState.category === c;
     const count = catStats[c] ? catStats[c].active : 0;
     return `
-      <button type="button" class="dict-side-item ${active ? 'is-active' : ''}"
-              onclick="dictSelectCategory('dict','${c}')"
-              title="${escapeHtml(def.desc)}">
-        <i data-lucide="${def.icon}" style="width:14px;height:14px"></i>
-        <span class="dict-side-label">${escapeHtml(def.label)}</span>
-        <span class="dict-side-count">${count}</span>
-      </button>`;
+      <div class="dict-side-item-wrap ${active ? 'is-active' : ''}">
+        <button type="button" class="dict-side-item ${active ? 'is-active' : ''}"
+                onclick="dictSelectCategory('dict','${c}')"
+                title="${escapeHtml(def.desc)}">
+          <i data-lucide="${def.icon}" style="width:14px;height:14px"></i>
+          <span class="dict-side-label">${escapeHtml(def.label)}</span>
+          <span class="dict-side-count">${count}</span>
+        </button>
+        <button type="button" class="dict-side-edit-btn" title="编辑类别"
+                onclick="event.stopPropagation();dictEditBuiltinCategory('${c}')">
+          <i data-lucide="pencil" style="width:11px;height:11px"></i>
+        </button>
+      </div>`;
   }).join('');
   const lookupItems = DICT_LOOKUP_DEFS.map((d) => {
     const active = dictPageState.group === 'lookup' && dictPageState.category === d.category;
@@ -6651,6 +6855,19 @@ function dictSidebarHtml() {
         <span class="dict-side-label">${escapeHtml(d.label)}</span>
       </button>`;
   }).join('');
+  const customCats = (dictPageState.customCategories || []).filter((c) => c.is_active || dictPageState.includeInactive);
+  const customItems = customCats.map((cc) => {
+    const active = dictPageState.group === 'custom' && dictPageState.category === cc.code;
+    const count = catStats[cc.code] ? catStats[cc.code].active : 0;
+    return `
+      <button type="button" class="dict-side-item ${active ? 'is-active' : ''}"
+              onclick="dictSelectCategory('custom','${escapeHtml(cc.code)}')"
+              title="${escapeHtml(cc.description || cc.label)}">
+        <i data-lucide="${cc.icon || 'tag'}" style="width:14px;height:14px"></i>
+        <span class="dict-side-label">${escapeHtml(cc.label)}</span>
+        <span class="dict-side-count">${count}</span>
+      </button>`;
+  }).join('');
   return `
     <div class="dict-side-group">
       <div class="dict-side-group-title">
@@ -6658,6 +6875,18 @@ function dictSidebarHtml() {
         <span>通讯录</span>
       </div>
       <div class="dict-side-group-items">${dictItems}</div>
+    </div>
+    <div class="dict-side-group">
+      <div class="dict-side-group-title">
+        <i data-lucide="folder-plus" style="width:13px;height:13px"></i>
+        <span>自定义字段</span>
+        <button type="button" class="dict-side-add-btn" onclick="dictOpenCategoryEditor(null)" title="新增字段类别">
+          <i data-lucide="plus" style="width:12px;height:12px"></i>
+        </button>
+      </div>
+      <div class="dict-side-group-items">
+        ${customItems || '<div class="dict-side-empty-hint">暂无自定义字段</div>'}
+      </div>
     </div>
     <div class="dict-side-group">
       <div class="dict-side-group-title">
@@ -6675,24 +6904,31 @@ function dictSidebarHtml() {
 
 function dictToolbarHtml() {
   const isDict = dictPageState.group === 'dict';
+  const isCustom = dictPageState.group === 'custom';
   const def = dictCurrentCategoryDef();
-  const desc = isDict && def ? def.desc : '';
+  const desc = (isDict || isCustom) && def ? def.desc : '';
   const searchValue = escapeHtml(dictPageState.q || '');
+  const showSearch = isDict || isCustom;
+  const customCatObj = isCustom ? (dictPageState.customCategories || []).find((c) => c.code === dictPageState.category) : null;
   return `
     <div class="dict-toolbar-left">
       <div class="dict-toolbar-title">
         ${def ? `<i data-lucide="${def.icon}" style="width:16px;height:16px"></i>` : ''}
         <span>${escapeHtml(dictCurrentCategoryLabel())}</span>
         <span class="dict-toolbar-count" id="dictToolbarCount"></span>
+        ${isCustom && customCatObj ? `
+          <button type="button" class="icon-btn" title="编辑此类别" onclick="dictOpenCategoryEditor('${escapeHtml(customCatObj.code)}')" style="margin-left:4px">
+            <i data-lucide="settings" style="width:13px;height:13px"></i>
+          </button>` : ''}
       </div>
       ${desc ? `<div class="dict-toolbar-desc">${escapeHtml(desc)}</div>` : ''}
     </div>
     <div class="dict-toolbar-right">
-      ${isDict ? `
+      ${showSearch ? `
         <div class="dict-search-wrap">
           <i data-lucide="search" style="width:14px;height:14px"></i>
           <input type="search" class="dict-search-input" id="dictSearchInput"
-                 placeholder="关键词检索（姓名/电话/标签/备注）"
+                 placeholder="关键词检索"
                  value="${searchValue}"
                  oninput="dictOnSearchInput(this.value)">
         </div>` : ''}
@@ -6738,15 +6974,14 @@ async function dictLoadList() {
   if (!listEl) return;
   listEl.innerHTML = '<div class="empty-state">加载中...</div>';
   try {
-    if (dictPageState.group === 'dict') {
-      // 同时刷新统计
+    if (dictPageState.group === 'dict' || dictPageState.group === 'custom') {
       try {
         const cats = await api('GET', '/dict/categories');
         const map = {};
         (cats || []).forEach((c) => { map[c.category] = c; });
         dictPageState.catStats = map;
         const sb = document.getElementById('dictSidebar');
-        if (sb) sb.innerHTML = dictSidebarHtml();
+        if (sb) { sb.innerHTML = dictSidebarHtml(); renderLucideIcons(); }
       } catch (e) { /* 统计失败不影响主列表 */ }
       const qs = new URLSearchParams();
       qs.set('category', dictPageState.category);
@@ -6773,7 +7008,7 @@ async function dictLoadList() {
 /** 通讯录列表渲染 */
 function dictRenderDictList() {
   const listEl = document.getElementById('dictMainList');
-  const def = DICT_CATEGORY_DEFS[dictPageState.category];
+  const def = dictCurrentCategoryDef();
   const rows = dictPageState.rows || [];
   const countEl = document.getElementById('dictToolbarCount');
   if (countEl) {
@@ -6858,11 +7093,11 @@ function dictCardHtml(row, def) {
 
 /** 打开通讯录编辑/新建弹窗（modal） */
 function dictOpenEditor(id) {
-  if (dictPageState.group !== 'dict') {
+  if (dictPageState.group === 'lookup') {
     dictOpenLookupEditor(id);
     return;
   }
-  const def = DICT_CATEGORY_DEFS[dictPageState.category];
+  const def = dictCurrentCategoryDef();
   if (!def) return;
   const row = id ? (dictPageState.rows || []).find((r) => r.id === id) : null;
   const isEdit = !!row;
@@ -6884,6 +7119,7 @@ function dictOpenEditor(id) {
       <button type="button" class="modal-close" onclick="dictCloseEditor()">×</button>
     </div>
     <div class="modal-body">
+      ${def.fields && def.fields.length ? `
       <div class="form-grid form-grid-2col">
         ${def.fields.map((f) => `
           <div class="form-group ${f.required ? 'is-required' : ''}">
@@ -6892,7 +7128,11 @@ function dictOpenEditor(id) {
                    value="${escapeHtml(c[f.key] || '')}"
                    placeholder="${escapeHtml(f.placeholder || '')}">
           </div>`).join('')}
-      </div>
+      </div>` : `
+      <div class="dict-builtin-hint" style="margin-top:0">
+        <i data-lucide="info" style="width:12px;height:12px"></i>
+        <span>此类别尚未定义字段，请先在类别设置中添加字段。目前可直接填写下方通用信息。</span>
+      </div>`}
       <hr class="dict-form-divider">
       <div class="form-grid form-grid-2col">
         <div class="form-group">
@@ -6938,10 +7178,11 @@ function dictCloseEditor() {
 }
 
 async function dictSaveEditor(id) {
-  const def = DICT_CATEGORY_DEFS[dictPageState.category];
+  const def = dictCurrentCategoryDef();
   if (!def) return;
   const content = {};
-  for (const f of def.fields) {
+  const fields = def.fields || [];
+  for (const f of fields) {
     const el = document.getElementById(`dictF_${f.key}`);
     content[f.key] = el ? String(el.value || '').trim() : '';
     if (f.required && !content[f.key]) {
@@ -6950,11 +7191,13 @@ async function dictSaveEditor(id) {
       return;
     }
   }
-  const nameKey = def.nameField || def.fields[0]?.key;
+  const nameKey = def.nameField || (fields.length ? fields[0].key : '');
   const fallbackKey = def.nameFallback;
-  const name = content[nameKey] || (fallbackKey ? content[fallbackKey] : '') || '';
+  let name = nameKey ? (content[nameKey] || '') : '';
+  if (!name && fallbackKey) name = content[fallbackKey] || '';
+  if (!name) name = String(document.getElementById('dictShortLabel')?.value || '').trim();
   if (!name.trim()) {
-    showToast('主标识不能为空', 'warning');
+    showToast('主标识不能为空（请填写简称或字段）', 'warning');
     return;
   }
   const short_label = String(document.getElementById('dictShortLabel')?.value || '').trim();
@@ -7012,6 +7255,304 @@ async function dictHardDelete(id) {
     await dictLoadList();
   } catch (e) {
     showToast(`删除失败：${e.message}`, 'danger');
+  }
+}
+
+/* ----- 自定义类别管理弹窗 ----- */
+
+const DICT_ICON_OPTIONS = [
+  'tag', 'user', 'building', 'briefcase', 'truck', 'package', 'box',
+  'credit-card', 'wallet', 'landmark', 'globe', 'phone', 'mail',
+  'map-pin', 'file-text', 'clipboard', 'database', 'layers', 'grid',
+  'settings', 'shield', 'star', 'heart', 'flag', 'bookmark', 'archive',
+  'folder', 'key', 'lock', 'bell', 'calendar', 'clock', 'link',
+];
+
+function dictOpenCategoryEditor(code) {
+  const existing = code ? (dictPageState.customCategories || []).find((c) => c.code === code) : null;
+  const isEdit = !!existing;
+  const fields = existing && Array.isArray(existing.fields_schema) ? existing.fields_schema : [];
+  const overlay = document.getElementById('modalOverlay');
+  let modal = document.getElementById('modalDictCatEditor');
+  if (!modal) {
+    modal = document.createElement('div');
+    modal.id = 'modalDictCatEditor';
+    modal.className = 'modal';
+    document.body.appendChild(modal);
+  }
+  const iconOptions = DICT_ICON_OPTIONS.map((ic) =>
+    `<option value="${ic}" ${(existing?.icon || 'tag') === ic ? 'selected' : ''}>${ic}</option>`
+  ).join('');
+  modal.innerHTML = `
+    <div class="modal-header">
+      <div class="modal-title">${isEdit ? '编辑' : '新增'}字段类别</div>
+      <button type="button" class="modal-close" onclick="dictCloseCategoryEditor()">×</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-grid form-grid-2col">
+        <div class="form-group is-required">
+          <label class="form-label">类别标识 (code) <span class="required">*</span></label>
+          <input type="text" class="form-control" id="dictCatCode"
+                 value="${escapeHtml(existing?.code || '')}"
+                 placeholder="英文+数字+下划线，如 contact_addr"
+                 ${isEdit ? 'readonly style="background:#f5f5f5"' : ''}>
+        </div>
+        <div class="form-group is-required">
+          <label class="form-label">显示名称 <span class="required">*</span></label>
+          <input type="text" class="form-control" id="dictCatLabel"
+                 value="${escapeHtml(existing?.label || '')}"
+                 placeholder="如：联系地址">
+        </div>
+        <div class="form-group">
+          <label class="form-label">图标</label>
+          <select class="form-control" id="dictCatIcon">${iconOptions}</select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">描述</label>
+          <input type="text" class="form-control" id="dictCatDesc"
+                 value="${escapeHtml(existing?.description || '')}"
+                 placeholder="用途说明（可选）">
+        </div>
+      </div>
+      <hr class="dict-form-divider">
+      <div class="dict-cat-fields-section">
+        <div class="dict-cat-fields-header">
+          <span class="dict-cat-fields-title">字段定义</span>
+          <button type="button" class="btn btn-secondary btn-xs" onclick="dictCatAddField()">
+            <i data-lucide="plus" style="width:12px;height:12px"></i> 添加字段
+          </button>
+        </div>
+        <div id="dictCatFieldsList" class="dict-cat-fields-list">
+          ${fields.length ? fields.map((f, i) => dictCatFieldRowHtml(f, i)).join('') : '<div class="dict-cat-fields-empty">暂无字段，点击上方「添加字段」开始配置</div>'}
+        </div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      ${isEdit ? `<button type="button" class="btn btn-danger btn-sm" onclick="dictDeleteCategory(${existing.id})" style="margin-right:auto">删除类别</button>` : ''}
+      <button type="button" class="btn btn-secondary" onclick="dictCloseCategoryEditor()">取消</button>
+      <button type="button" class="btn btn-primary" onclick="dictSaveCategoryEditor(${existing?.id || 'null'})">${isEdit ? '保存' : '新增'}</button>
+    </div>
+  `;
+  openModal('modalDictCatEditor');
+  renderLucideIcons();
+}
+
+function dictCatFieldRowHtml(f, idx) {
+  const typeOptions = [
+    { v: 'text', l: '文本' },
+    { v: 'tel', l: '电话' },
+    { v: 'email', l: '邮箱' },
+    { v: 'number', l: '数字' },
+    { v: 'textarea', l: '多行文本' },
+    { v: 'date', l: '日期' },
+    { v: 'url', l: '链接' },
+  ].map((o) => `<option value="${o.v}" ${(f?.type || 'text') === o.v ? 'selected' : ''}>${o.l}</option>`).join('');
+  return `
+    <div class="dict-cat-field-row" data-idx="${idx}">
+      <input type="text" class="form-control dict-cat-f-key" placeholder="字段标识 key"
+             value="${escapeHtml(f?.key || '')}" data-field="key">
+      <input type="text" class="form-control dict-cat-f-label" placeholder="显示名称"
+             value="${escapeHtml(f?.label || '')}" data-field="label">
+      <select class="form-control dict-cat-f-type" data-field="type">${typeOptions}</select>
+      <label class="dict-cat-f-req"><input type="checkbox" data-field="required" ${f?.required ? 'checked' : ''}> 必填</label>
+      <button type="button" class="icon-btn icon-btn-danger" title="删除字段"
+              onclick="dictCatRemoveField(${idx})">
+        <i data-lucide="x" style="width:13px;height:13px"></i>
+      </button>
+    </div>`;
+}
+
+function dictCatAddField() {
+  const container = document.getElementById('dictCatFieldsList');
+  if (!container) return;
+  const emptyHint = container.querySelector('.dict-cat-fields-empty');
+  if (emptyHint) emptyHint.remove();
+  const rows = container.querySelectorAll('.dict-cat-field-row');
+  const idx = rows.length;
+  const div = document.createElement('div');
+  div.innerHTML = dictCatFieldRowHtml({ key: '', label: '', type: 'text', required: false }, idx);
+  container.appendChild(div.firstElementChild);
+  renderLucideIcons();
+}
+
+function dictCatRemoveField(idx) {
+  const container = document.getElementById('dictCatFieldsList');
+  if (!container) return;
+  const row = container.querySelector(`.dict-cat-field-row[data-idx="${idx}"]`);
+  if (row) row.remove();
+  container.querySelectorAll('.dict-cat-field-row').forEach((r, i) => r.dataset.idx = i);
+  if (!container.querySelectorAll('.dict-cat-field-row').length) {
+    container.innerHTML = '<div class="dict-cat-fields-empty">暂无字段，点击上方「添加字段」开始配置</div>';
+  }
+}
+
+function dictCollectCatFields() {
+  const container = document.getElementById('dictCatFieldsList');
+  if (!container) return [];
+  const result = [];
+  container.querySelectorAll('.dict-cat-field-row').forEach((row) => {
+    const key = row.querySelector('[data-field="key"]')?.value?.trim() || '';
+    const label = row.querySelector('[data-field="label"]')?.value?.trim() || '';
+    const type = row.querySelector('[data-field="type"]')?.value || 'text';
+    const required = !!row.querySelector('[data-field="required"]')?.checked;
+    if (key) result.push({ key, label: label || key, type, required });
+  });
+  return result;
+}
+
+function dictCloseCategoryEditor() {
+  closeModal();
+}
+
+async function dictSaveCategoryEditor(id) {
+  const code = String(document.getElementById('dictCatCode')?.value || '').trim().toLowerCase().replace(/[^a-z0-9_]/g, '');
+  const label = String(document.getElementById('dictCatLabel')?.value || '').trim();
+  const icon = String(document.getElementById('dictCatIcon')?.value || 'tag').trim();
+  const description = String(document.getElementById('dictCatDesc')?.value || '').trim();
+  if (!code) return showToast('类别标识不能为空（仅小写英文+数字+下划线）', 'warning');
+  if (!label) return showToast('显示名称不能为空', 'warning');
+  const fields_schema = dictCollectCatFields();
+  const body = { code, label, icon, description, fields_schema };
+  try {
+    if (id && id !== 'null') {
+      await api('PUT', `/dict/custom-categories/${id}`, body);
+      showToast('类别已更新', 'success');
+    } else {
+      await api('POST', '/dict/custom-categories', body);
+      showToast('类别已创建', 'success');
+    }
+    dictCloseCategoryEditor();
+    const ccList = await api('GET', '/dict/custom-categories');
+    dictPageState.customCategories = Array.isArray(ccList) ? ccList : [];
+    if (!id || id === 'null') {
+      dictPageState.group = 'custom';
+      dictPageState.category = code;
+    }
+    const sidebar = document.getElementById('dictSidebar');
+    if (sidebar) { sidebar.innerHTML = dictSidebarHtml(); renderLucideIcons(); }
+    const toolbar = document.getElementById('dictMainToolbar');
+    if (toolbar) { toolbar.innerHTML = dictToolbarHtml(); renderLucideIcons(); }
+    await dictLoadList();
+  } catch (e) {
+    showToast(`保存失败：${e.message || '未知错误'}`, 'danger');
+  }
+}
+
+async function dictDeleteCategory(id) {
+  if (!confirm('确认删除此自定义类别？类别下的所有条目也将一并删除，此操作不可撤销。')) return;
+  try {
+    await api('DELETE', `/dict/custom-categories/${id}`);
+    showToast('类别已删除', 'success');
+    const ccList = await api('GET', '/dict/custom-categories');
+    dictPageState.customCategories = Array.isArray(ccList) ? ccList : [];
+    dictPageState.group = 'dict';
+    dictPageState.category = 'recipient';
+    const sidebar = document.getElementById('dictSidebar');
+    if (sidebar) { sidebar.innerHTML = dictSidebarHtml(); renderLucideIcons(); }
+    const toolbar = document.getElementById('dictMainToolbar');
+    if (toolbar) { toolbar.innerHTML = dictToolbarHtml(); renderLucideIcons(); }
+    await dictLoadList();
+  } catch (e) {
+    showToast(`删除失败：${e.message || '未知错误'}`, 'danger');
+  }
+}
+
+/** 编辑内置类别（仅允许改 label/icon/desc/fields，不允许删除） */
+function dictEditBuiltinCategory(code) {
+  const def = DICT_CATEGORY_DEFS[code];
+  if (!def) return;
+  // 按 code 匹配：库中同一 code 仅一行；不要求 is_builtin（避免历史数据 is_builtin=0 时无法 PUT 而误走 POST）
+  const existing = (dictPageState.customCategories || []).find((c) => c.code === code);
+  const fields = def.fields || [];
+  const overlay = document.getElementById('modalOverlay');
+  let modal = document.getElementById('modalDictCatEditor');
+  if (!modal) {
+    modal = document.createElement('div');
+    modal.id = 'modalDictCatEditor';
+    modal.className = 'modal';
+    document.body.appendChild(modal);
+  }
+  const iconOptions = DICT_ICON_OPTIONS.map((ic) =>
+    `<option value="${ic}" ${(def.icon || 'tag') === ic ? 'selected' : ''}>${ic}</option>`
+  ).join('');
+  modal.innerHTML = `
+    <div class="modal-header">
+      <div class="modal-title">编辑内置类别 · ${escapeHtml(def.label)}</div>
+      <button type="button" class="modal-close" onclick="dictCloseCategoryEditor()">×</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-grid form-grid-2col">
+        <div class="form-group">
+          <label class="form-label">类别标识 (code)</label>
+          <input type="text" class="form-control" id="dictCatCode"
+                 value="${escapeHtml(code)}"
+                 readonly style="background:#f5f5f5">
+        </div>
+        <div class="form-group is-required">
+          <label class="form-label">显示名称 <span class="required">*</span></label>
+          <input type="text" class="form-control" id="dictCatLabel"
+                 value="${escapeHtml(def.label || '')}">
+        </div>
+        <div class="form-group">
+          <label class="form-label">图标</label>
+          <select class="form-control" id="dictCatIcon">${iconOptions}</select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">描述</label>
+          <input type="text" class="form-control" id="dictCatDesc"
+                 value="${escapeHtml(def.desc || '')}">
+        </div>
+      </div>
+      <hr class="dict-form-divider">
+      <div class="dict-cat-fields-section">
+        <div class="dict-cat-fields-header">
+          <span class="dict-cat-fields-title">字段定义</span>
+          <button type="button" class="btn btn-secondary btn-xs" onclick="dictCatAddField()">
+            <i data-lucide="plus" style="width:12px;height:12px"></i> 添加字段
+          </button>
+        </div>
+        <div id="dictCatFieldsList" class="dict-cat-fields-list">
+          ${fields.length ? fields.map((f, i) => dictCatFieldRowHtml(f, i)).join('') : '<div class="dict-cat-fields-empty">暂无字段</div>'}
+        </div>
+      </div>
+      <div class="dict-builtin-hint">
+        <i data-lucide="info" style="width:12px;height:12px"></i>
+        <span>系统内置类别不可删除。修改将持久保存。</span>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button type="button" class="btn btn-secondary" onclick="dictCloseCategoryEditor()">取消</button>
+      <button type="button" class="btn btn-primary" onclick="dictSaveBuiltinCategory('${escapeHtml(code)}', ${existing?.id || 'null'})">保存</button>
+    </div>
+  `;
+  openModal('modalDictCatEditor');
+  renderLucideIcons();
+}
+
+async function dictSaveBuiltinCategory(code, existingId) {
+  const label = String(document.getElementById('dictCatLabel')?.value || '').trim();
+  const icon = String(document.getElementById('dictCatIcon')?.value || 'tag').trim();
+  const description = String(document.getElementById('dictCatDesc')?.value || '').trim();
+  if (!label) return showToast('显示名称不能为空', 'warning');
+  const fields_schema = dictCollectCatFields();
+  const body = { code, label, icon, description, fields_schema, is_active: 1, is_builtin: 1 };
+  try {
+    if (existingId && existingId !== 'null' && existingId !== null) {
+      await api('PUT', `/dict/custom-categories/${existingId}`, body);
+    } else {
+      await api('POST', '/dict/custom-categories', body);
+    }
+    showToast('类别设置已保存', 'success');
+    dictCloseCategoryEditor();
+    const ccList = await api('GET', '/dict/custom-categories');
+    dictPageState.customCategories = Array.isArray(ccList) ? ccList : [];
+    dictApplyBuiltinOverrides();
+    const sidebar = document.getElementById('dictSidebar');
+    if (sidebar) { sidebar.innerHTML = dictSidebarHtml(); renderLucideIcons(); }
+    const toolbar = document.getElementById('dictMainToolbar');
+    if (toolbar) { toolbar.innerHTML = dictToolbarHtml(); renderLucideIcons(); }
+  } catch (e) {
+    showToast(`保存失败：${e.message || '未知错误'}`, 'danger');
   }
 }
 
@@ -7257,15 +7798,9 @@ async function fullExportData() {
 }
 
 function fmtDateTime(v) {
-  if (!v) return '—';
-  const d = new Date(v);
-  if (Number.isNaN(d.getTime())) return String(v);
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  const hh = String(d.getHours()).padStart(2, '0');
-  const mm = String(d.getMinutes()).padStart(2, '0');
-  return `${y}-${m}-${day} ${hh}:${mm}`;
+  const p = beijingParts(v);
+  if (!p) return v ? String(v) : '—';
+  return `${p.year}-${String(p.month).padStart(2, '0')}-${String(p.day).padStart(2, '0')} ${String(p.hours).padStart(2, '0')}:${String(p.minutes).padStart(2, '0')}`;
 }
 
 async function renderUsers() {
@@ -13868,27 +14403,154 @@ function invFilterOutboundOrders(orders, query) {
   });
 }
 
-/**
- * 物品出库台账搜索框输入处理：更新 state 并就地重渲表格，避免重拉接口。
- * 同时同步搜索框 value（防止外部清除按钮调用时输入框残留旧值）。
- */
+function invOutboundMonthKeys(orders) {
+  const set = new Set();
+  (orders || []).forEach((o) => {
+    const d = o.shipped_at || o.created_at || '';
+    const s = String(d).slice(0, 7);
+    if (/^\d{4}-\d{2}$/.test(s)) set.add(s);
+  });
+  return [...set].sort().reverse();
+}
+
+function invFilterOutboundByMonth(orders, monthKey) {
+  if (!monthKey || monthKey === 'all') return orders;
+  return (orders || []).filter((o) => {
+    const d = o.shipped_at || o.created_at || '';
+    return String(d).slice(0, 7) === monthKey;
+  });
+}
+
+function invRenderOutboundMonthButtons(keys, selected) {
+  return invRenderInvMonthBar(keys, selected, 'invSetOutboundMonth');
+}
+
+function invRenderInvMonthBar(keys, selected, setterFn) {
+  const allActive = selected === 'all';
+  const allBtn = `<button type="button" class="btn btn-secondary btn-sm${allActive ? ' inv-ob-month-active' : ''}" onclick="${setterFn}('all')">全部</button>`;
+  const monthBtns = (keys || []).map((k) => {
+    const [y, m] = k.split('-');
+    const active = selected === k;
+    return `<button type="button" class="btn btn-secondary btn-sm${active ? ' inv-ob-month-active' : ''}" onclick="${setterFn}('${k}')">${y}年${parseInt(m, 10)}月</button>`;
+  }).join('');
+  return `<div class="inv-ob-month-bar">${allBtn}${monthBtns}</div>`;
+}
+
+function invInboundLedgerDateKey(row) {
+  const d = row.return_date || row.inbound_date || row.created_at || '';
+  const s = String(d).slice(0, 7);
+  return /^\d{4}-\d{2}$/.test(s) ? s : '';
+}
+
+function invInboundPendingDateKey(row) {
+  const d = row.shipped_at || row.created_at || '';
+  const s = String(d).slice(0, 7);
+  return /^\d{4}-\d{2}$/.test(s) ? s : '';
+}
+
+function invMonthKeysFromRows(rows, dateKeyFn) {
+  const set = new Set();
+  (rows || []).forEach((r) => {
+    const k = dateKeyFn(r);
+    if (k) set.add(k);
+  });
+  return [...set].sort().reverse();
+}
+
+function invFilterRowsByMonth(rows, monthKey, dateKeyFn) {
+  if (!monthKey || monthKey === 'all') return rows || [];
+  return (rows || []).filter((r) => dateKeyFn(r) === monthKey);
+}
+
+function invPaginateSlice(rows, page, pageSize) {
+  const total = (rows || []).length;
+  const totalPages = Math.max(1, Math.ceil(total / pageSize) || 1);
+  const p = Math.min(Math.max(1, page), totalPages);
+  const start = (p - 1) * pageSize;
+  return { rows: (rows || []).slice(start, start + pageSize), page: p, totalPages, total };
+}
+
+function invSetInboundLedgerMonth(key) {
+  inventoryPageState.inboundLedgerMonthFilter = key || 'all';
+  inventoryPageState.inboundLedgerPage = 1;
+  invRefreshInboundLedgerSection();
+}
+
+function invGoInboundLedgerPage(page) {
+  inventoryPageState.inboundLedgerPage = page;
+  invRefreshInboundLedgerSection();
+}
+
+function invSetInboundPendingMonth(key) {
+  inventoryPageState.inboundPendingMonthFilter = key || 'all';
+  inventoryPageState.inboundPendingPage = 1;
+  invRefreshInboundPendingSection();
+}
+
+function invGoInboundPendingPage(page) {
+  inventoryPageState.inboundPendingPage = page;
+  invRefreshInboundPendingSection();
+}
+
+function invRefreshInboundLedgerSection() {
+  const host = document.getElementById('invInboundLedgerHost');
+  if (host) host.innerHTML = invRenderInboundLedgerHostContent();
+  const bar = document.getElementById('invInboundLedgerMonthBar');
+  if (bar) {
+    const keys = invMonthKeysFromRows(inventoryPageState._inboundLedgerCache, invInboundLedgerDateKey);
+    if (
+      inventoryPageState.inboundLedgerMonthFilter !== 'all' &&
+      !keys.includes(inventoryPageState.inboundLedgerMonthFilter)
+    ) {
+      inventoryPageState.inboundLedgerMonthFilter = 'all';
+    }
+    bar.innerHTML = invRenderInvMonthBar(keys, inventoryPageState.inboundLedgerMonthFilter, 'invSetInboundLedgerMonth');
+  }
+  if (typeof lucide !== 'undefined') lucide.createIcons();
+}
+
+function invRefreshInboundPendingSection() {
+  const host = document.getElementById('invInboundPendingHost');
+  if (host) host.innerHTML = invRenderInboundPendingHostContent();
+  const bar = document.getElementById('invInboundPendingMonthBar');
+  if (bar) {
+    const keys = invMonthKeysFromRows(inventoryPageState._inboundPendingCache, invInboundPendingDateKey);
+    if (
+      inventoryPageState.inboundPendingMonthFilter !== 'all' &&
+      !keys.includes(inventoryPageState.inboundPendingMonthFilter)
+    ) {
+      inventoryPageState.inboundPendingMonthFilter = 'all';
+    }
+    bar.innerHTML = invRenderInvMonthBar(keys, inventoryPageState.inboundPendingMonthFilter, 'invSetInboundPendingMonth');
+  }
+  if (typeof lucide !== 'undefined') lucide.createIcons();
+}
+
+function invRefreshOutboundTable() {
+  const host = document.getElementById('invObTableHost');
+  if (!host) return;
+  const cache = Array.isArray(inventoryPageState._outboundListCache) ? inventoryPageState._outboundListCache : [];
+  const byMonth = invFilterOutboundByMonth(cache, inventoryPageState.outboundMonthFilter);
+  const filtered = invFilterOutboundOrders(byMonth, inventoryPageState.outboundSearch);
+  host.innerHTML = invRenderOutboundOrderTable(filtered, {
+    total: cache.length,
+    filtered: filtered.length,
+    search: inventoryPageState.outboundSearch,
+  });
+  const bar = document.getElementById('invObMonthBar');
+  if (bar) {
+    const keys = invOutboundMonthKeys(cache);
+    bar.innerHTML = invRenderOutboundMonthButtons(keys, inventoryPageState.outboundMonthFilter);
+  }
+  if (typeof lucide !== 'undefined') lucide.createIcons();
+}
+
 function invOnOutboundSearchInput(value) {
   const v = String(value == null ? '' : value);
   inventoryPageState.outboundSearch = v;
   const input = document.getElementById('invOutboundSearch');
   if (input && input.value !== v) input.value = v;
-  const host = document.getElementById('invObTableHost');
-  if (!host) return;
-  const cache = Array.isArray(inventoryPageState._outboundListCache)
-    ? inventoryPageState._outboundListCache
-    : [];
-  const filtered = invFilterOutboundOrders(cache, v);
-  host.innerHTML = invRenderOutboundOrderTable(filtered, {
-    total: cache.length,
-    filtered: filtered.length,
-    search: v,
-  });
-  // 切换 toolbar 上的清除按钮可见性
+  invRefreshOutboundTable();
   const headActions = document.querySelector('.inv-out-page-head-actions .inv-ob-search');
   if (headActions) {
     const existed = headActions.querySelector('.inv-ob-search-clear');
@@ -13976,15 +14638,44 @@ function invRenderOutboundOrderTable(orders, opts) {
     </div>`;
 }
 
-function invRenderInboundLedgerTable(rows) {
-  const batchCount = rows.filter((r) => r && r._kind !== 'direct').length;
-  const directCount = rows.filter((r) => r && r._kind === 'direct').length;
-  const summaryLine = `<div class="inv-inbound-summary">本年度已入库 <strong>${rows.length}</strong> 条 · 归还入库 ${batchCount} 条 · 直接入库 ${directCount} 条</div>`;
-  if (!rows.length) {
-    return `${summaryLine}<div class="empty-state" style="margin-top:8px">暂无已入库记录，可调整左侧年度查看。</div>`;
-  }
+function invRenderInboundLedgerTableRows(rows) {
+  return (rows || [])
+    .map((r) => {
+      const isDirect = r._kind === 'direct';
+      const main = escapeHtml(r.display_main || '—');
+      const sub = !isDirect && r.display_sub
+        ? `<div class="inv-inbound-ledger-sub">${escapeHtml(r.display_sub)}</div>`
+        : '';
+      const rem = r.batch_remarks != null ? String(r.batch_remarks) : '';
+      const remShort = rem.length > 40 ? `${rem.slice(0, 40)}…` : rem;
+      const sourceCol = isDirect ? (r.source ? escapeHtml(r.source) : '—') : '—';
+      const sum = isDirect
+        ? `入库 ×${r._qty || 0}`
+        : `归${r.sum_qty_return} 空${r.sum_qty_empty_recovered} 留${r.sum_qty_customer_keep} 丢${r.sum_qty_lost} 损${r.sum_qty_damaged}`;
+      const detailBtn = isDirect
+        ? `<div class="inv-row-actions">
+            <button type="button" class="btn btn-xs btn-secondary" onclick="invOpenInboundEditModal(${r.batch_id})">编辑</button>
+            <button type="button" class="btn btn-xs btn-danger" onclick="invDeleteInboundRecord(${r.batch_id})" title="删除并回退库存">删除</button>
+          </div>`
+        : `<button type="button" class="btn btn-xs btn-secondary" onclick="invOpenInboundReceiptDetail(${r.batch_id})">详情</button>`;
+      const inboundSummary = String(r.items_summary || '').trim();
+      const trTitle = inboundSummary ? ` title="${escapeHtml(inboundSummary)}"` : '';
+      return `<tr${trTitle}>
+      <td>${r.return_date ? String(r.return_date).slice(0, 10) : '—'}</td>
+      <td><div class="inv-inbound-ledger-main">${main}</div>${sub}</td>
+      <td>${escapeHtml(r.brand_code)} ${escapeHtml(r.region)}</td>
+      <td style="font-size:12px;color:var(--text-secondary)">${sourceCol}</td>
+      <td>${escapeHtml(r.operator || '—')}</td>
+      <td style="font-size:12px;color:var(--text-secondary);white-space:nowrap">${sum}</td>
+      <td style="max-width:160px;font-size:12px;color:var(--text-muted)" title="${escapeHtml(rem)}">${escapeHtml(remShort || '—')}</td>
+      <td>${detailBtn}</td>
+    </tr>`;
+    })
+    .join('');
+}
+
+function invRenderInboundLedgerTableOnly(rows) {
   return `
-    ${summaryLine}
     <div class="table-wrapper inv-inbound-ledger-wrap">
       <table class="data-table">
         <thead>
@@ -14000,45 +14691,90 @@ function invRenderInboundLedgerTable(rows) {
           </tr>
         </thead>
         <tbody>
-          ${rows
-            .map((r) => {
-              const isDirect = r._kind === 'direct';
-              const main = escapeHtml(r.display_main || '—');
-              const sub = !isDirect && r.display_sub
-                ? `<div class="inv-inbound-ledger-sub">${escapeHtml(r.display_sub)}</div>`
-                : '';
-              const rem = r.batch_remarks != null ? String(r.batch_remarks) : '';
-              const remShort = rem.length > 40 ? `${rem.slice(0, 40)}…` : rem;
-              const sourceCol = isDirect
-                ? (r.source ? escapeHtml(r.source) : '—')
-                : '—';
-              const sum = isDirect
-                ? `入库 ×${r._qty || 0}`
-                : `归${r.sum_qty_return} 空${r.sum_qty_empty_recovered} 留${r.sum_qty_customer_keep} 丢${r.sum_qty_lost} 损${r.sum_qty_damaged}`;
-              const detailBtn = isDirect
-                ? `<div class="inv-row-actions">
-                    <button type="button" class="btn btn-xs btn-secondary" onclick="invOpenInboundEditModal(${r.batch_id})">编辑</button>
-                    <button type="button" class="btn btn-xs btn-danger" onclick="invDeleteInboundRecord(${r.batch_id})" title="删除并回退库存">删除</button>
-                  </div>`
-                : `<button type="button" class="btn btn-xs btn-secondary" onclick="invOpenInboundReceiptDetail(${r.batch_id})">详情</button>`;
-              const inboundSummary = String(r.items_summary || '').trim();
-              const trTitle = inboundSummary ? ` title="${escapeHtml(inboundSummary)}"` : '';
-              return `<tr${trTitle}>
-              <td>${r.return_date ? String(r.return_date).slice(0, 10) : '—'}</td>
-              <td><div class="inv-inbound-ledger-main">${main}</div>${sub}</td>
-              <td>${escapeHtml(r.brand_code)} ${escapeHtml(r.region)}</td>
-              <td style="font-size:12px;color:var(--text-secondary)">${sourceCol}</td>
-              <td>${escapeHtml(r.operator || '—')}</td>
-              <td style="font-size:12px;color:var(--text-secondary);white-space:nowrap">${sum}</td>
-              <td style="max-width:160px;font-size:12px;color:var(--text-muted)" title="${escapeHtml(rem)}">${escapeHtml(remShort || '—')}</td>
-              <td>${detailBtn}</td>
-            </tr>`;
-            })
-            .join('')}
+          ${rows.length ? invRenderInboundLedgerTableRows(rows) : '<tr><td colspan="8" style="color:var(--text-muted)">暂无已入库记录</td></tr>'}
         </tbody>
       </table>
     </div>`;
 }
+
+function invRenderInboundLedgerHostContent() {
+  const cache = inventoryPageState._inboundLedgerCache || [];
+  const filtered = invFilterRowsByMonth(cache, inventoryPageState.inboundLedgerMonthFilter, invInboundLedgerDateKey);
+  const pag = invPaginateSlice(filtered, inventoryPageState.inboundLedgerPage || 1, INV_INBOUND_PAGE_SIZE);
+  inventoryPageState.inboundLedgerPage = pag.page;
+  const batchCount = filtered.filter((r) => r && r._kind !== 'direct').length;
+  const directCount = filtered.filter((r) => r && r._kind === 'direct').length;
+  const monthHint =
+    inventoryPageState.inboundLedgerMonthFilter !== 'all'
+      ? ` · 月份 ${inventoryPageState.inboundLedgerMonthFilter}`
+      : '';
+  const summaryLine = `<div class="inv-inbound-summary">当前筛选共 <strong>${pag.total}</strong> 条 · 归还入库 ${batchCount} 条 · 直接入库 ${directCount} 条${monthHint} · 每页 ${INV_INBOUND_PAGE_SIZE} 条</div>`;
+  if (!pag.total) {
+    return `${summaryLine}<div class="empty-state" style="margin-top:8px">暂无已入库记录，可调整月份或左侧年度查看。</div>`;
+  }
+  return `${summaryLine}${invRenderInboundLedgerTableOnly(pag.rows)}${renderPagination(pag.page, pag.totalPages, pag.total, 'invGoInboundLedgerPage')}`;
+}
+
+function invRenderInboundPendingTableRows(orders) {
+  return (orders || [])
+    .map((o) => {
+      const cityRaw = String(o.activity_city || o.recipient_city || '').trim();
+      const cityCell = cityRaw ? escapeHtml(cityRaw) : '—';
+      const projLine =
+        o.link_mode === 'standalone'
+          ? escapeHtml(o.purpose || '—')
+          : escapeHtml(o.project_code || '—');
+      const pendingSummary = String(o.items_summary || '').trim();
+      const trTitle = pendingSummary ? ` title="${escapeHtml(pendingSummary)}"` : '';
+      return `
+      <tr${trTitle}>
+        <td>#${o.id}</td>
+        <td title="${escapeHtml((o.brand_code || '') + ' / ' + (o.region || ''))}">${escapeHtml(invWarehouseFullLabel(o))}</td>
+        <td>${cityCell}</td>
+        <td>${projLine}</td>
+        <td>${o.shipped_at ? String(o.shipped_at).slice(0, 10) : '—'}</td>
+        <td>
+          <button type="button" class="btn btn-sm btn-primary" onclick="invOpenReturn(${o.id})">归还登记</button>
+          <button type="button" class="btn btn-sm btn-secondary" onclick="invDownloadPdf(${o.id})">PDF</button>
+        </td>
+      </tr>`;
+    })
+    .join('');
+}
+
+function invRenderInboundPendingHostContent() {
+  const cache = inventoryPageState._inboundPendingCache || [];
+  const filtered = invFilterRowsByMonth(cache, inventoryPageState.inboundPendingMonthFilter, invInboundPendingDateKey);
+  const pag = invPaginateSlice(filtered, inventoryPageState.inboundPendingPage || 1, INV_INBOUND_PAGE_SIZE);
+  inventoryPageState.inboundPendingPage = pag.page;
+  const monthHint =
+    inventoryPageState.inboundPendingMonthFilter !== 'all'
+      ? ` · 月份 ${inventoryPageState.inboundPendingMonthFilter}`
+      : '';
+  const summaryLine = `<div class="inv-inbound-summary">当前筛选共 <strong>${pag.total}</strong> 条${monthHint} · 每页 ${INV_INBOUND_PAGE_SIZE} 条</div>`;
+  if (!pag.total) {
+    return `${summaryLine}<div class="empty-state" style="margin-top:8px">暂无待入库单据，可调整月份筛选。</div>`;
+  }
+  return `${summaryLine}
+    <div class="table-wrapper">
+      <table class="data-table">
+        <thead>
+          <tr>
+            <th>单号</th><th>品牌/区</th><th>城市</th><th>项目编号 / 场次</th><th>出库时间</th><th></th>
+          </tr>
+        </thead>
+        <tbody>
+          ${invRenderInboundPendingTableRows(pag.rows)}
+        </tbody>
+      </table>
+    </div>
+    ${renderPagination(pag.page, pag.totalPages, pag.total, 'invGoInboundPendingPage')}`;
+}
+
+function invRenderInboundLedgerTable(rows) {
+  return invRenderInboundLedgerTableOnly(rows);
+}
+
 
 async function invOpenInboundReceiptDetail(batchId) {
   const titleEl = document.getElementById('modalInvInboundTitle');
@@ -14514,11 +15250,13 @@ async function renderInventory() {
         </div>`;
     }
     inventoryPageState._outboundListCache = Array.isArray(allOrders) ? allOrders : [];
-    const filteredOrders = invFilterOutboundOrders(
-      inventoryPageState._outboundListCache,
-      inventoryPageState.outboundSearch,
-    );
-    panelHtml = `${inlineFormHtml}<div id="invObTableHost">${invRenderOutboundOrderTable(filteredOrders, {
+    const obMonthKeys = invOutboundMonthKeys(inventoryPageState._outboundListCache);
+    if (inventoryPageState.outboundMonthFilter !== 'all' && !obMonthKeys.includes(inventoryPageState.outboundMonthFilter)) {
+      inventoryPageState.outboundMonthFilter = 'all';
+    }
+    const byMonth = invFilterOutboundByMonth(inventoryPageState._outboundListCache, inventoryPageState.outboundMonthFilter);
+    const filteredOrders = invFilterOutboundOrders(byMonth, inventoryPageState.outboundSearch);
+    panelHtml = `${inlineFormHtml}<div id="invObMonthBar">${invRenderOutboundMonthButtons(obMonthKeys, inventoryPageState.outboundMonthFilter)}</div><div id="invObTableHost">${invRenderOutboundOrderTable(filteredOrders, {
       total: inventoryPageState._outboundListCache.length,
       filtered: filteredOrders.length,
       search: inventoryPageState.outboundSearch,
@@ -14573,46 +15311,33 @@ async function renderInventory() {
       const db = String(b.return_date || b.inbound_date || b.created_at || '');
       return db.localeCompare(da);
     });
+    inventoryPageState._inboundLedgerCache = ledgerArr;
+    inventoryPageState._inboundPendingCache = Array.isArray(openOrders) ? openOrders : [];
+    const ledgerMonthKeys = invMonthKeysFromRows(inventoryPageState._inboundLedgerCache, invInboundLedgerDateKey);
+    const pendingMonthKeys = invMonthKeysFromRows(inventoryPageState._inboundPendingCache, invInboundPendingDateKey);
+    if (
+      inventoryPageState.inboundLedgerMonthFilter !== 'all' &&
+      !ledgerMonthKeys.includes(inventoryPageState.inboundLedgerMonthFilter)
+    ) {
+      inventoryPageState.inboundLedgerMonthFilter = 'all';
+    }
+    if (
+      inventoryPageState.inboundPendingMonthFilter !== 'all' &&
+      !pendingMonthKeys.includes(inventoryPageState.inboundPendingMonthFilter)
+    ) {
+      inventoryPageState.inboundPendingMonthFilter = 'all';
+    }
     panelHtml = `
       <div class="inv-inbound-section">
-        ${invRenderInboundLedgerTable(ledgerArr)}
+        <div id="invInboundLedgerHost">${invRenderInboundLedgerHostContent()}</div>
       </div>
       <div class="inv-inbound-divider" role="separator" aria-hidden="true"></div>
       <div class="inv-inbound-section">
-        <h4 class="inv-inbound-section-title">待入库</h4>
-        <div class="table-wrapper">
-          <table class="data-table">
-            <thead>
-              <tr>
-                <th>单号</th><th>品牌/区</th><th>项目编号 / 场次</th><th>出库时间</th><th></th>
-              </tr>
-            </thead>
-            <tbody>
-              ${openOrders.length ? openOrders.map((o) => {
-              const city = o.activity_city ? String(o.activity_city).trim() : '';
-              const projLine =
-                o.link_mode === 'standalone'
-                  ? escapeHtml(o.purpose || '—')
-                  : `${escapeHtml(o.project_code || '—')}${
-                      city ? `<div style="font-size:12px;color:var(--text-secondary);margin-top:2px">${escapeHtml(city)}</div>` : ''
-                    }`;
-              const pendingSummary = String(o.items_summary || '').trim();
-              const trTitle = pendingSummary ? ` title="${escapeHtml(pendingSummary)}"` : '';
-              return `
-              <tr${trTitle}>
-                <td>#${o.id}</td>
-                <td title="${escapeHtml((o.brand_code || '') + ' / ' + (o.region || ''))}">${escapeHtml(invWarehouseFullLabel(o))}</td>
-                <td>${projLine}</td>
-                <td>${o.shipped_at ? String(o.shipped_at).slice(0, 10) : '—'}</td>
-                <td>
-                  <button type="button" class="btn btn-sm btn-primary" onclick="invOpenReturn(${o.id})">归还登记</button>
-                  <button type="button" class="btn btn-sm btn-secondary" onclick="invDownloadPdf(${o.id})">PDF</button>
-                </td>
-              </tr>`;
-            }).join('') : '<tr><td colspan="5" style="color:var(--text-muted)">暂无待入库单据</td></tr>'}
-            </tbody>
-          </table>
+        <div class="inv-inbound-section-head">
+          <h4 class="inv-inbound-section-title">待入库</h4>
+          <div id="invInboundPendingMonthBar">${invRenderInvMonthBar(pendingMonthKeys, inventoryPageState.inboundPendingMonthFilter, 'invSetInboundPendingMonth')}</div>
         </div>
+        <div id="invInboundPendingHost">${invRenderInboundPendingHostContent()}</div>
       </div>`;
   }
 
@@ -14668,7 +15393,6 @@ async function renderInventory() {
       </div>
       <div class="inv-out-page-head-actions">
         <div class="inv-ob-search">
-          <i data-lucide="search" class="inv-ob-search-icon" aria-hidden="true"></i>
           <input type="search" id="invOutboundSearch" class="form-control form-control-sm inv-ob-search-input"
             placeholder="关键词检索"
             value="${escapeHtml(outboundSearchVal)}"
@@ -14690,9 +15414,16 @@ async function renderInventory() {
       ${tabsMasterTools ? `<div class="inv-tabs-bar-tools">${tabsMasterTools}</div>` : ''}
     </div>`;
 
+  const inboundLedgerMonthKeys =
+    invPage === 'inbound'
+      ? invMonthKeysFromRows(inventoryPageState._inboundLedgerCache, invInboundLedgerDateKey)
+      : [];
   const tabsBarInbound = `
     <div class="inv-tabs-bar">
-      <span class="inv-page-lead">已入库</span>
+      <div class="inv-inbound-section-head inv-inbound-tabs-head">
+        <span class="inv-page-lead">已入库</span>
+        <div id="invInboundLedgerMonthBar">${invRenderInvMonthBar(inboundLedgerMonthKeys, inventoryPageState.inboundLedgerMonthFilter, 'invSetInboundLedgerMonth')}</div>
+      </div>
       <div class="inv-tabs-bar-tools"></div>
     </div>`;
 

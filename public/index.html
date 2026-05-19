@@ -46,6 +46,10 @@
             <span class="nav-text">场次记录</span>
             <span class="nav-badge" id="badge-activities">—</span>
           </a>
+          <a class="nav-item" data-page="activity-quotes" onclick="navigate('activity-quotes')">
+            <span class="nav-icon"><i data-lucide="circle-dollar-sign" style="width:16px;height:16px"></i></span>
+            <span class="nav-text">活动报价</span>
+          </a>
           <a class="nav-item" data-page="virtual-activities" onclick="navigate('virtual-activities')">
             <span class="nav-icon"><i data-lucide="calculator" style="width:16px;height:16px"></i></span>
             <span class="nav-text">虚拟场次</span>
@@ -566,7 +570,7 @@
           </select>
         </div>
         <div class="form-group">
-          <label class="form-label" id="warQtyLabel">数量（天） <span class="required">*</span></label>
+          <label class="form-label" id="warQtyLabel">数量（月） <span class="required">*</span></label>
           <input type="number" class="form-control" id="warQty" placeholder="0" min="0" step="1" oninput="updateWarQuotedPrice()">
         </div>
         <div class="form-group">
@@ -925,9 +929,20 @@
 
   <datalist id="invProjectList"></datalist>
 
+  <!-- 活动报价：新建向导 -->
+  <div class="modal wide" id="modalActivityQuote" style="max-width:920px" onclick="event.stopPropagation()">
+    <div class="modal-header">
+      <span class="modal-title">新建单场报价</span>
+      <button type="button" class="modal-close" onclick="closeModal()">✕</button>
+    </div>
+    <div class="modal-body" id="modalActivityQuoteBody" style="max-height:70vh;overflow:auto"></div>
+    <div class="modal-footer" id="modalActivityQuoteFooter"></div>
+  </div>
+
   <!-- 全局 Toast -->
   <div class="toast-container" id="toastContainer"></div>
 
   <script src="app.js?v=20260501-fullbackup-v1"></script>
+  <script src="activity-quotes.js?v=20260519-aq-v9"></script>
 </body>
 </html>

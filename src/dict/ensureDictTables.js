@@ -61,6 +61,22 @@ async function ensureDictTables(db) {
       if (!/Duplicate column/i.test(String(e && e.message))) throw e;
     }
   }
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS dict_categories (
+      id INT PRIMARY KEY AUTO_INCREMENT,
+      code VARCHAR(32) NOT NULL,
+      label VARCHAR(64) NOT NULL,
+      icon VARCHAR(32) DEFAULT 'tag',
+      description VARCHAR(255) NULL,
+      fields_schema JSON NULL,
+      is_builtin TINYINT(1) NOT NULL DEFAULT 0,
+      is_active TINYINT(1) NOT NULL DEFAULT 1,
+      sort_order INT NOT NULL DEFAULT 0,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      UNIQUE KEY uk_dict_cat_code (code)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+  `);
   _ensured = true;
 }
 

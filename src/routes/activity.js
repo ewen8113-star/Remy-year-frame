@@ -1,6 +1,19 @@
 const express = require('express');
+const multer = require('multer');
 const router = express.Router();
 const db = require('../config/database');
+const { importActivitiesFromExcelBuffer } = require('../activity/importActivitiesFromExcel');
+const { todayYmd, formatDateTimeMinute } = require('../lib/businessTime');
+
+const activityImportUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 8 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    const name = String(file.originalname || '').toLowerCase();
+    const ok = name.endsWith('.xlsx') || name.endsWith('.xls');
+    cb(ok ? null : new Error('仅支持 .xlsx 或 .xls 文件'), ok);
+  },
+});
 
 /** 兼容全角字符、BOM、零宽；再 trim */
 function cleanStatusInput(v) {
@@ -22,14 +35,6 @@ function canonicalStatusFromInput(s) {
   if (lo === 'canceled' || lo === 'cancelled') return 'cancelled';
   if (APP_STATUS_WHITELIST.has(lo)) return lo;
   return null;
-}
-
-function todayYmd() {
-  const now = new Date();
-  const y = now.getFullYear();
-  const m = String(now.getMonth() + 1).padStart(2, '0');
-  const d = String(now.getDate()).padStart(2, '0');
-  return `${y}-${m}-${d}`;
 }
 
 function maybeAutoCompleteStatusByDate(status, dateStr) {
@@ -135,6 +140,32 @@ router.get('/', async (req, res) => {
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
+});
+
+// 批量导入场次（Excel，一行一场）
+router.post('/import', (req, res) => {
+  activityImportUpload.single('file')(req, res, async (uploadErr) => {
+    if (uploadErr) {
+      return res.status(400).json({ error: uploadErr.message || '文件上传失败' });
+    }
+    if (!req.file || !req.file.buffer) {
+      return res.status(400).json({ error: '请选择要导入的 Excel 文件' });
+    }
+    try {
+      const defaultYearFrameId = req.body && req.body.yearFrameId != null ? Number(req.body.yearFrameId) : null;
+      const result = await importActivitiesFromExcelBuffer(req.file.buffer, {
+        defaultYearFrameId: Number.isFinite(defaultYearFrameId) ? defaultYearFrameId : null,
+      });
+      const atBj = formatDateTimeMinute(new Date());
+      res.json({
+        data: result,
+        importedAtBeijing: atBj,
+        message: `导入完成（北京时间 ${atBj}）：成功 ${result.createdCount} 条，跳过 ${result.skippedCount} 条，失败 ${result.failedCount} 条`,
+      });
+    } catch (error) {
+      res.status(400).json({ error: error.message || '导入失败' });
+    }
+  });
 });
 
 // 获取单个活动

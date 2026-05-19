@@ -45,6 +45,8 @@
     "import:wine-md": "node src/scripts/importWineCatalogFromMarkdown.js",
     "migrate:cost-pool-merge": "node src/scripts/addCostPoolMergeColumns.js",
     "migrate:users-auth": "node src/scripts/addUsersAuthTable.js",
+    "migrate:quotations": "node src/scripts/addQuotationTables.js",
+    "migrate:quotation-multi": "node src/scripts/addQuotationMultiSession.js",
     "verify:warehouse-db": "node src/scripts/verifyWarehouseDb.js",
     "script:set-all-activities-completed": "node src/scripts/setAllActivitiesStatusCompleted.js",
     "script:sync-activity-region-belonging-excel": "node src/scripts/syncActivityRegionBelongingFromExcel.js",

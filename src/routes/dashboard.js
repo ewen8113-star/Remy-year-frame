@@ -18,6 +18,8 @@ const COST_BUCKET_KEYS = {
   procurement: ['structure', 'av', 'print', 'spray', 'floral', 'floral_design', 'tasting', 'venue_fee', 'meal_fee', 'other_advance'],
   other: ['payment', 'advance_offset'],
 };
+/** cost_details JSON 中 PG 礼仪成本 > 0 */
+const PG_COST_SQL = `COALESCE(CAST(JSON_UNQUOTE(JSON_EXTRACT(a.cost_details, '$.pg')) AS DECIMAL(18,4)), 0) > 0`;
 
 function parseCsv(v) {
   if (v == null || v === '') return [];
@@ -100,7 +102,22 @@ function buildActivityFilters(query, opts = {}) {
     }
   }
 
+  const pgFlags = parseCsv(query.pgFlags);
+  if (pgFlags.length === 1) {
+    if (pgFlags[0] === '有') {
+      where.push(PG_COST_SQL);
+    } else if (pgFlags[0] === '无') {
+      where.push(`NOT (${PG_COST_SQL})`);
+    }
+  }
+
   return { whereClause: where.join(' AND '), params };
+}
+
+function queryWithoutPgFlags(query) {
+  const q = Object.assign({}, query);
+  delete q.pgFlags;
+  return q;
 }
 
 /** 右侧对比区域：全国 = 去掉区域条件；否则仅替换为指定区域，其余与主查询一致 */
@@ -164,8 +181,9 @@ function buildActivityFinancialRows(rows) {
     const detailsKnown = COST_DETAIL_KEYS.some((k) => (parseFloat(costDetails[k]) || 0) > 0);
     const totalCost = round2(r.total_cost || 0);
     const baselineCost = round2(logisticsCost + personnelCost + procurementCost);
-    const otherCost = detailsKnown ? round2((parseFloat(costDetails.payment) || 0)) : totalCost;
-    const mergedTotalCost = detailsKnown ? round2(baselineCost + otherCost) : totalCost;
+    // 总成本以库表 total_cost 为准；「其他」= 总成本 − 已拆分三类，避免漏计 payment / advance_offset 等
+    const otherCost = detailsKnown ? round2(Math.max(0, totalCost - baselineCost)) : totalCost;
+    const mergedTotalCost = totalCost;
     const revenue = round2(r.quoted_price || 0);
     const grossProfit = round2(revenue - mergedTotalCost);
     return {
@@ -248,6 +266,7 @@ router.get('/options', async (req, res) => {
       cities: cities.map((r) => r.city).filter(Boolean),
       activityTypes: ALLOWED_TYPES,
       executionFlags: ['有', '无'],
+      pgFlags: ['有', '无'],
       periods: periods.map((r) => r.period).filter(Boolean),
       fiscalMonths: FISCAL_MONTH_LABELS.map((label, idx) => {
         const monthNum = idx < 9 ? idx + 4 : idx - 8;
@@ -263,6 +282,12 @@ router.get('/options', async (req, res) => {
 router.get('/', async (req, res) => {
   try {
     const actFilter = buildActivityFilters(req.query);
+    const pgCountFilter = buildActivityFilters(queryWithoutPgFlags(req.query));
+    const [pgSessionRows] = await db.query(
+      `SELECT COUNT(*) AS pg_sessions FROM activities a WHERE ${pgCountFilter.whereClause} AND ${PG_COST_SQL}`,
+      pgCountFilter.params
+    );
+    const pgSessionsInScope = Number(pgSessionRows[0]?.pg_sessions || 0);
     const whFilter = buildWarehouseFilters(req.query);
     const [activityFinancialSourceRows] = await db.query(
       `SELECT
@@ -562,6 +587,7 @@ router.get('/', async (req, res) => {
       },
       overview: {
         totalSessions: detailRows.length,
+        pgSessions: pgSessionsInScope,
         totalRevenue: detailRevenue,
         totalCost: detailCost,
         grossProfit,
@@ -569,7 +595,7 @@ router.get('/', async (req, res) => {
       },
       metricDefinition: {
         revenue: '活动报价合计（activities.quoted_price）',
-        cost: '场次总成本合计（activities.total_cost；若 cost_details 存在则拆分物流/人员/采购/其他）',
+        cost: '场次总成本以 activities.total_cost 为准；物流/人员/采购为 cost_details 分项汇总，「其他」为总成本与前三类差额（含代垫、备用金抵扣等）',
         grossMarginRate: '(收入-成本)/收入',
       },
       regionSummary,

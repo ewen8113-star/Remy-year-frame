@@ -25,6 +25,7 @@ const propRepairRoutes = require('./routes/propRepair');
 const paymentOrderRoutes = require('./routes/paymentOrder');
 const inventoryRoutes = require('./routes/inventory');
 const dictRoutes = require('./routes/dict');
+const quotationRoutes = require('./routes/quotation');
 const authRoutes = require('./routes/auth');
 const userRoutes = require('./routes/user');
 const { mountLookupRoutes } = require('./routes/lookup');
@@ -100,6 +101,8 @@ console.log('注册 inventory 路由（物资库存）');
 app.use('/api/inventory', inventoryRoutes);
 console.log('注册 dict 路由（字典/通讯录）');
 app.use('/api/dict', dictRoutes);
+console.log('注册 quotations 路由（活动报价）');
+app.use('/api/quotations', quotationRoutes);
 console.log('注册 users 路由');
 app.use('/api/users', userRoutes);
 console.log('注册 lookups 路由（app 级 /api/lookups）');
@@ -134,6 +137,7 @@ app.get('/api/health', async (req, res) => {
       /** 用于排查「物料采购 404」：若为 false/缺失，说明当前进程未加载含物料路由的代码或未重启 */
       materialPurchasesApi: true,
       inventoryApi: true,
+      quotationsPdfApi: true,
     },
   });
 });
