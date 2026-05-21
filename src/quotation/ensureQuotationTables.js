@@ -48,6 +48,29 @@ async function seedEventTemplate(db) {
   }
 }
 
+/** 将种子数据中的默认单价写回模版表（修复曾被清零的 default_unit_price） */
+async function syncEventTemplateDefaultPrices(db) {
+  for (const row of EVENT_TEMPLATE_ROWS) {
+    await db.query(
+      `UPDATE quotation_template_sections SET
+        section_code = ?, section_name = ?, subsection_name = ?,
+        default_unit = ?, default_unit_price = ?, default_remarks = ?, sort_order = ?
+      WHERE applicable_type = 'EVENT' AND subsection_code = ? AND description = ?`,
+      [
+        row.section_code,
+        row.section_name,
+        row.subsection_name,
+        row.default_unit,
+        row.default_unit_price,
+        row.default_remarks || null,
+        row.sort_order,
+        row.subsection_code,
+        row.description,
+      ]
+    );
+  }
+}
+
 async function ensureQuotationColumn(db, table, column, ddl) {
   const [rows] = await db.query(
     `SELECT COUNT(*) AS c FROM INFORMATION_SCHEMA.COLUMNS
@@ -152,7 +175,23 @@ async function ensureQuotationTables(db) {
     'ALTER TABLE quotations ADD COLUMN linked_sessions JSON NULL COMMENT \'多场关联场次\' AFTER project_code'
   );
 
+  await ensureQuotationColumn(
+    db,
+    'quotations',
+    'merged_from_quote_ids',
+    'ALTER TABLE quotations ADD COLUMN merged_from_quote_ids JSON NULL COMMENT \'由哪些单场报价合并生成\' AFTER linked_sessions'
+  );
+
+  try {
+    await db.query(
+      `ALTER TABLE quotations MODIFY COLUMN project_code VARCHAR(500) NULL COMMENT '关联场次项目编号（冗余；多场为摘要）'`
+    );
+  } catch (_) {
+    /* 列宽已满足或权限不足时忽略 */
+  }
+
   await seedEventTemplate(db);
+  await syncEventTemplateDefaultPrices(db);
 }
 
-module.exports = { ensureQuotationTables, EVENT_TEMPLATE_ROWS };
+module.exports = { ensureQuotationTables, EVENT_TEMPLATE_ROWS, syncEventTemplateDefaultPrices };

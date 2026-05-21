@@ -209,7 +209,7 @@
           </div>
           <div class="form-group">
             <label class="form-label">城市 <span class="required">*</span></label>
-            <input type="text" class="form-control" id="actCity" placeholder="如：上海" onchange="genProjectCode()" required>
+            <input type="text" class="form-control" id="actCity" placeholder="如：上海" oninput="genProjectCode()" onchange="genProjectCode()" required>
           </div>
           <div class="form-group">
             <label class="form-label">品牌（根据年框编号自动识别）</label>
@@ -225,7 +225,7 @@
           </div>
           <div class="form-group">
             <label class="form-label">客户名称</label>
-            <input type="text" class="form-control" id="actClient" placeholder="酒吧/经销商等" title="酒吧/经销商等">
+            <input type="text" class="form-control" id="actClient" placeholder="酒吧/经销商等" title="酒吧/经销商等" oninput="genProjectCode()" onchange="genProjectCode()">
           </div>
           <div class="form-group">
             <label class="form-label">区域</label>
@@ -237,7 +237,7 @@
           </div>
           <div class="form-group activity-field-virtual-hide">
             <label class="form-label">场地</label>
-            <input type="text" class="form-control" id="actVenue" placeholder="场地名称">
+            <input type="text" class="form-control" id="actVenue" placeholder="场地名称" oninput="genProjectCode()" onchange="genProjectCode()">
           </div>
           <div class="form-group">
             <label class="form-label">报价（¥）</label>
@@ -943,6 +943,6 @@
   <div class="toast-container" id="toastContainer"></div>
 
   <script src="app.js?v=20260501-fullbackup-v1"></script>
-  <script src="activity-quotes.js?v=20260519-aq-v9"></script>
+  <script src="activity-quotes.js?v=20260520-aq-v21"></script>
 </body>
 </html>

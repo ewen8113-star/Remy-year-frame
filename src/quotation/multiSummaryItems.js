@@ -73,6 +73,7 @@ function mergeSessionWithTotals(raw) {
     city: raw.city != null ? String(raw.city).trim() : '',
     customer_name: raw.customer_name != null ? String(raw.customer_name).trim() : '',
     event_type: raw.event_type != null ? String(raw.event_type).trim() : '',
+    remarks: raw.remarks != null ? String(raw.remarks).trim() : '',
     sort_order: Number.isFinite(Number(raw.sort_order)) ? Number(raw.sort_order) : 0,
     ...fees,
     ...calc,

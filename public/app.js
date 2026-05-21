@@ -1173,6 +1173,13 @@ function todayDateInputValue() {
   return `${p.year}-${String(p.month).padStart(2, '0')}-${String(p.day).padStart(2, '0')}`;
 }
 
+/** 物资/入库台账：从 API 日期（含 UTC ISO）取北京时间 YYYY-MM-DD */
+function invBusinessYmd(raw) {
+  const p = beijingParts(raw);
+  if (!p) return '';
+  return `${p.year}-${String(p.month).padStart(2, '0')}-${String(p.day).padStart(2, '0')}`;
+}
+
 function statusBadge(s) {
   if (s === 'cancelled') return '<span class="badge badge-danger">已取消</span>';
   if (s === 'deferred') {
@@ -3316,22 +3323,32 @@ function normalizeProjectCodeToken(raw) {
 
 function genProjectCode() {
   const code = document.getElementById('actYearFrameCode')?.value || '';
-  const date = document.getElementById('actDate')?.value || '';
   const city = normalizeProjectCodeCity(document.getElementById('actCity')?.value || '');
   syncActivityBrandFromYearFrameCode();
+  const venue = normalizeProjectCodeToken(document.getElementById('actVenue')?.value || '');
+  const client = normalizeProjectCodeToken(document.getElementById('actClient')?.value || '');
   const brand = normalizeProjectCodeToken(document.getElementById('actBrandField')?.value || '');
   const type = normalizeProjectCodeToken(document.getElementById('actActivityType')?.value || '');
-  const client = normalizeProjectCodeToken(document.getElementById('actClient')?.value || '');
 
-  let dateStr = '';
-  if (date) {
-    const d = new Date(date);
-    dateStr = `${String(d.getFullYear()).slice(2)}${String(d.getMonth()+1).padStart(2,'0')}${String(d.getDate()).padStart(2,'0')}`;
-  }
-
-  const pc = `${code} ${dateStr}${city}${client}${brand}${type}`.trim();
+  // 年框编号 + 空格 + 城市 + 场地 + 客户名称 + 品牌 + 活动类型
+  const pc = `${code} ${city}${venue}${client}${brand}${type}`.trim();
   const el = document.getElementById('actProjectCode');
   if (el) el.value = pc;
+}
+
+/** 排期日历单元格文案：城市+场地+客户+品牌+活动类型，缺项用 - */
+function formatCalendarActivitySummary(a) {
+  const part = (raw) => {
+    const t = String(raw ?? '').trim();
+    return t || '-';
+  };
+  if (!a) return '-----';
+  const city = part(normalizeProjectCodeCity(a.city) || a.city);
+  const venue = part(a.venue);
+  const client = part(a.client || a.client_name);
+  const brand = part(a.brand);
+  const type = part(a.activity_type);
+  return `${city}${venue}${client}${brand}${type}`;
 }
 
 function detectActivityBrandByYearFrameCode(rawCode) {
@@ -3353,6 +3370,7 @@ function syncActivityBrandFromYearFrameCode() {
   const detected = detectActivityBrandByYearFrameCode(yearFrameCode);
   if (detected && brandEl.value !== detected) {
     brandEl.value = detected;
+    genProjectCode();
   }
 }
 
@@ -4064,11 +4082,9 @@ async function showActivityDetail(id, opts = {}) {
             : ''
         }
         ${
-          !isVirt
-            ? `<div class="activity-detail-actions">
-          <button type="button" class="btn btn-success btn-sm" onclick="closeModal();setTimeout(()=>showCostFill(${id}),100)"><i data-lucide="circle-dollar-sign" style="width:13px;height:13px"></i>填写报价</button>
-        </div>`
-            : `<div class="activity-detail-block" style="margin-top:12px;font-size:12px;color:var(--text-secondary)">此为虚拟预估场次，不参与排期日历；报价计入上方「虚拟场次」页预存统计。</div>`
+          isVirt
+            ? `<div class="activity-detail-block" style="margin-top:12px;font-size:12px;color:var(--text-secondary)">此为虚拟预估场次，不参与排期日历；报价计入上方「虚拟场次」页预存统计。</div>`
+            : ''
         }
       </div>
     `;
@@ -4175,16 +4191,20 @@ async function renderCalendar() {
   let calMonth = now.getMonth(); // 0-indexed
 
   container.innerHTML = `
-    <div class="cal-toolbar">
-      <div class="cal-toolbar-nav">
-        <button type="button" class="btn btn-secondary" onclick="prevCalMonth()">‹ 上月</button>
-        <h2 id="calTitle" class="cal-toolbar-title"></h2>
-        <button type="button" class="btn btn-secondary" onclick="nextCalMonth()">下月 ›</button>
+    <div class="cal-page">
+      <div class="cal-sticky-head">
+        <div class="cal-toolbar">
+          <div class="cal-toolbar-nav">
+            <button type="button" class="btn btn-secondary" onclick="prevCalMonth()">‹ 上月</button>
+            <h2 id="calTitle" class="cal-toolbar-title"></h2>
+            <button type="button" class="btn btn-secondary" onclick="nextCalMonth()">下月 ›</button>
+          </div>
+          <button type="button" class="btn btn-secondary btn-sm" onclick="goCalToday()">今天</button>
+        </div>
+        <div class="calendar-grid cal-weekhead" id="calHeader"></div>
       </div>
-      <button type="button" class="btn btn-secondary btn-sm" onclick="goCalToday()">今天</button>
+      <div class="calendar-grid cal-body-grid" id="calGrid"></div>
     </div>
-    <div class="calendar-grid" id="calHeader"></div>
-    <div class="calendar-grid cal-body-grid" id="calGrid"></div>
   `;
 
   window._calYear = calYear;
@@ -4238,12 +4258,13 @@ async function drawCalendar(year, month) {
       return String(brand || '').toLowerCase().replace(/\./g, '');
     }
     function calEventTitle(a) {
-      const parts = [a.city, a.client || a.client_name, a.activity_type];
-      if (a.status === 'deferred') parts.push('延期');
-      return parts.filter(Boolean).join('｜');
+      const lines = [formatCalendarActivitySummary(a)];
+      if (a.project_code) lines.push(String(a.project_code).trim());
+      if (a.status === 'deferred') lines.push('延期');
+      return lines.filter(Boolean).join('｜');
     }
     function calEventLabel(a) {
-      return [a.city, a.brand, a.activity_type].filter(Boolean).join(' ').trim() || '场次';
+      return formatCalendarActivitySummary(a);
     }
     function calDayCellHtml(dayNum, opts) {
       const { isToday, isOtherMonth, acts } = opts;
@@ -13313,9 +13334,7 @@ async function invOpenEmptyBottleTraceModal(itemId) {
     const lines = Array.isArray(data.lines) ? data.lines : [];
     const tableRows = lines
       .map((ln) => {
-        const time = ln.inbound_recorded_at
-          ? String(ln.inbound_recorded_at).slice(0, 19).replace('T', ' ')
-          : '—';
+        const time = ln.inbound_recorded_at ? fmtDateTime(ln.inbound_recorded_at) : '—';
         const proj = escapeHtml(ln.display_main || '—');
         const sub = ln.display_sub
           ? `<div class="form-hint" style="margin-top:4px">${escapeHtml(ln.display_sub)}</div>`
@@ -14393,7 +14412,7 @@ function invFilterOutboundOrders(orders, query) {
       o.region,
       o.remarks,
       invWarehouseFullLabel(o),
-      o.shipped_at ? String(o.shipped_at).slice(0, 10) : '',
+      invBusinessYmd(o.shipped_at),
       `#${o.id}`,
     ]
       .filter(Boolean)
@@ -14406,9 +14425,8 @@ function invFilterOutboundOrders(orders, query) {
 function invOutboundMonthKeys(orders) {
   const set = new Set();
   (orders || []).forEach((o) => {
-    const d = o.shipped_at || o.created_at || '';
-    const s = String(d).slice(0, 7);
-    if (/^\d{4}-\d{2}$/.test(s)) set.add(s);
+    const ymd = invBusinessYmd(o.shipped_at || o.created_at);
+    if (ymd) set.add(ymd.slice(0, 7));
   });
   return [...set].sort().reverse();
 }
@@ -14437,15 +14455,13 @@ function invRenderInvMonthBar(keys, selected, setterFn) {
 }
 
 function invInboundLedgerDateKey(row) {
-  const d = row.return_date || row.inbound_date || row.created_at || '';
-  const s = String(d).slice(0, 7);
-  return /^\d{4}-\d{2}$/.test(s) ? s : '';
+  const ymd = invBusinessYmd(row.return_date || row.inbound_date || row.created_at);
+  return ymd ? ymd.slice(0, 7) : '';
 }
 
 function invInboundPendingDateKey(row) {
-  const d = row.shipped_at || row.created_at || '';
-  const s = String(d).slice(0, 7);
-  return /^\d{4}-\d{2}$/.test(s) ? s : '';
+  const ymd = invBusinessYmd(row.shipped_at || row.created_at);
+  return ymd ? ymd.slice(0, 7) : '';
 }
 
 function invMonthKeysFromRows(rows, dateKeyFn) {
@@ -14602,10 +14618,7 @@ function invRenderOutboundOrderTable(orders, opts) {
             .map((o) => {
               const proj =
                 o.link_mode === 'standalone' ? escapeHtml(o.purpose || '—') : escapeHtml(o.project_code || '—');
-              const shipDate =
-                o.shipped_at != null && String(o.shipped_at).trim()
-                  ? String(o.shipped_at).slice(0, 10)
-                  : '—';
+              const shipDate = o.shipped_at ? fmtDate(o.shipped_at) : '—';
               const st = String(o.status || '').toLowerCase();
               const statusHtml =
                 st === 'closed'
@@ -14661,7 +14674,7 @@ function invRenderInboundLedgerTableRows(rows) {
       const inboundSummary = String(r.items_summary || '').trim();
       const trTitle = inboundSummary ? ` title="${escapeHtml(inboundSummary)}"` : '';
       return `<tr${trTitle}>
-      <td>${r.return_date ? String(r.return_date).slice(0, 10) : '—'}</td>
+      <td>${r.return_date ? escapeHtml(fmtDate(r.return_date)) : '—'}</td>
       <td><div class="inv-inbound-ledger-main">${main}</div>${sub}</td>
       <td>${escapeHtml(r.brand_code)} ${escapeHtml(r.region)}</td>
       <td style="font-size:12px;color:var(--text-secondary)">${sourceCol}</td>
@@ -14732,7 +14745,7 @@ function invRenderInboundPendingTableRows(orders) {
         <td title="${escapeHtml((o.brand_code || '') + ' / ' + (o.region || ''))}">${escapeHtml(invWarehouseFullLabel(o))}</td>
         <td>${cityCell}</td>
         <td>${projLine}</td>
-        <td>${o.shipped_at ? String(o.shipped_at).slice(0, 10) : '—'}</td>
+        <td>${o.shipped_at ? escapeHtml(fmtDate(o.shipped_at)) : '—'}</td>
         <td>
           <button type="button" class="btn btn-sm btn-primary" onclick="invOpenReturn(${o.id})">归还登记</button>
           <button type="button" class="btn btn-sm btn-secondary" onclick="invDownloadPdf(${o.id})">PDF</button>
@@ -14818,7 +14831,7 @@ async function invOpenInboundReceiptDetail(batchId) {
         <div class="form-grid">
           <div class="form-group">
             <label class="form-label">入库日期</label>
-            <input class="form-control" value="${h.return_date ? String(h.return_date).slice(0, 10) : '—'}" readonly>
+            <input class="form-control" value="${h.return_date ? escapeHtml(fmtDate(h.return_date)) : '—'}" readonly>
           </div>
           <div class="form-group">
             <label class="form-label">登记人</label>
@@ -15015,10 +15028,7 @@ async function invOpenOutboundEditModal(orderId) {
     of.project_code = o.project_code || '';
     of.purpose = o.purpose || '';
     of.activity_id = o.activity_id != null ? String(o.activity_id) : '';
-    of.shipped_at =
-      o.shipped_at != null && String(o.shipped_at).trim()
-        ? String(o.shipped_at).slice(0, 10)
-        : todayDateInputValue();
+    of.shipped_at = o.shipped_at ? toDateInputValue(o.shipped_at) : todayDateInputValue();
     // 编辑回填优先用单据上保存的 activity_date；
     // 若旧单没填则取关联活动日期 activity_date_link 作为默认值（保存后会固化到出库单上）。
     {
@@ -15307,8 +15317,8 @@ async function renderInventory() {
       ...(Array.isArray(inboundLedger) ? inboundLedger : []),
       ...directInbound,
     ].sort((a, b) => {
-      const da = String(a.return_date || a.inbound_date || a.created_at || '');
-      const db = String(b.return_date || b.inbound_date || b.created_at || '');
+      const da = invBusinessYmd(a.return_date || a.inbound_date || a.created_at);
+      const db = invBusinessYmd(b.return_date || b.inbound_date || b.created_at);
       return db.localeCompare(da);
     });
     inventoryPageState._inboundLedgerCache = ledgerArr;
@@ -16229,7 +16239,7 @@ function invRenderInboundModal() {
   const whOpts = invInboundState.warehouses
     .map((w) => `<option value="${w.id}" ${Number(w.id) === invInboundState.warehouseId ? 'selected' : ''}>${escapeHtml(`${invWarehouseFullLabel(w)}${w.label && w.label !== `${w.region}仓库` ? ` · ${w.label}` : ''}`)}</option>`)
     .join('');
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayDateInputValue();
   const rowHtml = invInboundState.rows
     .map((r, i) => `
       <div class="inv-inbound-row" style="display:flex;gap:8px;align-items:flex-end;margin-bottom:6px">
@@ -16371,7 +16381,7 @@ function invOpenInboundEditModal(id) {
     </div>
     <div class="form-group" style="margin-bottom:10px">
       <label class="form-label">入库日期</label>
-      <input type="date" class="form-control" id="invInboundEditDate" value="${escapeHtml(String(row.inbound_date || row.return_date || '').slice(0, 10))}">
+      <input type="date" class="form-control" id="invInboundEditDate" value="${escapeHtml(toDateInputValue(row.inbound_date || row.return_date))}">
     </div>
     <div class="form-group" style="margin-bottom:10px">
       <label class="form-label">入库来源</label>
@@ -16874,7 +16884,7 @@ async function invOpenReturn(orderId) {
         </div>
         <div class="form-group">
           <label class="form-label">归还日期</label>
-          <input type="date" class="form-control" id="invReturnDate" value="${new Date().toISOString().slice(0, 10)}">
+          <input type="date" class="form-control" id="invReturnDate" value="${todayDateInputValue()}">
         </div>
         <div class="form-group">
           <label class="form-label">备注</label>
@@ -16927,7 +16937,7 @@ async function invSubmitReturn() {
     };
   });
   const body = {
-    return_date: document.getElementById('invReturnDate')?.value || new Date().toISOString().slice(0, 10),
+    return_date: document.getElementById('invReturnDate')?.value || todayDateInputValue(),
     remarks: document.getElementById('invReturnRemarks')?.value || null,
     lines,
   };

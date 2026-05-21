@@ -5,6 +5,12 @@ const URLResolver = require('pdfmake/js/URLResolver').default;
 const pdfVirtualFs = require('pdfmake/js/virtual-fs').default;
 const robotoVfsMap = require('pdfmake/build/vfs_fonts.js');
 const cnVfsMap = require('pdfmake-support-chinese-fonts/vfs_fonts').pdfMake.vfs;
+const {
+  buildMultiPreviewTableData,
+  isMultiQuote,
+  fmtNum: fmtNumMulti,
+  sanitizeSessionRemarks,
+} = require('./multiPreviewTable');
 
 const LOGO_PATH = path.join(__dirname, '../../public/logo.png');
 const LOGO_PRINT_PATH = path.join(__dirname, '../../public/logo-print.png');
@@ -132,52 +138,258 @@ function resolveLogoImage() {
   }
 }
 
-function buildTableBody(q) {
+function buildMultiTableBody(q, stylePrefix = '') {
+  const layout = buildMultiPreviewTableData(q);
   const body = [
-    [
-      { text: '内容\nItem', style: 'th' },
-      { text: '', style: 'th' },
-      { text: '说明\nSummary', style: 'th' },
-      { text: '数量\nQty', style: 'thC' },
-      { text: '单位\nUnit', style: 'thC' },
-      { text: '单价\nPrice', style: 'thR' },
-      { text: '单项小计\nSubtotal', style: 'thR' },
-      { text: '备注\nRemarks', style: 'th' },
-    ],
+    layout.headers.map((h) => ({ text: h, style: `${stylePrefix}thC` })),
   ];
+
+  layout.dataRows.forEach((dr, idx) => {
+    body.push(
+      dr.cells.map((cell, ci) => {
+        const isMoney = ci >= layout.feeColStart && ci <= layout.totalCol;
+        const isRemarks = ci === layout.remarksCol;
+        let text;
+        if (isRemarks) {
+          text = sanitizeSessionRemarks(dr.session?.remarks ?? cell);
+        } else if (isMoney) {
+          text = fmtNumMulti(cell);
+        } else {
+          text = String(cell);
+          if (text === '—') text = '';
+        }
+        return {
+          text,
+          style: isRemarks || ci < layout.feeColStart ? `${stylePrefix}tdL` : `${stylePrefix}tdR`,
+          fillColor: idx % 2 ? '#f9f9f9' : null,
+        };
+      })
+    );
+  });
+
+  const span = layout.spanBeforeTotals;
+  const fc = layout.footerCells;
+  const footerRow = [
+    { text: String(fc[0] || '多场含税总计'), style: `${stylePrefix}footer`, colSpan: span, alignment: 'right' },
+    ...Array(Math.max(0, span - 1)).fill(''),
+    { text: fmtNumMulti(fc[layout.subtotalCol]), style: `${stylePrefix}footerR`, alignment: 'right' },
+    { text: fmtNumMulti(fc[layout.serviceCol]), style: `${stylePrefix}footerR`, alignment: 'right' },
+    { text: fmtNumMulti(fc[layout.taxCol]), style: `${stylePrefix}footerR`, alignment: 'right' },
+    { text: fmtNumMulti(fc[layout.totalCol]), style: `${stylePrefix}footerR`, alignment: 'right' },
+    { text: '', style: `${stylePrefix}tdL` },
+  ];
+  body.push(footerRow);
+
+  const widths = layout.headers.map((_, i) => {
+    if (i === layout.remarksCol) return '8%';
+    if (i === 0) return '9%';
+    if (i === 1 || i === 2) return '8%';
+    if (i === 3) return '10%';
+    if (i >= layout.feeColStart && i <= layout.totalCol) return '*';
+    return 'auto';
+  });
+
+  return { body, widths, layout };
+}
+
+function countSingleTableRows(q) {
+  let n = 1;
+  groupItems(q.items).forEach((sec) => {
+    n += 1;
+    sec.subsections.forEach((sub) => {
+      n += Math.max(1, (sub.items || []).length);
+    });
+  });
+  return n + 4;
+}
+
+/** 按行数估算字号，使表头+明细+合计尽量落在横向 A4 一页内 */
+function compactPdfScale(rowCount) {
+  const tableBudgetPt = 500;
+  const headerRowPt = 11;
+  const rowH = 7.2;
+  const needed = headerRowPt + rowCount * rowH;
+  let font = 6.2;
+  let pad = 1;
+  let rowHeight = rowH;
+  if (needed > tableBudgetPt) {
+    const ratio = tableBudgetPt / needed;
+    font = Math.max(4.2, 6.2 * ratio);
+    pad = Math.max(0.25, 1 * ratio);
+    rowHeight = Math.max(5.5, rowH * ratio);
+  }
+  return {
+    font: Math.round(font * 10) / 10,
+    pad: Math.round(pad * 10) / 10,
+    lh: 0.9,
+    rowHeight: Math.round(rowHeight * 10) / 10,
+    prefix: 'cp',
+  };
+}
+
+function pdfThCell(text, style) {
+  return { text, style, alignment: 'center', verticalAlignment: 'middle' };
+}
+
+function pdfMergeCell(text, style, rowSpan) {
+  return { text, style, rowSpan, alignment: 'center', verticalAlignment: 'middle' };
+}
+
+/** 按最长备注估算列宽占比（偏保守，避免备注列过宽） */
+function estimateRemarksColPercent(q) {
+  let maxLen = 0;
+  (q.items || []).forEach((it) => {
+    const r = String(it.remarks || '').trim();
+    const len = [...r].length;
+    if (len > maxLen) maxLen = len;
+  });
+  if (!maxLen) return 10;
+  return Math.min(20, Math.max(10, Math.ceil(maxLen * 0.55) + 6));
+}
+
+function widthsFromLayoutPercent(layout, fallbackWidths) {
+  const cw = layout && layout.columnWidths;
+  if (!Array.isArray(cw) || cw.length !== 8) return fallbackWidths;
+  const nums = cw.map((x) => parseFloat(x)).filter((n) => Number.isFinite(n) && n > 0);
+  if (nums.length !== 8) return fallbackWidths;
+  const sum = nums.reduce((a, b) => a + b, 0);
+  if (!(sum > 0)) return fallbackWidths;
+  return nums.map((n) => `${((n / sum) * 100).toFixed(1)}%`);
+}
+
+function buildSingleTableWidths(q, opts = {}) {
+  const compact = !!opts.compact;
+  const bundleHeader = !!opts.headerSource;
+  const fallback = !compact
+    ? ['8%', '10%', '28%', '8%', '8%', '10%', '12%', '16%']
+    : (() => {
+        const remarksPct = estimateRemarksColPercent(q);
+        const fixedSum = 5 + 7 + 6 + 6 + 8 + 9;
+        const descPct = 100 - remarksPct - fixedSum;
+        return ['5%', '7%', `${descPct}%`, '6%', '6%', '8%', '9%', `${remarksPct}%`];
+      })();
+  return widthsFromLayoutPercent(opts.layout, fallback);
+}
+
+function buildPdfStyles(compactScale) {
+  if (!compactScale) {
+    return {
+      th: { bold: true, fillColor: '#948a54', color: '#ffffff', fontSize: 8, alignment: 'center' },
+      thC: { bold: true, fillColor: '#948a54', color: '#ffffff', alignment: 'center', fontSize: 7 },
+      thR: { bold: true, fillColor: '#948a54', color: '#ffffff', alignment: 'center', fontSize: 8 },
+      section: { bold: true, fillColor: '#c4bd97', fontSize: 9 },
+      sectionR: { bold: true, fillColor: '#c4bd97', fontSize: 9 },
+      footer: { bold: true, fillColor: '#c4bd97', fontSize: 9 },
+      footerR: { bold: true, fillColor: '#c4bd97', fontSize: 9 },
+      tdL: { alignment: 'left', fontSize: 7 },
+      tdC: { alignment: 'center', fontSize: 7, verticalAlignment: 'middle' },
+      tdR: { alignment: 'right', fontSize: 7 },
+    };
+  }
+  const f = compactScale.font;
+  const p = `${compactScale.prefix}`;
+  return {
+    th: { bold: true, fillColor: '#948a54', color: '#ffffff', fontSize: f },
+    thC: { bold: true, fillColor: '#948a54', color: '#ffffff', alignment: 'center', fontSize: f - 0.5 },
+    thR: { bold: true, fillColor: '#948a54', color: '#ffffff', alignment: 'right', fontSize: f },
+    section: { bold: true, fillColor: '#c4bd97', fontSize: f },
+    sectionR: { bold: true, fillColor: '#c4bd97', fontSize: f },
+    footer: { bold: true, fillColor: '#c4bd97', fontSize: f },
+    footerR: { bold: true, fillColor: '#c4bd97', fontSize: f },
+    tdL: { alignment: 'left', fontSize: f },
+    tdC: { alignment: 'center', fontSize: f },
+    tdR: { alignment: 'right', fontSize: f },
+    [`${p}th`]: { bold: true, fillColor: '#948a54', color: '#ffffff', fontSize: f, alignment: 'center' },
+    [`${p}thC`]: { bold: true, fillColor: '#948a54', color: '#ffffff', alignment: 'center', fontSize: f - 0.5 },
+    [`${p}thR`]: { bold: true, fillColor: '#948a54', color: '#ffffff', alignment: 'center', fontSize: f - 0.5 },
+    [`${p}section`]: { bold: true, fillColor: '#c4bd97', fontSize: f },
+    [`${p}sectionR`]: { bold: true, fillColor: '#c4bd97', fontSize: f },
+    [`${p}footer`]: { bold: true, fillColor: '#c4bd97', fontSize: f },
+    [`${p}footerR`]: { bold: true, fillColor: '#c4bd97', fontSize: f },
+    [`${p}tdL`]: { alignment: 'left', fontSize: f },
+    [`${p}tdC`]: { alignment: 'center', fontSize: f, verticalAlignment: 'middle' },
+    [`${p}tdR`]: { alignment: 'right', fontSize: f },
+  };
+}
+
+function buildTableBody(q, opts = {}) {
+  const compact = !!opts.compact;
+  const bundleHeader = !!opts.headerSource;
+  const scale = compact ? compactPdfScale(countSingleTableRows(q)) : null;
+  const p = scale ? `${scale.prefix}` : '';
+  const useShortHeader = compact && !bundleHeader;
+  const thStyle = `${p}thC`;
+  const body = useShortHeader
+    ? [
+        [
+          pdfThCell('内容', `${p}thC`),
+          pdfThCell('', `${p}thC`),
+          pdfThCell('说明', `${p}thC`),
+          pdfThCell('数量', thStyle),
+          pdfThCell('单位', thStyle),
+          pdfThCell('单价', thStyle),
+          pdfThCell('小计', thStyle),
+          pdfThCell('备注', thStyle),
+        ],
+      ]
+    : [
+        [
+          pdfThCell('内容\nItem', thStyle),
+          pdfThCell('', thStyle),
+          pdfThCell('说明\nSummary', thStyle),
+          pdfThCell('数量\nQty', thStyle),
+          pdfThCell('单位\nUnit', thStyle),
+          pdfThCell('单价\nPrice', thStyle),
+          pdfThCell('单项小计\nSubtotal', thStyle),
+          pdfThCell('备注\nRemarks', thStyle),
+        ],
+      ];
 
   const groups = groupItems(q.items);
   groups.forEach((sec) => {
     body.push([
       {
         text: `${sec.section_code}.${sec.section_name}`,
-        style: 'section',
+        style: `${p}section`,
         colSpan: 6,
-        alignment: 'left',
+        alignment: 'center',
+        verticalAlignment: 'middle',
       },
       '',
       '',
       '',
       '',
       '',
-      { text: fmtNum(sec.sectionSubtotal), style: 'sectionR', alignment: 'right' },
+      {
+        text: fmtNum(sec.sectionSubtotal),
+        style: `${p}sectionR`,
+        alignment: 'right',
+        verticalAlignment: 'middle',
+      },
       '',
     ]);
     sec.subsections.forEach((sub) => {
+      const rowSpan = Math.max(1, (sub.items || []).length);
       sub.items.forEach((it, idx) => {
         const subCodeCell =
-          idx === 0 ? { text: String(sub.subsection_code || ''), style: 'tdC' } : { text: '', style: 'tdC' };
+          idx === 0
+            ? pdfMergeCell(String(sub.subsection_code || ''), `${p}tdC`, rowSpan)
+            : { text: '', style: `${p}tdC` };
         const subNameCell =
-          idx === 0 ? { text: String(sub.subsection_name || ''), style: 'tdC' } : { text: '', style: 'tdC' };
+          idx === 0
+            ? pdfMergeCell(String(sub.subsection_name || ''), `${p}tdC`, rowSpan)
+            : { text: '', style: `${p}tdC` };
+        const desc = String(it.description || '');
+        const cellStyle = compact ? { fontSize: scale.font, lineHeight: scale.lh } : {};
         body.push([
-          subCodeCell,
-          subNameCell,
-          { text: String(it.description || ''), style: 'tdL' },
-          { text: fmtNum(it.quantity, 0), style: 'tdC' },
-          { text: String(it.unit || ''), style: 'tdC' },
-          { text: fmtNum(it.unit_price), style: 'tdR' },
-          { text: fmtNum(itemSubtotal(it)), style: 'tdR' },
-          { text: String(it.remarks || ''), style: 'tdL' },
+          { ...subCodeCell, ...cellStyle },
+          { ...subNameCell, ...cellStyle },
+          { text: desc, style: `${p}tdL`, ...cellStyle },
+          { text: fmtNum(it.quantity, 0), style: `${p}tdC`, ...cellStyle },
+          { text: String(it.unit || ''), style: `${p}tdC`, ...cellStyle },
+          { text: fmtNum(it.unit_price), style: `${p}tdR`, ...cellStyle },
+          { text: fmtNum(itemSubtotal(it)), style: `${p}tdR`, ...cellStyle },
+          { text: String(it.remarks || ''), style: `${p}tdL`, ...cellStyle },
         ]);
       });
     });
@@ -187,99 +399,189 @@ function buildTableBody(q) {
   const pct = Math.round(t.serviceRate * 100);
   const pushFooter = (label, val) => {
     body.push([
-      { text: label, style: 'footer', colSpan: 6, alignment: 'left' },
+      { text: label, style: `${p}footer`, colSpan: 6, alignment: 'right' },
       '',
       '',
       '',
       '',
       '',
-      { text: fmtNum(val), style: 'footerR', alignment: 'right' },
+      { text: fmtNum(val), style: `${p}footerR`, alignment: 'right' },
       '',
     ]);
   };
-  pushFooter('1. 不含税小计 Subtotal excluding Tax', t.subtotalExTax);
-  pushFooter(`2. 公司服务费 Service Charge(${pct}%)`, t.serviceCharge);
-  pushFooter('3. 国家及地方政府税收(6%) Government Tax', t.taxAmount);
-  pushFooter('4. 含税总计 TOTAL', t.totalAmount);
+  if (compact) {
+    pushFooter('1. 不含税小计', t.subtotalExTax);
+    pushFooter(`2. 服务费(${pct}%)`, t.serviceCharge);
+    pushFooter('3. 税费(6%)', t.taxAmount);
+    pushFooter('4. 含税总计', t.totalAmount);
+  } else {
+    pushFooter('1. 不含税小计 Subtotal excluding Tax', t.subtotalExTax);
+    pushFooter(`2. 公司服务费 Service Charge(${pct}%)`, t.serviceCharge);
+    pushFooter('3. 国家及地方政府税收(6%) Government Tax', t.taxAmount);
+    pushFooter('4. 含税总计 TOTAL', t.totalAmount);
+  }
 
-  return { body, totals: t };
+  const widths = buildSingleTableWidths(q, opts);
+  const layoutRowH = Number(opts.layout?.defaultRowHeight);
+  if (layoutRowH > 0 && scale) scale.rowHeight = layoutRowH;
+
+  return { body, totals: t, widths, tableLayout: scale, bundleHeader };
 }
 
-function buildQuotationDocDefinition(q, opts = {}) {
-  const { body } = buildTableBody(q);
+function buildPdfTableLayout(pad = 2) {
+  return {
+    hLineWidth: () => 0.5,
+    vLineWidth: () => 0.5,
+    hLineColor: () => '#888888',
+    vLineColor: () => '#888888',
+    paddingTop: () => pad,
+    paddingBottom: () => pad,
+    paddingLeft: () => Math.max(1, pad),
+    paddingRight: () => Math.max(1, pad),
+  };
+}
+
+const PDF_STYLES = buildPdfStyles(null);
+
+function buildQuotationContentParts(q, opts = {}) {
+  const compact = !!opts.compact;
+  const headerQ = opts.headerSource || q;
+  const summaryStyleHeader = !!opts.headerSource || !compact;
   const headerStack = [
-    labelLine('Client / Brand 客户/品牌：', q.client_brand),
-    labelLine('Attend to 客户方负责人：', q.client_contact),
-    labelLine('Project Name 项目名称：', q.project_name),
+    labelLine('Client / Brand 客户/品牌：', headerQ.client_brand),
+    labelLine('Attend to 客户方负责人：', headerQ.client_contact),
+    labelLine('Project Name 项目名称：', headerQ.project_name),
   ];
 
   const headerBlock = { width: '*', stack: headerStack };
   const logoPath = opts.skipLogo ? null : resolveLogoImage();
+  const logoFit = opts.compactLogo ? [62, 28] : summaryStyleHeader ? [88, 40] : [100, 50];
+  const headerMargin = summaryStyleHeader ? [0, 0, 0, 8] : [0, 0, 0, 2];
   const topRow = logoPath
     ? {
         columns: [
           headerBlock,
           {
-            width: 100,
+            width: logoFit[0],
             image: logoPath,
-            fit: [100, 50],
+            fit: logoFit,
           },
         ],
-        columnGap: 12,
-        margin: [0, 0, 0, 8],
+        columnGap: summaryStyleHeader ? 12 : 8,
+        margin: headerMargin,
       }
-    : { stack: headerStack, margin: [0, 0, 0, 8] };
+    : { stack: headerStack, margin: headerMargin };
 
+  const isMulti = isMultiQuote(q);
+  const tablePart = isMulti
+    ? (() => {
+        const { body, widths } = buildMultiTableBody(q);
+        return {
+          table: { widths, headerRows: 1, body },
+          layout: buildPdfTableLayout(compact ? 1 : 2),
+        };
+      })()
+    : (() => {
+        const { body, widths, tableLayout: tblScale, bundleHeader } = buildTableBody(q, opts);
+        const rowH = tblScale?.rowHeight;
+        return {
+          table: {
+            widths,
+            headerRows: 1,
+            body,
+            dontBreakRows: true,
+            ...(compact && rowH
+              ? {
+                  heights: (i) => {
+                    if (i === 0) return bundleHeader ? 18 : Math.min(11, rowH + 2);
+                    return rowH;
+                  },
+                }
+              : {}),
+          },
+          layout: buildPdfTableLayout(tblScale?.pad ?? (compact ? 0.8 : 2)),
+        };
+      })();
+
+  return [topRow, tablePart];
+}
+
+function buildQuotationDocDefinition(q, opts = {}) {
   return {
     pageSize: 'A4',
     pageOrientation: 'landscape',
     pageMargins: [28, 28, 28, 28],
     fonts: docDefinitionFonts,
     defaultStyle: { font: defaultFont, fontSize: 9, lineHeight: 1.15 },
-    content: [
-      topRow,
-      {
-        table: {
-          widths: ['8%', '10%', '28%', '8%', '8%', '10%', '12%', '16%'],
-          headerRows: 1,
-          body,
-        },
-        layout: {
-          hLineWidth: () => 0.5,
-          vLineWidth: () => 0.5,
-          hLineColor: () => '#888888',
-          vLineColor: () => '#888888',
-          paddingTop: () => 2,
-          paddingBottom: () => 2,
-          paddingLeft: () => 3,
-          paddingRight: () => 3,
-        },
-      },
-    ],
-    styles: {
-      th: { bold: true, fillColor: '#948a54', color: '#ffffff', fontSize: 8 },
-      thC: { bold: true, fillColor: '#948a54', color: '#ffffff', alignment: 'center', fontSize: 8 },
-      thR: { bold: true, fillColor: '#948a54', color: '#ffffff', alignment: 'right', fontSize: 8 },
-      section: { bold: true, fillColor: '#c4bd97', fontSize: 9 },
-      sectionR: { bold: true, fillColor: '#c4bd97', fontSize: 9 },
-      footer: { bold: true, fillColor: '#c4bd97', fontSize: 9 },
-      footerR: { bold: true, fillColor: '#c4bd97', fontSize: 9 },
-      tdL: { alignment: 'left', fontSize: 8 },
-      tdC: { alignment: 'center', fontSize: 8 },
-      tdR: { alignment: 'right', fontSize: 8 },
-    },
+    content: buildQuotationContentParts(q, opts),
+    styles: PDF_STYLES,
   };
 }
 
-async function createPdfDocument(q) {
+/** 合并导出：Summary（多场）+ 各单场明细，每场新页 */
+function buildBundledQuotationDocDefinition(multiQuote, singles, opts = {}) {
+  const layoutByQuoteId =
+    opts.layoutByQuoteId && typeof opts.layoutByQuoteId === 'object' ? opts.layoutByQuoteId : {};
+  const pageOrientation = opts.pageOrientation === 'portrait' ? 'portrait' : 'landscape';
+  const styles = { ...PDF_STYLES };
+  (singles || []).forEach((q) => {
+    Object.assign(styles, buildPdfStyles(compactPdfScale(countSingleTableRows(q))));
+  });
+
+  const content = [
+    { text: 'Summary', style: 'section', margin: [0, 0, 0, 4] },
+    ...buildQuotationContentParts(multiQuote, { ...opts, compact: false }),
+  ];
+  (singles || []).forEach((q, idx) => {
+    const sheetTitle = String(q.project_name || q.project_code || `场次${idx + 1}`).trim();
+    const layout = layoutByQuoteId[String(q.id)] || {};
+    content.push({ text: '', pageBreak: 'before' });
+    content.push({ text: sheetTitle, style: 'section', margin: [0, 0, 0, 2] });
+    content.push(
+      ...buildQuotationContentParts(q, {
+        ...opts,
+        compact: true,
+        compactLogo: true,
+        headerSource: multiQuote,
+        layout,
+      })
+    );
+  });
+  return {
+    pageSize: 'A4',
+    pageOrientation,
+    pageMargins: [20, 20, 20, 20],
+    fonts: docDefinitionFonts,
+    defaultStyle: { font: defaultFont, fontSize: 8, lineHeight: 1.08 },
+    content,
+    styles,
+  };
+}
+
+async function createPdfDocumentFromDefinition(docDef) {
   ensurePdfVfs();
   const urlResolver = new URLResolver(pdfVirtualFs);
   const printer = new PdfPrinter(pdfPrinterFonts, pdfVirtualFs, urlResolver);
+  return printer.createPdfKitDocument(docDef);
+}
+
+async function createPdfDocument(q) {
   try {
-    return await printer.createPdfKitDocument(buildQuotationDocDefinition(q));
+    return await createPdfDocumentFromDefinition(buildQuotationDocDefinition(q));
   } catch (e) {
     console.warn('报价 PDF（含 Logo）生成失败，重试无 Logo：', e.message);
-    return await printer.createPdfKitDocument(buildQuotationDocDefinition(q, { skipLogo: true }));
+    return createPdfDocumentFromDefinition(buildQuotationDocDefinition(q, { skipLogo: true }));
+  }
+}
+
+async function createBundledPdfDocument(multiQuote, singles, opts = {}) {
+  try {
+    return await createPdfDocumentFromDefinition(buildBundledQuotationDocDefinition(multiQuote, singles, opts));
+  } catch (e) {
+    console.warn('合并报价 PDF（含 Logo）生成失败，重试无 Logo：', e.message);
+    return createPdfDocumentFromDefinition(
+      buildBundledQuotationDocDefinition(multiQuote, singles, { ...opts, skipLogo: true })
+    );
   }
 }
 
@@ -297,12 +599,10 @@ function buildPdfContentDisposition(q) {
   return `attachment; filename="${asciiName}"; filename*=UTF-8''${encoded}`;
 }
 
-async function streamQuotationPdf(res, q) {
-  const pdfDoc = await createPdfDocument(q);
-
+function pipePdfToResponse(res, pdfDoc, contentDisposition) {
   return new Promise((resolve, reject) => {
     res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', buildPdfContentDisposition(q));
+    res.setHeader('Content-Disposition', contentDisposition);
     pdfDoc.on('error', reject);
     res.on('error', reject);
     pdfDoc.on('end', resolve);
@@ -311,4 +611,32 @@ async function streamQuotationPdf(res, q) {
   });
 }
 
-module.exports = { buildQuotationDocDefinition, streamQuotationPdf };
+async function streamQuotationPdf(res, q) {
+  const pdfDoc = await createPdfDocument(q);
+  return pipePdfToResponse(res, pdfDoc, buildPdfContentDisposition(q));
+}
+
+function buildBundledPdfContentDisposition(multiQuote) {
+  const base =
+    [multiQuote.project_name, multiQuote.quotation_no].filter(Boolean).join('-').trim() ||
+    `quotation-${multiQuote.id || 'export'}`;
+  const displayName = `${String(base).replace(/[\\/:*?"<>|]/g, '').trim().slice(0, 80) || 'quotation-summary'}-summary.pdf`;
+  const asciiName = `quotation-summary-${multiQuote.id || 'export'}.pdf`;
+  const encoded = encodeURIComponent(displayName);
+  return `attachment; filename="${asciiName}"; filename*=UTF-8''${encoded}`;
+}
+
+async function streamBundledQuotationPdf(res, multiQuote, singles, opts = {}) {
+  const pdfDoc = await createBundledPdfDocument(multiQuote, singles, opts);
+  return pipePdfToResponse(res, pdfDoc, buildBundledPdfContentDisposition(multiQuote));
+}
+
+module.exports = {
+  buildQuotationDocDefinition,
+  buildBundledQuotationDocDefinition,
+  streamQuotationPdf,
+  streamBundledQuotationPdf,
+  groupItems,
+  calcTotals,
+  itemSubtotal,
+};

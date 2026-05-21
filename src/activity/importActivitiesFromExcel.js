@@ -187,12 +187,12 @@ function detectBrandByYearFrameCode(rawCode) {
   return '';
 }
 
-function buildProjectCode({ year_frame_code, date, city, brand, activity_type, client }) {
+function buildProjectCode({ year_frame_code, date, city, venue, brand, activity_type, client }) {
   let dateStr = '';
   if (date && /^\d{4}-\d{2}-\d{2}$/.test(date)) {
     dateStr = date.slice(2, 4) + date.slice(5, 7) + date.slice(8, 10);
   }
-  const pc = `${year_frame_code || ''} ${dateStr}${normalizeProjectCodeCity(city)}${normalizeProjectCodeToken(client)}${normalizeProjectCodeToken(brand)}${normalizeProjectCodeToken(activity_type)}`.trim();
+  const pc = `${year_frame_code || ''} ${dateStr}${normalizeProjectCodeCity(city)}${normalizeProjectCodeToken(venue)}${normalizeProjectCodeToken(client)}${normalizeProjectCodeToken(brand)}${normalizeProjectCodeToken(activity_type)}`.trim();
   return pc;
 }
 
@@ -360,6 +360,7 @@ async function importActivitiesFromExcelBuffer(buffer, options = {}) {
         year_frame_code: yearFrameCode,
         date,
         city,
+        venue,
         brand,
         activity_type: activityType.value,
         client,

@@ -13,7 +13,8 @@ router.get('/', async (req, res) => {
         
         // strategy B：日历活动类型与 lookup_options（category=activity_type, is_active=1）一致，避免与表单维护分叉
         let query = `
-            SELECT id, project_code, activity_type, city, brand, 
+            SELECT id, project_code, activity_type, city, brand,
+                   client, client_name, venue,
                    date as activity_date, quoted_price, executor, status
             FROM activities 
             WHERE COALESCE(is_virtual, 0) = 0

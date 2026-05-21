@@ -43,6 +43,37 @@ const router = express.Router();
 const db = require('../config/database');
 const { ensureInventoryTables } = require('../inventory/ensureInventoryTables');
 const { ensureWineCatalog } = require('../wine/ensureWineCatalog');
+const { todayYmd, formatYmd, formatDateTimeSecond, beijingParts } = require('../lib/businessTime');
+
+/** API 中的 DATE 字段统一为北京时间 YYYY-MM-DD，避免 JSON 序列化成 UTC 导致前端少一天 */
+function jsonYmd(v) {
+  if (v == null || v === '') return null;
+  return formatYmd(v) || String(v).trim().slice(0, 10) || null;
+}
+
+function formatCnYmd(raw) {
+  const p = beijingParts(raw);
+  if (!p) return '—';
+  return `${p.year}年${p.month}月${p.day}日`;
+}
+
+function parseReturnDateInput(raw) {
+  const s = String(raw || '').trim().slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return todayYmd();
+  return s;
+}
+
+function serializeOrderDetailForJson(detail) {
+  if (!detail) return detail;
+  const order = { ...detail.order };
+  if (order.activity_date) order.activity_date = jsonYmd(order.activity_date);
+  const batches = (detail.batches || []).map((b) => ({
+    ...b,
+    return_date: jsonYmd(b.return_date),
+    created_at: formatDateTimeSecond(b.created_at) || b.created_at,
+  }));
+  return { ...detail, order, batches };
+}
 
 router.use(async (req, res, next) => {
   try {
@@ -246,11 +277,11 @@ function sqlAggNum(v) {
 }
 
 function compactDateYYMMDD(input) {
-  const d = input ? new Date(input) : new Date();
-  if (Number.isNaN(d.getTime())) return '';
-  const yy = String(d.getFullYear()).slice(-2);
-  const mm = String(d.getMonth() + 1).padStart(2, '0');
-  const dd = String(d.getDate()).padStart(2, '0');
+  const p = beijingParts(input || new Date());
+  if (!p) return '';
+  const yy = String(p.year).slice(-2);
+  const mm = String(p.month).padStart(2, '0');
+  const dd = String(p.day).padStart(2, '0');
   return `${yy}${mm}${dd}`;
 }
 
@@ -1377,7 +1408,7 @@ router.post('/outbound', async (req, res) => {
 
     await conn.commit();
     const detail = await loadOrderDetail(orderId);
-    res.json(detail);
+    res.json(serializeOrderDetailForJson(detail));
   } catch (e) {
     await conn.rollback();
     console.error(e);
@@ -1536,7 +1567,7 @@ router.get('/outbound/:id', async (req, res) => {
     if (!Number.isFinite(id)) return res.status(400).json({ error: '无效 ID' });
     const detail = await loadOrderDetail(id);
     if (!detail) return res.status(404).json({ error: '单据不存在' });
-    res.json(detail);
+    res.json(serializeOrderDetailForJson(detail));
   } catch (e) {
     console.error(e);
     res.status(500).json({ error: e.message || '加载失败' });
@@ -1550,7 +1581,7 @@ router.post('/inbound', async (req, res) => {
     const { inv_warehouse_id, inv_item_id, quantity, items, source, remarks, inbound_date } = req.body;
     const wid = parseInt(inv_warehouse_id, 10);
     if (!Number.isFinite(wid)) return res.status(400).json({ error: '请选择有效仓库' });
-    const date = inbound_date || new Date().toISOString().slice(0, 10);
+    const date = parseReturnDateInput(inbound_date);
     const operator = req.session?.user?.display_name || req.session?.user?.username || '系统';
     const itemList = Array.isArray(items) && items.length
       ? items
@@ -1729,7 +1760,7 @@ router.get('/inbound-receipts', async (req, res) => {
     const [rows] = await db.query(sql, params);
     const out = rows.map((r) => {
       const labels = inboundReceiptDisplayLabels(r);
-      return { ...r, ...labels };
+      return { ...r, return_date: jsonYmd(r.return_date), ...labels };
     });
     res.json(out);
   } catch (e) {
@@ -1773,7 +1804,7 @@ router.get('/inbound-receipts/:batchId', async (req, res) => {
       [batchId]
     );
     if (!heads.length) return res.status(404).json({ error: '入库单不存在' });
-    const head = heads[0];
+    const head = { ...heads[0], return_date: jsonYmd(heads[0].return_date) };
     const [lines] = await db.query(
       `
       SELECT
@@ -1950,7 +1981,7 @@ router.put('/outbound/:id', async (req, res) => {
 
     await conn.commit();
     const detail = await loadOrderDetail(orderId);
-    res.json(detail);
+    res.json(serializeOrderDetailForJson(detail));
   } catch (e) {
     await conn.rollback();
     console.error(e);
@@ -2127,7 +2158,7 @@ router.post('/outbound/:id/returns', async (req, res) => {
     if (!Number.isFinite(orderId) || !Array.isArray(lines) || !lines.length) {
       return res.status(400).json({ error: '请填写归还明细' });
     }
-    const rd = return_date || new Date().toISOString().slice(0, 10);
+    const rd = parseReturnDateInput(return_date);
 
     await conn.beginTransaction();
 
@@ -2219,7 +2250,7 @@ router.post('/outbound/:id/returns', async (req, res) => {
 
     await conn.commit();
     const detail = await loadOrderDetail(orderId);
-    res.json(detail);
+    res.json(serializeOrderDetailForJson(detail));
   } catch (e) {
     await conn.rollback();
     console.error(e);
@@ -2244,11 +2275,7 @@ router.get('/outbound/:id/pdf', async (req, res) => {
       lineWhMap.get(key).push(ln);
     });
     const whCount = lineWhMap.size;
-    const shippedAt = order.shipped_at ? new Date(order.shipped_at) : null;
-    const shippedDateCn =
-      shippedAt && !Number.isNaN(shippedAt.getTime())
-        ? `${shippedAt.getFullYear()}年${shippedAt.getMonth() + 1}月${shippedAt.getDate()}日`
-        : '—';
+    const shippedDateCn = formatCnYmd(order.shipped_at);
 
     const whNames = Array.from(lineWhMap.keys()).map((k) => {
       const [b, r] = String(k).split('|');

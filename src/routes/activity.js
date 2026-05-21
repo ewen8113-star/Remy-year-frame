@@ -4,6 +4,7 @@ const router = express.Router();
 const db = require('../config/database');
 const { importActivitiesFromExcelBuffer } = require('../activity/importActivitiesFromExcel');
 const { todayYmd, formatDateTimeMinute } = require('../lib/businessTime');
+const { ensureActivityQuotedPriceFromQuotations } = require('../quotation/syncQuotationToActivities');
 
 const activityImportUpload = multer({
   storage: multer.memoryStorage(),
@@ -186,8 +187,14 @@ router.get('/:id', async (req, res) => {
       return res.status(404).json({ error: '活动不存在' });
     }
 
+    const row = rows[0];
+    if (Number(row.is_virtual) !== 1) {
+      const synced = await ensureActivityQuotedPriceFromQuotations(db, id);
+      if (synced != null) row.quoted_price = synced;
+    }
+
     res.setHeader('Cache-Control', 'no-store');
-    res.json(rows[0]);
+    res.json(row);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
