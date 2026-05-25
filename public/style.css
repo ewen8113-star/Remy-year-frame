@@ -80,7 +80,8 @@
   border-color: #a69d72;
 }
 
-.aq-export-preview-table .qt-footer-label {
+.aq-export-preview-table .qt-footer-label,
+.qt-detail-table .qt-footer-label {
   text-align: right;
   font-weight: 700;
 }
@@ -1589,8 +1590,9 @@ body.modal-open {
   top: calc(100% + 4px);
   z-index: 40;
 }
-.aq-pc-menu[style*="position: fixed"] {
-  z-index: 2000;
+.aq-pc-menu[style*="position: fixed"],
+.aq-pc-menu.aq-pc-menu-portal {
+  z-index: 10100;
 }
 
 .inv-project-option {
@@ -7527,6 +7529,217 @@ tbody td {
 .aq-multi-sessions-table td { font-size: 13px; vertical-align: middle; }
 .aq-multi-sessions-table .aq-pc-cell { min-width: 220px; }
 .aq-multi-sessions-table .aq-pc-combobox { min-width: 200px; }
+
+#modalActivityQuote .modal-activity-quote-body {
+  max-height: 70vh;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+}
+
+#modalActivityQuote .form-grid,
+#modalActivityQuote .form-grid > .form-group {
+  min-width: 0;
+}
+
+#modalActivityQuote .form-control {
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+.aq-create-project-field .aq-pc-combobox {
+  position: relative;
+  width: 100%;
+  max-width: 100%;
+}
+
+.aq-create-project-field .aq-pc-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding-right: 34px !important;
+}
+
+#modalActivityQuote .aq-pc-combobox {
+  width: 100%;
+  max-width: 100%;
+}
+
+.aq-create-project-field .inv-project-option {
+  white-space: normal;
+  word-break: break-all;
+  line-height: 1.35;
+}
+
+/* 酒品对照排查 */
+.inv-wine-audit-lead { margin: 0 0 12px; line-height: 1.5; }
+.inv-wine-audit-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+.inv-wine-audit-stat {
+  flex: 1 1 120px;
+  min-width: 100px;
+  padding: 10px 12px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  background: var(--bg-input);
+}
+.inv-wine-audit-stat--warn { border-color: var(--warning); background: color-mix(in srgb, var(--warning) 12%, transparent); }
+.inv-wine-audit-stat .k { display: block; font-size: 11px; color: var(--text-muted); margin-bottom: 4px; }
+.inv-wine-audit-stat .v { font-size: 18px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.inv-wine-audit-rules { margin-bottom: 14px; font-size: 12px; color: var(--text-secondary); }
+.inv-wine-audit-rules ul { margin: 8px 0 0 18px; padding: 0; }
+.inv-wine-audit-section-title { margin: 16px 0 8px; font-size: 13px; font-weight: 600; }
+.inv-wine-audit-table-wrap { max-height: 280px; overflow: auto; }
+.inv-wine-audit-table th,
+.inv-wine-audit-table td { font-size: 12px; vertical-align: top; }
+.inv-wine-audit-empty { text-align: center; color: var(--text-muted); padding: 16px !important; }
+.inv-wine-audit-hint { color: var(--text-secondary); font-size: 11px; max-width: 220px; }
+.inv-wine-audit-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  white-space: nowrap;
+}
+.inv-wine-audit-badge--catalog_ok { background: color-mix(in srgb, var(--success) 18%, transparent); color: var(--success); }
+.inv-wine-audit-badge--not_in_catalog { background: color-mix(in srgb, var(--danger) 14%, transparent); color: var(--danger); }
+.inv-wine-audit-badge--catalog_name_only,
+.inv-wine-audit-badge--catalog_spec_mismatch { background: color-mix(in srgb, var(--warning) 16%, transparent); color: var(--warning); }
+.inv-wine-audit-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+.inv-badge-wine {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  background: color-mix(in srgb, #7c3aed 18%, transparent);
+  color: #5b21b6;
+  vertical-align: middle;
+}
+.inv-btn-wine-on { color: #5b21b6; font-weight: 600; }
+.inv-wine-audit-tag-col { font-size: 11px; max-width: 140px; word-break: break-word; }
+.inv-wine-stats-page { display: flex; flex-direction: column; gap: 12px; }
+.inv-wine-stats-lead { margin: 0; line-height: 1.55; }
+.inv-wine-stats-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.inv-wine-stats-search.inv-ob-search {
+  flex: 1 1 220px;
+  min-width: 200px;
+  max-width: 360px;
+}
+.inv-wine-stats-summary { margin: 0 0 8px; }
+.inv-wine-stats-table-wrap {
+  overflow: auto;
+  max-height: calc(100vh - 220px);
+  -webkit-overflow-scrolling: touch;
+}
+.inv-wine-stats-table {
+  min-width: max-content;
+  font-size: 12px;
+}
+.inv-wine-stats-table .inv-wine-stats-fixed {
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  background: var(--bg-card);
+  box-shadow: 2px 0 4px color-mix(in srgb, var(--border) 40%, transparent);
+}
+.inv-wine-stats-table thead .inv-wine-stats-fixed { z-index: 3; }
+.inv-wine-stats-table th.inv-wine-stats-fixed:nth-child(2),
+.inv-wine-stats-table td.inv-wine-stats-fixed:nth-child(2) { left: 56px; }
+.inv-wine-stats-table th.inv-wine-stats-fixed:nth-child(3),
+.inv-wine-stats-table td.inv-wine-stats-fixed:nth-child(3) { left: 280px; }
+.inv-wine-stats-proj {
+  min-width: 200px;
+  max-width: 280px;
+  text-align: left !important;
+  word-break: break-all;
+}
+.inv-wine-stats-table thead th.inv-wine-stats-wine-col {
+  white-space: normal;
+  text-transform: none;
+  letter-spacing: 0;
+  text-align: center;
+  vertical-align: bottom;
+  overflow: hidden;
+}
+.inv-wine-stats-table thead th.inv-wine-stats-fixed {
+  white-space: nowrap;
+}
+.inv-wine-stats-wine-col {
+  width: 92px;
+  min-width: 92px;
+  max-width: 92px;
+  vertical-align: bottom;
+  padding: 6px 4px !important;
+  box-sizing: border-box;
+}
+.inv-wine-stats-wine-head {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 2px;
+  min-height: 2.6em;
+  max-width: 100%;
+}
+.inv-wine-stats-wine-name {
+  display: block;
+  width: 100%;
+  font-weight: 600;
+  font-size: 10px;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  hyphens: auto;
+  text-align: center;
+}
+.inv-wine-stats-wine-vol {
+  display: block;
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  line-height: 1.2;
+  text-align: center;
+}
+.inv-wine-stats-wine-total {
+  display: block;
+  font-size: 10px;
+  color: var(--text-muted);
+  margin-top: 1px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  text-align: center;
+}
+.inv-wine-stats-table td.inv-wine-stats-qty {
+  width: 92px;
+  min-width: 92px;
+  max-width: 92px;
+  padding-left: 4px !important;
+  padding-right: 4px !important;
+  text-align: center;
+}
+.inv-wine-stats-qty { font-variant-numeric: tabular-nums; }
+.inv-wine-stats-empty-cell { text-align: center; color: var(--text-muted); padding: 20px !important; }
+@media print {
+  .inv-wine-stats-table-wrap { max-height: none; overflow: visible; }
+  .inv-wine-stats-table .inv-wine-stats-fixed { position: static; box-shadow: none; }
+}
 .aq-multi-sessions-table .aq-pc-input { padding-right: 34px; min-width: 180px; }
 .aq-multi-sessions-wrap .table-wrapper { overflow: visible; }
 .aq-multi-fee-table th:nth-child(1) { width: 48%; }
@@ -7619,7 +7832,14 @@ tbody td {
 }
 .qt-header-extra { margin: 0 0 10px; font-size: 11px; color: #666; }
 .qt-header-info .info-row { display: flex; gap: 8px; margin-bottom: 4px; font-size: 11px; }
-.qt-header-info .info-label { color: #666; white-space: nowrap; }
+.qt-header-info .info-row--field { align-items: center; flex-wrap: wrap; }
+.qt-header-info--editable .aq-header-inp {
+  flex: 1;
+  min-width: 120px;
+  max-width: min(420px, 100%);
+  font-size: 11px;
+}
+.qt-header-info .info-label { color: #666; white-space: nowrap; flex-shrink: 0; }
 .qt-table-scroll { overflow-x: auto; }
 
 /* 活动报价编辑：表格区域纵向滚动，表头固定 */
@@ -7688,11 +7908,25 @@ tbody td {
 .qt-section-header td {
   background: #c4bd97 !important;
   font-weight: 700;
+  text-align: left;
+}
+.qt-detail-table textarea.aq-inp-desc {
+  min-width: 0;
+  width: 100%;
+  resize: none;
+  overflow: hidden;
+  line-height: 1.35;
+  font-size: 12px;
+  min-height: 28px;
+  box-sizing: border-box;
 }
 .qt-alt-row td { background: #f9f9f9; }
 .qt-footer-row td {
   background: #c4bd97 !important;
   font-weight: 700;
+}
+.qt-detail-table tr.qt-footer-row td.qt-footer-label {
+  text-align: right;
 }
 .qt-total-row td { font-size: 12px; }
 .aq-totals-bar { margin-top: 12px; }
@@ -7708,6 +7942,15 @@ tbody td {
   font-size: 13px;
 }
 .aq-total-amt { font-size: 15px; }
+.aq-edit-undo-hint { margin: 8px 0 0; font-size: 12px; color: var(--text-secondary); }
+.aq-edit-undo-hint kbd {
+  display: inline-block;
+  padding: 1px 5px;
+  font-size: 11px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-input);
+}
 .aq-linked-pc {
   font-size: 12px;
   padding: 2px 6px;

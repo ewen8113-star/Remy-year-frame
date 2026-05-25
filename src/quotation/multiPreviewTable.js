@@ -2,6 +2,12 @@
  * 多场报价预览/导出表格（与前端 activity-quotes 预览列一致）
  */
 const { MULTI_SUMMARY_FEE_LINES, mergeSessionWithTotals, calcMultiGrandTotals } = require('./multiSummaryItems');
+const { buildSummaryColumnModel, TOTAL_COLUMN_DEFS } = require('./summaryColumnVisibility');
+const {
+  sectionTotalsFromSession,
+  sectionTotalsFromQuote,
+  getSectionAmountForRow,
+} = require('./summarySectionColumns');
 
 function fmtNum(n, dec = 2) {
   const x = parseFloat(n);
@@ -9,17 +15,10 @@ function fmtNum(n, dec = 2) {
   return x.toLocaleString('zh-CN', { minimumFractionDigits: dec, maximumFractionDigits: dec });
 }
 
+const { toCalendarDateYmd } = require('./calendarDate');
+
 function normalizeEventDate(raw) {
-  if (raw == null || raw === '') return '';
-  const s = String(raw).trim();
-  const m = s.match(/^(\d{4}-\d{2}-\d{2})/);
-  if (m) return m[1];
-  const dt = new Date(s);
-  if (Number.isNaN(dt.getTime())) return '';
-  const y = dt.getFullYear();
-  const mo = String(dt.getMonth() + 1).padStart(2, '0');
-  const d = String(dt.getDate()).padStart(2, '0');
-  return `${y}-${mo}-${d}`;
+  return toCalendarDateYmd(raw);
 }
 
 function cellOrDash(v) {
@@ -37,75 +36,121 @@ function sanitizeSessionRemarks(raw) {
   return cleaned;
 }
 
-function colsBeforeTotals() {
-  return 4 + MULTI_SUMMARY_FEE_LINES.length;
+function colsBeforeTotals(feeColCount = MULTI_SUMMARY_FEE_LINES.length) {
+  return 4 + feeColCount;
 }
 
-function getMultiTableHeaders() {
+function getMultiTableHeaders(q) {
+  const sessions = (q?.linked_sessions || []).map((s) => mergeSessionWithTotals(s));
+  return buildSummaryColumnModel({ sessions }).headers;
+}
+
+function buildRowCellsFromSession(s, columns) {
+  const merged = mergeSessionWithTotals(s);
+  const secs = sectionTotalsFromSession(s);
   return [
-    '日期',
-    '城市',
-    '客户名称',
-    '类型',
-    ...MULTI_SUMMARY_FEE_LINES.map((c) => c.description),
-    '小计',
-    '服务费10%',
-    '税费6%',
-    '合计',
-    '备注',
+    cellOrDash(normalizeEventDate(merged.event_date)),
+    cellOrDash(merged.city),
+    cellOrDash(merged.customer_name),
+    cellOrDash(merged.event_type),
+    ...columns.sectionColumns.map((col) =>
+      getSectionAmountForRow(secs, col.section_code, col.section_name)
+    ),
+    ...columns.totalColumns.map((col) => Number(merged[col.key]) || 0),
+    cellOrDash(sanitizeSessionRemarks(merged.remarks)),
+  ];
+}
+
+function buildRowCellsFromQuote(q, columns) {
+  const secs = sectionTotalsFromQuote(q);
+  const merged = mergeSessionWithTotals(q);
+  return [
+    cellOrDash(normalizeEventDate(q.event_date)),
+    cellOrDash(q.city),
+    cellOrDash(q.customer_name),
+    cellOrDash(q.event_type),
+    ...columns.sectionColumns.map((col) =>
+      getSectionAmountForRow(secs, col.section_code, col.section_name)
+    ),
+    ...columns.totalColumns.map((col) => {
+      if (col.key === 'row_total') return Number(q.total_amount) || 0;
+      if (col.key === 'subtotal_ex_tax') return Number(q.subtotal_ex_tax) || 0;
+      if (col.key === 'service_charge') return Number(q.service_charge) || 0;
+      if (col.key === 'tax_amount') return Number(q.tax_amount) || 0;
+      return Number(merged[col.key]) || 0;
+    }),
+    '',
   ];
 }
 
 function buildMultiPreviewTableData(q) {
   const sessions = (q.linked_sessions || []).map((s) => mergeSessionWithTotals(s));
-  const headers = getMultiTableHeaders();
-  const dataRows = sessions.map((s) => {
-    const fees = MULTI_SUMMARY_FEE_LINES.map((col) => ({
-      key: col.key,
-      amount: Number(s[col.key]) || 0,
-    }));
-    return {
-      session: s,
-      cells: [
-        cellOrDash(normalizeEventDate(s.event_date)),
-        cellOrDash(s.city),
-        cellOrDash(s.customer_name),
-        cellOrDash(s.event_type),
-        ...fees.map((f) => f.amount),
-        Number(s.subtotal_ex_tax) || 0,
-        Number(s.service_charge) || 0,
-        Number(s.tax_amount) || 0,
-        Number(s.row_total) || 0,
-        cellOrDash(sanitizeSessionRemarks(s.remarks)),
-      ],
-      feeAmounts: fees.map((f) => f.amount),
-    };
-  });
+  const columns = buildSummaryColumnModel({ sessions });
+  const headers = columns.headers;
+  const dataRows = (q.linked_sessions || []).map((s) => ({
+    session: mergeSessionWithTotals(s),
+    cells: buildRowCellsFromSession(s, columns),
+  }));
 
-  const totals = calcMultiGrandTotals(sessions);
-  const spanBefore = colsBeforeTotals();
+  const totals = calcMultiGrandTotals(q.linked_sessions || []);
   const footerCells = new Array(headers.length).fill('');
   footerCells[0] = '多场含税总计';
-  footerCells[spanBefore] = totals.subtotalExTax;
-  footerCells[spanBefore + 1] = totals.serviceCharge;
-  footerCells[spanBefore + 2] = totals.taxAmount;
-  footerCells[spanBefore + 3] = totals.totalAmount;
+  columns.totalColumns.forEach((col, i) => {
+    footerCells[columns.subtotalCol + i] = totals[col.totalKey];
+  });
 
   return {
     headers,
     dataRows,
     footerCells,
     totals,
-    spanBeforeTotals: spanBefore,
-    colCount: headers.length,
-    /** 费用列在表头中的 0-based 起始索引 */
-    feeColStart: 4,
-    /** 小计/服务费/税费/合计列索引 */
-    subtotalCol: spanBefore,
-    serviceCol: spanBefore + 1,
-    taxCol: spanBefore + 2,
-    totalCol: spanBefore + 3,
-    remarksCol: spanBefore + 4,
+    columns,
+    spanBeforeTotals: columns.spanBeforeTotals,
+    colCount: columns.colCount,
+    feeColStart: columns.feeColStart,
+    subtotalCol: columns.subtotalCol,
+    serviceCol: columns.serviceCol,
+    taxCol: columns.taxCol,
+    totalCol: columns.totalCol,
+    remarksCol: columns.remarksCol,
+    totalColumns: columns.totalColumns,
+  };
+}
+
+/** 合并导出 Excel Summary（单场报价列表） */
+function buildBundleSummaryTableData(quotes) {
+  const columns = buildSummaryColumnModel({ quotes: quotes || [] });
+  const headers = columns.headers;
+  const dataRows = (quotes || []).map((q) => ({
+    quote: q,
+    cells: buildRowCellsFromQuote(q, columns),
+  }));
+  let subtotalExTax = 0;
+  let serviceCharge = 0;
+  let taxAmount = 0;
+  let totalAmount = 0;
+  (quotes || []).forEach((q) => {
+    subtotalExTax += Number(q.subtotal_ex_tax) || 0;
+    serviceCharge += Number(q.service_charge) || 0;
+    taxAmount += Number(q.tax_amount) || 0;
+    totalAmount += Number(q.total_amount) || 0;
+  });
+  const totals = { subtotalExTax, serviceCharge, taxAmount, totalAmount };
+  const footerCells = new Array(headers.length).fill('');
+  footerCells[0] = '多场含税总计';
+  columns.totalColumns.forEach((col, i) => {
+    footerCells[columns.subtotalCol + i] = totals[col.totalKey];
+  });
+  return {
+    headers,
+    dataRows,
+    footerCells,
+    totals,
+    columns,
+    spanBeforeTotals: columns.spanBeforeTotals,
+    remarksCol: columns.remarksCol,
+    totalCol: columns.totalCol,
+    feeColStart: columns.feeColStart,
   };
 }
 
@@ -120,6 +165,9 @@ module.exports = {
   colsBeforeTotals,
   getMultiTableHeaders,
   buildMultiPreviewTableData,
+  buildBundleSummaryTableData,
   sanitizeSessionRemarks,
   isMultiQuote,
+  buildSummaryColumnModel,
+  TOTAL_COLUMN_DEFS,
 };

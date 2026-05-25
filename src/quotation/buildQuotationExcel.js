@@ -1,8 +1,96 @@
 const path = require('path');
 const fs = require('fs');
 const ExcelJS = require('exceljs');
-const { buildMultiPreviewTableData, isMultiQuote, fmtNum } = require('./multiPreviewTable');
+const {
+  buildMultiPreviewTableData,
+  buildBundleSummaryTableData,
+  isMultiQuote,
+  fmtNum,
+} = require('./multiPreviewTable');
 const { groupItems, calcTotals, itemSubtotal } = require('./buildQuotationPdf');
+const { formatSectionHeaderLabel } = require('./quotationCodes');
+const { quoteSheetDisplayName } = require('./quoteSheetLabel');
+const { toCalendarDateYmd } = require('./calendarDate');
+
+const COL_QTY = 4;
+const COL_PRICE = 6;
+const COL_LINE_SUBTOTAL = 7;
+
+function excelColLetter(colIndex) {
+  let n = colIndex;
+  let s = '';
+  while (n > 0) {
+    s = String.fromCharCode(64 + ((n - 1) % 26) + 1) + s;
+    n = Math.floor((n - 1) / 26);
+  }
+  return s;
+}
+
+/** 自动计算单元格：写入 Excel 公式并附带当前结果（与页面 formula-field 一致） */
+function setFormulaCell(cell, formula, result, numFmt = '#,##0.00') {
+  cell.value = { formula, result: Number(result) || 0 };
+  if (numFmt) cell.numFmt = numFmt;
+}
+
+function sumRefs(refs) {
+  if (!refs.length) return '0';
+  return `SUM(${refs.join(',')})`;
+}
+
+function applySummaryMoneyFormulas(row, rowNum, columns, cells) {
+  const feeStart = columns.feeColStart + 1;
+  const feeEnd = columns.feeColEnd >= 0 ? columns.feeColEnd + 1 : null;
+  const feeRange =
+    feeEnd != null
+      ? `${excelColLetter(feeStart)}${rowNum}:${excelColLetter(feeEnd)}${rowNum}`
+      : null;
+  const letterAt = (ci) => excelColLetter(ci + 1);
+
+  columns.totalColumns.forEach((colDef, ti) => {
+    const ci = columns.spanBeforeTotals + ti;
+    const cell = row.getCell(ci + 1);
+    const val = cells[ci];
+    if (colDef.key === 'subtotal_ex_tax') {
+      if (feeRange) setFormulaCell(cell, `SUM(${feeRange})`, val);
+      else {
+        cell.value = Number(val) || 0;
+        cell.numFmt = '#,##0.00';
+      }
+    } else if (colDef.key === 'service_charge') {
+      const subCi = columns.colIndexForTotalKey('subtotal_ex_tax');
+      if (subCi >= 0) {
+        setFormulaCell(cell, `ROUND(${letterAt(subCi)}${rowNum}*0.1,2)`, val);
+      } else {
+        cell.value = Number(val) || 0;
+        cell.numFmt = '#,##0.00';
+      }
+    } else if (colDef.key === 'tax_amount') {
+      const subCi = columns.colIndexForTotalKey('subtotal_ex_tax');
+      const svcCi = columns.colIndexForTotalKey('service_charge');
+      if (subCi >= 0 && svcCi >= 0) {
+        setFormulaCell(
+          cell,
+          `ROUND((${letterAt(subCi)}${rowNum}+${letterAt(svcCi)}${rowNum})*0.06,2)`,
+          val
+        );
+      } else {
+        cell.value = Number(val) || 0;
+        cell.numFmt = '#,##0.00';
+      }
+    } else if (colDef.key === 'row_total') {
+      const parts = ['subtotal_ex_tax', 'service_charge', 'tax_amount']
+        .map((k) => columns.colIndexForTotalKey(k))
+        .filter((i) => i >= 0)
+        .map((i) => `${letterAt(i)}${rowNum}`);
+      if (parts.length) setFormulaCell(cell, parts.join('+'), val);
+      else {
+        cell.value = Number(val) || 0;
+        cell.numFmt = '#,##0.00';
+      }
+    }
+    cell.alignment = { horizontal: 'right', vertical: 'middle' };
+  });
+}
 
 const HEADER_FILL = 'FF948A54';
 const HEADER_FONT = { bold: true, color: { argb: 'FFFFFFFF' }, size: 10 };
@@ -158,9 +246,10 @@ async function buildMultiQuoteWorkbook(q) {
     views: [{ state: 'frozen', ySplit: 6, xSplit: 0 }],
   });
 
+  const cols = layout.columns;
   ws.columns = layout.headers.map((h, i) => ({
     key: `c${i}`,
-    width: i === layout.remarksCol ? 18 : i >= layout.feeColStart && i <= layout.totalCol ? 11 : 12,
+    width: i === layout.remarksCol ? 18 : i >= cols.feeColStart && i <= layout.totalCol ? 11 : 12,
   }));
 
   let rowNum = writeSheetHeaderInfo(ws, q, 1);
@@ -173,20 +262,30 @@ async function buildMultiQuoteWorkbook(q) {
   applyHeaderRowStyle(headerRow);
   rowNum += 1;
 
+  const firstDataRow = rowNum;
+
   layout.dataRows.forEach((dr, idx) => {
     const row = ws.getRow(rowNum);
     const alt = idx % 2 === 1;
     dr.cells.forEach((val, ci) => {
       const cell = row.getCell(ci + 1);
-      const isMoney = ci >= layout.feeColStart && ci <= layout.totalCol;
-      if (isMoney) {
+      const isSectionMoney = ci >= cols.feeColStart && ci < cols.spanBeforeTotals;
+      const isComputed = ci >= cols.spanBeforeTotals && ci <= layout.totalCol;
+      if (isSectionMoney) {
         cell.value = Number(val) || 0;
         cell.numFmt = '#,##0.00';
-      } else {
+      } else if (!isComputed) {
         if (ci === layout.remarksCol) cell.value = '';
         else cell.value = val === '—' ? '' : val;
       }
-      applyDataCellStyle(cell, { alignRight: isMoney, alt });
+      applyDataCellStyle(cell, { alignRight: isFee || isComputed, alt });
+    });
+    cols.totalColumns.forEach((colDef, ti) => {
+      const ci = cols.spanBeforeTotals + ti;
+      const cell = row.getCell(ci + 1);
+      cell.value = Number(dr.cells[ci]) || 0;
+      cell.numFmt = '#,##0.00';
+      cell.alignment = { horizontal: 'right', vertical: 'middle' };
     });
     rowNum += 1;
   });
@@ -202,10 +301,28 @@ async function buildMultiQuoteWorkbook(q) {
     cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: SECTION_FILL } };
     cell.border = ALL_BORDERS;
   }
-  [layout.subtotalCol, layout.serviceCol, layout.taxCol, layout.totalCol].forEach((ci) => {
+  const lastDataRow = rowNum - 1;
+  if (layout.dataRows.length > 0) {
+    cols.totalColumns.forEach((colDef, ti) => {
+      const ci = cols.spanBeforeTotals + ti;
+      const letter = excelColLetter(ci + 1);
+      setFormulaCell(
+        footerRow.getCell(ci + 1),
+        `SUM(${letter}${firstDataRow}:${letter}${lastDataRow})`,
+        layout.footerCells[ci]
+      );
+    });
+  } else {
+    cols.totalColumns.forEach((colDef, ti) => {
+      const ci = cols.spanBeforeTotals + ti;
+      const cell = footerRow.getCell(ci + 1);
+      cell.value = Number(layout.footerCells[ci]) || 0;
+      cell.numFmt = '#,##0.00';
+    });
+  }
+  cols.totalColumns.forEach((colDef, ti) => {
+    const ci = cols.spanBeforeTotals + ti;
     const cell = footerRow.getCell(ci + 1);
-    cell.value = Number(layout.footerCells[ci]) || 0;
-    cell.numFmt = '#,##0.00';
     cell.font = { bold: true, size: 10 };
     cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: SECTION_FILL } };
     cell.alignment = { vertical: 'middle', horizontal: 'right' };
@@ -256,18 +373,22 @@ function writeSingleQuoteSheet(workbook, ws, q, options = {}) {
   rowNum += 1;
 
   const groups = groupItems(q.items);
+  const itemSubtotalRows = [];
+  const qtyCol = excelColLetter(COL_QTY);
+  const priceCol = excelColLetter(COL_PRICE);
+  const subCol = excelColLetter(COL_LINE_SUBTOTAL);
+
   groups.forEach((sec) => {
+    const secItemRows = [];
     const secRow = ws.getRow(rowNum);
-    secRow.getCell(1).value = `${sec.section_code}.${sec.section_name}`;
+    secRow.getCell(1).value = formatSectionHeaderLabel(sec.section_code, sec.section_name);
     ws.mergeCells(rowNum, 1, rowNum, 6);
-    secRow.getCell(7).value = sec.sectionSubtotal;
-    secRow.getCell(7).numFmt = '#,##0.00';
     for (let c = 1; c <= 8; c++) {
       const cell = secRow.getCell(c);
       cell.font = { bold: true, size: 10 };
       cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: SECTION_FILL } };
       cell.border = ALL_BORDERS;
-      if (c === 7) cell.alignment = { horizontal: 'right', vertical: 'middle' };
+      if (c === COL_LINE_SUBTOTAL) cell.alignment = { horizontal: 'right', vertical: 'middle' };
     }
     rowNum += 1;
 
@@ -276,17 +397,20 @@ function writeSingleQuoteSheet(workbook, ws, q, options = {}) {
       sub.items.forEach((it, idx) => {
         const row = ws.getRow(rowNum);
         row.getCell(1).value = idx === 0 ? sub.subsection_code : '';
-        row.getCell(2).value = idx === 0 ? sub.subsection_name : '';
+        row.getCell(2).value = it.item_category || (idx === 0 ? sub.subsection_name : '') || '';
         row.getCell(3).value = it.description || '';
-        row.getCell(4).value = parseFloat(it.quantity) || 0;
+        row.getCell(COL_QTY).value = parseFloat(it.quantity) || 0;
         row.getCell(5).value = it.unit || '';
-        row.getCell(6).value = parseFloat(it.unit_price) || 0;
-        row.getCell(6).numFmt = '#,##0.00';
-        row.getCell(7).value = itemSubtotal(it);
-        row.getCell(7).numFmt = '#,##0.00';
+        row.getCell(COL_PRICE).value = parseFloat(it.unit_price) || 0;
+        row.getCell(COL_PRICE).numFmt = '#,##0.00';
+        const lineFormula = `ROUND(${qtyCol}${rowNum}*${priceCol}${rowNum},2)`;
+        setFormulaCell(row.getCell(COL_LINE_SUBTOTAL), lineFormula, itemSubtotal(it));
+        row.getCell(COL_LINE_SUBTOTAL).alignment = { horizontal: 'right', vertical: 'middle' };
         row.getCell(8).value = it.remarks || '';
+        itemSubtotalRows.push(rowNum);
+        secItemRows.push(rowNum);
         row.eachCell((cell, col) => {
-          applyDataCellStyle(cell, { alignRight: col >= 4 && col <= 7, alt: false });
+          applyDataCellStyle(cell, { alignRight: col >= COL_QTY && col <= COL_LINE_SUBTOTAL, alt: false });
         });
         rowNum += 1;
       });
@@ -297,28 +421,48 @@ function writeSingleQuoteSheet(workbook, ws, q, options = {}) {
         ws.getCell(start, 2).alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
       }
     });
+
+    const secRefs = secItemRows.map((r) => `${subCol}${r}`);
+    setFormulaCell(
+      secRow.getCell(COL_LINE_SUBTOTAL),
+      sumRefs(secRefs),
+      sec.sectionSubtotal
+    );
+    secRow.getCell(COL_LINE_SUBTOTAL).alignment = { horizontal: 'right', vertical: 'middle' };
   });
 
   const t = calcTotals(q.items, q.service_rate, q.tax_rate);
   const pct = Math.round(t.serviceRate * 100);
+  const itemRefs = itemSubtotalRows.map((r) => `${subCol}${r}`);
+  const subtotalFormula = sumRefs(itemRefs);
+
   const footers = [
-    ['1. 不含税小计 Subtotal excluding Tax', t.subtotalExTax],
-    [`2. 公司服务费 Service Charge(${pct}%)`, t.serviceCharge],
-    ['3. 国家及地方政府税收(6%) Government Tax', t.taxAmount],
-    ['4. 含税总计 TOTAL', t.totalAmount],
+    ['1. 不含税小计 Subtotal excluding Tax', subtotalFormula, t.subtotalExTax],
+    [`2. 公司服务费 Service Charge(${pct}%)`, null, t.serviceCharge],
+    [`3. 国家及地方政府税收(${Math.round((parseFloat(q.tax_rate) || 0.06) * 100)}%) Government Tax`, null, t.taxAmount],
+    ['4. 含税总计 TOTAL', null, t.totalAmount],
   ];
-  footers.forEach(([label, val]) => {
+  const subFooterRow = rowNum;
+  footers.forEach(([label, presetFormula, val], idx) => {
     const row = ws.getRow(rowNum);
     row.getCell(1).value = label;
     ws.mergeCells(rowNum, 1, rowNum, 6);
-    row.getCell(7).value = val;
-    row.getCell(7).numFmt = '#,##0.00';
+    row.getCell(1).alignment = { horizontal: 'right', vertical: 'middle', wrapText: true };
+    let formula = presetFormula;
+    if (idx === 1) {
+      formula = `ROUND(${subCol}${subFooterRow}*${t.serviceRate},2)`;
+    } else if (idx === 2) {
+      formula = `ROUND((${subCol}${subFooterRow}+${subCol}${subFooterRow + 1})*${t.taxRate || 0.06},2)`;
+    } else if (idx === 3) {
+      formula = `${subCol}${subFooterRow}+${subCol}${subFooterRow + 1}+${subCol}${subFooterRow + 2}`;
+    }
+    setFormulaCell(row.getCell(COL_LINE_SUBTOTAL), formula, val);
+    row.getCell(COL_LINE_SUBTOTAL).alignment = { horizontal: 'right', vertical: 'middle' };
     for (let c = 1; c <= 8; c++) {
       const cell = row.getCell(c);
       cell.font = { bold: true, size: 10 };
       cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: SECTION_FILL } };
       cell.border = ALL_BORDERS;
-      if (c === 1 || c === 7) cell.alignment = { horizontal: 'right', vertical: 'middle' };
     }
     rowNum += 1;
   });
@@ -346,112 +490,87 @@ function safeSheetName(name, fallback) {
 }
 
 function writeBundleSummarySheet(workbook, ws, rows) {
-  ws.columns = [
-    { width: 12 }, // 日期
-    { width: 10 }, // 城市
-    { width: 14 }, // 客户名称
-    { width: 14 }, // 类型
-    { width: 10 }, // 人员沟通费
-    { width: 10 }, // 设计费
-    { width: 10 }, // 往返运费
-    { width: 10 }, // 印刷品
-    { width: 12 }, // 摄影师&相册
-    { width: 11 }, // 小计
-    { width: 11 }, // 服务费
-    { width: 10 }, // 税费
-    { width: 11 }, // 合计
-    { width: 14 }, // 备注
-  ];
-  const header = [
-    '日期',
-    '城市',
-    '客户名称',
-    '类型',
-    '人员沟通费',
-    '设计费',
-    '往返运费',
-    '印刷品',
-    '摄影师&相册',
-    '小计',
-    '服务费10%',
-    '税费6%',
-    '合计',
-    '备注',
-  ];
+  const table = buildBundleSummaryTableData(rows);
+  const cols = table.columns;
+  ws.columns = table.headers.map((h, i) => ({
+    width: i === table.remarksCol ? 14 : i >= cols.feeColStart && i <= table.totalCol ? 11 : 12,
+  }));
   const headSource = rows[0] || {};
   let rowNum = writeSheetHeaderInfo(ws, headSource, 1);
   applyHeaderGridBorders(ws, 1, rowNum - 1, ws.columns.length);
   addLogoToSheetRightAligned(workbook, ws, ws.columns.length, 1, 106, 40);
   rowNum += 1;
   const head = ws.getRow(rowNum);
-  header.forEach((h, i) => {
+  table.headers.forEach((h, i) => {
     head.getCell(i + 1).value = h;
   });
   applyHeaderRowStyle(head);
   rowNum += 1;
-  let totalSub = 0;
-  let totalSvc = 0;
-  let totalTax = 0;
-  let totalAmt = 0;
-  rows.forEach((r, idx) => {
+  const firstDataRow = rowNum;
+
+  table.dataRows.forEach((dr, idx) => {
     const row = ws.getRow(rowNum);
     const alt = idx % 2 === 1;
-    const vals = [
-      r.event_date || '',
-      r.city || '',
-      r.customer_name || '',
-      r.event_type || '',
-      0,
-      0,
-      0,
-      0,
-      0,
-    ];
-    vals.forEach((val, i) => {
-      const cell = row.getCell(i + 1);
-      cell.value = val;
-      applyDataCellStyle(cell, { alignRight: i >= 4, alt });
-      if (i >= 4) cell.numFmt = '#,##0.00';
+    dr.cells.forEach((val, ci) => {
+      const cell = row.getCell(ci + 1);
+      const isFee = ci >= cols.feeColStart && ci < cols.spanBeforeTotals;
+      const isMoney = ci >= cols.spanBeforeTotals && ci <= table.totalCol;
+      if (isFee || isMoney) {
+        cell.value = Number(val) || 0;
+        cell.numFmt = '#,##0.00';
+      } else {
+        cell.value = val === '—' ? '' : val;
+      }
+      applyDataCellStyle(cell, { alignRight: isFee || isMoney, alt });
     });
-    const sub = Number(r.subtotal_ex_tax) || 0;
-    const svc = Number(r.service_charge) || 0;
-    const tax = Number(r.tax_amount) || 0;
-    const amtVal = Number(r.total_amount) || 0;
-    totalSub += sub;
-    totalSvc += svc;
-    totalTax += tax;
-    totalAmt += amtVal;
-    [sub, svc, tax, amtVal].forEach((v, i) => {
-      const c = row.getCell(10 + i);
-      c.value = v;
-      c.numFmt = '#,##0.00';
-      applyDataCellStyle(c, { alignRight: true, alt });
-    });
-    const remark = row.getCell(14);
-    remark.value = '';
-    applyDataCellStyle(remark, { alignRight: false, alt });
     rowNum += 1;
   });
+
   const foot = ws.getRow(rowNum);
-  ws.mergeCells(rowNum, 1, rowNum, 9);
+  const span = table.spanBeforeTotals;
+  ws.mergeCells(rowNum, 1, rowNum, span);
   foot.getCell(1).value = '多场含税总计';
   foot.getCell(1).font = { bold: true, size: 10 };
   foot.getCell(1).alignment = { vertical: 'middle', horizontal: 'right' };
-  for (let c = 1; c <= 9; c++) {
+  for (let c = 1; c <= span; c++) {
     const cell = foot.getCell(c);
     cell.border = ALL_BORDERS;
     cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: SECTION_FILL } };
   }
-  [totalSub, totalSvc, totalTax, totalAmt].forEach((v, i) => {
-    const c = foot.getCell(10 + i);
-    c.value = v;
-    c.numFmt = '#,##0.00';
+  const lastDataRow = rowNum - 1;
+  if (table.dataRows.length > 0) {
+    cols.sectionColumns.forEach((colDef, si) => {
+      const ci = cols.feeColStart + si;
+      const letter = excelColLetter(ci + 1);
+      let footSum = 0;
+      table.dataRows.forEach((dr) => {
+        footSum += Number(dr.cells[ci]) || 0;
+      });
+      setFormulaCell(
+        foot.getCell(ci + 1),
+        `SUM(${letter}${firstDataRow}:${letter}${lastDataRow})`,
+        footSum
+      );
+    });
+    cols.totalColumns.forEach((colDef, ti) => {
+      const ci = cols.spanBeforeTotals + ti;
+      const letter = excelColLetter(ci + 1);
+      setFormulaCell(
+        foot.getCell(ci + 1),
+        `SUM(${letter}${firstDataRow}:${letter}${lastDataRow})`,
+        table.footerCells[ci]
+      );
+    });
+  }
+  cols.totalColumns.forEach((colDef, ti) => {
+    const ci = cols.spanBeforeTotals + ti;
+    const c = foot.getCell(ci + 1);
     c.font = { bold: true, size: 10 };
     c.alignment = { vertical: 'middle', horizontal: 'right' };
     c.border = ALL_BORDERS;
     c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: SECTION_FILL } };
   });
-  const remarkFoot = foot.getCell(14);
+  const remarkFoot = foot.getCell(table.remarksCol + 1);
   remarkFoot.border = ALL_BORDERS;
   remarkFoot.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: SECTION_FILL } };
 }
@@ -464,7 +583,7 @@ async function buildBundledSingleQuotesWorkbook(quotes) {
   writeBundleSummarySheet(wb, summarySheet, quotes);
   const used = new Set(['Summary']);
   quotes.forEach((q, idx) => {
-    const base = safeSheetName(q.project_name || q.project_code, `场次${idx + 1}`);
+    const base = safeSheetName(quoteSheetDisplayName(q, idx), `场次${idx + 1}`);
     let name = base;
     let seq = 2;
     while (used.has(name)) {
@@ -486,7 +605,7 @@ async function buildBundledSingleQuotesWorkbookWithLayout(quotes, layoutByQuoteI
   writeBundleSummarySheet(wb, summarySheet, quotes);
   const used = new Set(['Summary']);
   quotes.forEach((q, idx) => {
-    const base = safeSheetName(q.project_name || q.project_code, `场次${idx + 1}`);
+    const base = safeSheetName(quoteSheetDisplayName(q, idx), `场次${idx + 1}`);
     let name = base;
     let seq = 2;
     while (used.has(name)) {

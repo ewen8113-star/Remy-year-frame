@@ -2,6 +2,8 @@ const express = require('express');
 const router = express.Router();
 const db = require('../config/database');
 const { ensureQuotationTables } = require('../quotation/ensureQuotationTables');
+const { applyEventTemplateItemDefaults } = require('../quotation/eventTemplateRows');
+const { normalizeItemCategory } = require('../quotation/quotationItemCategories');
 const { streamQuotationPdf, streamBundledQuotationPdf } = require('../quotation/buildQuotationPdf');
 const {
   streamQuotationExcel,
@@ -55,6 +57,7 @@ function normalizeItemRow(raw, sortOrder = 0) {
     subsection_code: String(raw.subsection_code || '').trim(),
     subsection_name: String(raw.subsection_name || '').trim(),
     description: String(raw.description || '').trim(),
+    item_category: normalizeItemCategory(raw.item_category),
     quantity: qty,
     unit: raw.unit != null ? String(raw.unit).trim() : '',
     unit_price: price,
@@ -162,17 +165,35 @@ function projectCodesSummary(sessions) {
   return first.slice(0, Math.max(1, maxLen - suffix.length)) + suffix;
 }
 
+const { toCalendarDateYmd } = require('../quotation/calendarDate');
+const { renumberEventQuotationSections } = require('../quotation/quotationCodes');
+
 function normalizeEventDate(raw) {
-  if (raw == null || raw === '') return null;
-  const s = String(raw).trim();
-  const m = s.match(/^(\d{4}-\d{2}-\d{2})/);
-  if (m) return m[1];
-  const dt = new Date(s);
-  if (Number.isNaN(dt.getTime())) return null;
-  const y = dt.getFullYear();
-  const mo = String(dt.getMonth() + 1).padStart(2, '0');
-  const d = String(dt.getDate()).padStart(2, '0');
-  return `${y}-${mo}-${d}`;
+  const ymd = toCalendarDateYmd(raw);
+  return ymd || null;
+}
+
+/** 单场报价展示/保存：有关联场次时以 activities.date 为准 */
+function resolveQuotationDisplayEventDate(row) {
+  const fromActivity = normalizeEventDate(row?.activity_date);
+  const fromQuote = normalizeEventDate(row?.event_date);
+  const aid = parseInt(row?.activity_id, 10);
+  if (Number.isFinite(aid) && fromActivity) return fromActivity;
+  return fromQuote || fromActivity || null;
+}
+
+/** 合并预览/导出：各场次 Sheet 按活动日期从早到晚（无日期排最后） */
+function sortSingleQuotesByEventDateAsc(quotes) {
+  return (quotes || []).slice().sort((a, b) => {
+    const da = normalizeEventDate(a?.event_date) || '';
+    const db = normalizeEventDate(b?.event_date) || '';
+    if (da !== db) {
+      if (!da) return 1;
+      if (!db) return -1;
+      return da.localeCompare(db);
+    }
+    return (Number(a?.id) || 0) - (Number(b?.id) || 0);
+  });
 }
 
 async function resolveLinkedActivity(conn, activityId, yearFrameIdHint) {
@@ -233,14 +254,18 @@ async function enrichItemsWithTemplateDefaults(items) {
      FROM quotation_template_sections WHERE applicable_type = 'EVENT' AND is_active = 1`
   );
   const map = new Map();
+  const bySub = new Map();
   tplRows.forEach((t) => {
     map.set(templateItemKey(t.subsection_code, t.description), t);
+    if (!bySub.has(t.subsection_code)) bySub.set(t.subsection_code, t);
   });
   return items.map((it) => {
     if (Number(it.is_custom) === 1) return it;
     const price = parseFloat(it.unit_price);
     if (Number.isFinite(price) && price > 0) return it;
-    const tpl = map.get(templateItemKey(it.subsection_code, it.description));
+    const tpl =
+      map.get(templateItemKey(it.subsection_code, it.description)) ||
+      bySub.get(String(it.subsection_code || '').trim());
     if (!tpl) return it;
     const def = parseFloat(tpl.default_unit_price);
     if (!Number.isFinite(def) || def <= 0) return it;
@@ -259,7 +284,8 @@ async function loadQuotation(id) {
     `SELECT q.*,
             COALESCE(q.project_code, act.project_code) AS activity_project_code,
             act.activity_type AS activity_type_name,
-            act.brand AS activity_brand
+            act.brand AS activity_brand,
+            act.date AS activity_date
      FROM quotations q
      LEFT JOIN activities act ON act.id = q.activity_id
      WHERE q.id = ?`,
@@ -272,10 +298,12 @@ async function loadQuotation(id) {
   );
   const head = heads[0];
   const linked_sessions = parseLinkedSessions(head.linked_sessions);
-  const enrichedItems = await enrichItemsWithTemplateDefaults(items);
+  const syncedItems = applyEventTemplateItemDefaults(items);
+  const enrichedItems = await enrichItemsWithTemplateDefaults(syncedItems);
+  const eventDate = resolveQuotationDisplayEventDate(head);
   return {
     ...head,
-    event_date: normalizeEventDate(head.event_date),
+    event_date: eventDate,
     quote_mode: head.quote_mode || 'single',
     linked_sessions,
     merged_from_quote_ids: parseJsonArray(head.merged_from_quote_ids),
@@ -339,12 +367,12 @@ async function loadSingleQuotesForMultiQuote(multiQuote) {
     .filter(Number.isFinite);
   if (mergedIds.length) {
     const ordered = await loadOrderedSingleQuotesByIds(mergedIds);
-    if (ordered.length) return ordered;
+    if (ordered.length) return sortSingleQuotesByEventDateAsc(ordered);
   }
   const qtNos = extractQuotationNosFromSessions(multiQuote);
   if (qtNos.length) {
     const byNo = await loadSingleQuotesByQuotationNos(qtNos);
-    if (byNo.length) return byNo;
+    if (byNo.length) return sortSingleQuotesByEventDateAsc(byNo);
   }
   const sessions = parseLinkedSessions(multiQuote?.linked_sessions);
   const orderedActivityIds = sessions
@@ -368,7 +396,7 @@ async function loadSingleQuotesForMultiQuote(multiQuote) {
     .map((aid) => latestByActivity.get(Number(aid)))
     .filter(Number.isFinite);
   if (!orderedQuoteIds.length) return [];
-  return loadOrderedSingleQuotesByIds(orderedQuoteIds);
+  return sortSingleQuotesByEventDateAsc(await loadOrderedSingleQuotesByIds(orderedQuoteIds));
 }
 
 function isMergedExportQuote(row) {
@@ -407,7 +435,8 @@ router.get('/', async (req, res) => {
       q.linked_sessions,
       q.project_name, q.client_brand, q.city, q.customer_name, q.event_date, q.event_type,
       q.total_amount, q.status, q.created_at, q.updated_at,
-      act.activity_type AS activity_type_name
+      act.activity_type AS activity_type_name,
+      act.date AS activity_date
       FROM quotations q
       LEFT JOIN activities act ON act.id = q.activity_id
       WHERE 1=1`;
@@ -435,7 +464,11 @@ router.get('/', async (req, res) => {
     const normalized = rows.map((r) => ({
       ...r,
       quote_mode: r.quote_mode || 'single',
-      linked_sessions: parseLinkedSessions(r.linked_sessions),
+      linked_sessions: parseLinkedSessions(r.linked_sessions).map((s) => ({
+        ...s,
+        event_date: normalizeEventDate(s.event_date),
+      })),
+      event_date: resolveQuotationDisplayEventDate(r),
     }));
     // 隐藏已被多场报价覆盖的单场报价，避免列表重复展示
     const mergedActivityIds = new Set();
@@ -610,7 +643,7 @@ router.post('/bundle/preview', async (req, res) => {
     }
     const uniqIds = [...new Set(orderedIds)];
     if (!uniqIds.length) return res.status(400).json({ error: '请至少选择 1 条报价' });
-    const quotes = await loadOrderedSingleQuotesByIds(orderedIds);
+    const quotes = sortSingleQuotesByEventDateAsc(await loadOrderedSingleQuotesByIds(orderedIds));
     if (quotes.length !== orderedIds.length) return res.status(404).json({ error: '部分报价不存在，请刷新后重试' });
     if (quotes.some((q) => String(q.quote_mode || 'single') !== 'single')) {
       return res.status(400).json({ error: '导出报价预览仅支持单场报价' });
@@ -675,7 +708,7 @@ router.post('/bundle/export-pdf', async (req, res) => {
       : [];
     const uniqIds = [...new Set(ids)];
     if (uniqIds.length < 1) return res.status(400).json({ error: '请至少选择 1 条报价导出' });
-    const quotes = await loadQuotationsByIds(uniqIds);
+    const quotes = sortSingleQuotesByEventDateAsc(await loadQuotationsByIds(uniqIds));
     if (quotes.length !== uniqIds.length) return res.status(404).json({ error: '部分报价不存在，导出已取消' });
     if (quotes.some((q) => String(q.quote_mode || 'single') !== 'single')) {
       return res.status(400).json({ error: '仅支持单场报价导出' });
@@ -706,14 +739,14 @@ router.post('/bundle/export-excel', async (req, res) => {
       : [];
     const uniqIds = [...new Set(ids)];
     if (uniqIds.length < 1) return res.status(400).json({ error: '请至少选择 1 条报价导出' });
-    const quotes = await loadQuotationsByIds(uniqIds);
+    const quotes = sortSingleQuotesByEventDateAsc(await loadQuotationsByIds(uniqIds));
     if (quotes.length !== uniqIds.length) return res.status(404).json({ error: '部分报价不存在，导出已取消' });
     if (quotes.some((q) => String(q.quote_mode || 'single') !== 'single')) {
       return res.status(400).json({ error: '仅支持单场报价导出' });
     }
     const yearSet = new Set(quotes.map((q) => Number(q.year_frame_id)));
     if (yearSet.size > 1) return res.status(400).json({ error: '仅支持同一财年的报价合并导出' });
-    const ordered = quotes.slice();
+    const ordered = quotes;
     const baseName = `${ordered[0].project_name || '报价'}-summary`;
     const layoutByQuoteId = req.body?.layoutByQuoteId && typeof req.body.layoutByQuoteId === 'object'
       ? req.body.layoutByQuoteId
@@ -733,7 +766,7 @@ router.post('/bundle/create-merged', async (req, res) => {
       : [];
     const uniqIds = [...new Set(ids)];
     if (!uniqIds.length) return res.status(400).json({ error: '请至少选择 1 条报价' });
-    const quotes = await loadQuotationsByIds(uniqIds);
+    const quotes = sortSingleQuotesByEventDateAsc(await loadQuotationsByIds(uniqIds));
     if (quotes.length !== uniqIds.length) return res.status(404).json({ error: '部分报价不存在，请刷新后重试' });
     if (quotes.some((q) => String(q.quote_mode || 'single') !== 'single')) {
       return res.status(400).json({ error: '仅支持单场报价合并生成' });
@@ -803,7 +836,7 @@ router.post('/bundle/create-merged', async (req, res) => {
         service_rate, tax_rate,
         subtotal_ex_tax, service_charge, tax_amount, total_amount,
         status, version
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', 1)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', 1)`,
       [
         quotationNo,
         'EVENT',
@@ -833,8 +866,8 @@ router.post('/bundle/create-merged', async (req, res) => {
       await conn.query(
         `INSERT INTO quotation_items (
           quotation_id, section_code, section_name, subsection_code, subsection_name,
-          description, quantity, unit, unit_price, subtotal, remarks, sort_order, is_custom, is_template
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          description, item_category, quantity, unit, unit_price, subtotal, remarks, sort_order, is_custom, is_template
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           qid,
           it.section_code,
@@ -842,6 +875,7 @@ router.post('/bundle/create-merged', async (req, res) => {
           it.subsection_code,
           it.subsection_name,
           it.description,
+          it.item_category || '',
           it.quantity,
           it.unit,
           it.unit_price,
@@ -926,6 +960,7 @@ router.post('/', async (req, res) => {
               subsection_code: t.subsection_code,
               subsection_name: t.subsection_name,
               description: t.description,
+              item_category: t.item_category || '',
               quantity: 0,
               unit: t.default_unit,
               unit_price: t.default_unit_price,
@@ -939,6 +974,9 @@ router.post('/', async (req, res) => {
       }
     } else {
       items = items.map((it, i) => normalizeItemRow(it, i));
+    }
+    if (items.length && String(body.type || 'EVENT').toUpperCase() === 'EVENT' && quoteMode !== 'multi') {
+      items = renumberEventQuotationSections(items);
     }
 
     if (!items.length && quoteMode !== 'multi') {
@@ -991,7 +1029,9 @@ router.post('/', async (req, res) => {
     const eventDate =
       quoteMode === 'multi'
         ? firstSession?.event_date || null
-        : normalizeEventDate(body.event_date) || normalizeEventDate(act.activity_date) || null;
+        : normalizeEventDate(act?.activity_date) ||
+          normalizeEventDate(body.event_date) ||
+          null;
     const cityVal =
       quoteMode === 'multi'
         ? firstSession?.city || null
@@ -1045,8 +1085,8 @@ router.post('/', async (req, res) => {
       await conn.query(
         `INSERT INTO quotation_items (
           quotation_id, section_code, section_name, subsection_code, subsection_name,
-          description, quantity, unit, unit_price, subtotal, remarks, sort_order, is_custom, is_template
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          description, item_category, quantity, unit, unit_price, subtotal, remarks, sort_order, is_custom, is_template
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           qid,
           it.section_code,
@@ -1054,6 +1094,7 @@ router.post('/', async (req, res) => {
           it.subsection_code,
           it.subsection_name,
           it.description,
+          it.item_category || '',
           it.quantity,
           it.unit,
           it.unit_price,
@@ -1088,11 +1129,17 @@ router.put('/:id', async (req, res) => {
     const id = parseInt(req.params.id, 10);
     if (!Number.isFinite(id)) return res.status(400).json({ error: '无效 ID' });
     const body = req.body || {};
-    const [exist] = await conn.query('SELECT id, type, quote_mode, year_frame_id FROM quotations WHERE id = ?', [id]);
+    const [exist] = await conn.query(
+      'SELECT id, type, quote_mode, year_frame_id, activity_id FROM quotations WHERE id = ?',
+      [id]
+    );
     if (!exist.length) return res.status(404).json({ error: '报价不存在' });
     const quoteMode = exist[0].quote_mode || 'single';
 
     let items = Array.isArray(body.items) ? body.items.map((it, i) => normalizeItemRow(it, i)) : null;
+    if (items && exist[0].type === 'EVENT' && quoteMode !== 'multi') {
+      items = renumberEventQuotationSections(items);
+    }
     const serviceRate = body.service_rate != null ? body.service_rate : undefined;
     const taxRate = body.tax_rate != null ? body.tax_rate : undefined;
 
@@ -1118,6 +1165,18 @@ router.put('/:id', async (req, res) => {
       eventTypeUpdate = sessions[0]?.event_type || null;
       multiTotals = calcMultiGrandTotals(sessions);
       items = buildQuotationItemsFromMultiSessions(sessions).map((it, i) => normalizeItemRow(it, i));
+    } else if (quoteMode !== 'multi' && exist[0].type === 'EVENT') {
+      const aid =
+        Number.isFinite(activityIdUpdate) && activityIdUpdate > 0
+          ? activityIdUpdate
+          : parseInt(exist[0].activity_id, 10);
+      if (Number.isFinite(aid) && aid > 0) {
+        const linked = await resolveLinkedActivity(conn, aid, exist[0].year_frame_id);
+        if (!linked.error) {
+          eventDateUpdate =
+            normalizeEventDate(linked.activity.activity_date) || eventDateUpdate;
+        }
+      }
     }
 
     if (items) {
@@ -1171,8 +1230,8 @@ router.put('/:id', async (req, res) => {
         await conn.query(
           `INSERT INTO quotation_items (
             quotation_id, section_code, section_name, subsection_code, subsection_name,
-            description, quantity, unit, unit_price, subtotal, remarks, sort_order, is_custom, is_template
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            description, item_category, quantity, unit, unit_price, subtotal, remarks, sort_order, is_custom, is_template
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
             id,
             it.section_code,
@@ -1180,6 +1239,7 @@ router.put('/:id', async (req, res) => {
             it.subsection_code,
             it.subsection_name,
             it.description,
+            it.item_category || '',
             it.quantity,
             it.unit,
             it.unit_price,
@@ -1287,8 +1347,8 @@ router.post('/:id/duplicate', async (req, res) => {
       await conn.query(
         `INSERT INTO quotation_items (
           quotation_id, section_code, section_name, subsection_code, subsection_name,
-          description, quantity, unit, unit_price, subtotal, remarks, sort_order, is_custom, is_template
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          description, item_category, quantity, unit, unit_price, subtotal, remarks, sort_order, is_custom, is_template
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           qid,
           it.section_code,
@@ -1296,6 +1356,7 @@ router.post('/:id/duplicate', async (req, res) => {
           it.subsection_code,
           it.subsection_name,
           it.description,
+          it.item_category || '',
           it.quantity,
           it.unit,
           it.unit_price,

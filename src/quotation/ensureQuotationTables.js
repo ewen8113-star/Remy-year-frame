@@ -1,26 +1,13 @@
 /**
  * 报价单表结构 + 活动场次模版种子（幂等）
  */
-const EVENT_TEMPLATE_ROWS = [
-  { section_code: '1', section_name: '物料制作费用', subsection_code: '1.01', subsection_name: '物料制作&采购', description: '菜单', default_unit: '项', default_unit_price: 8, default_remarks: '300铜版纸，专色印刷覆哑膜，双面打印', sort_order: 10 },
-  { section_code: '1', section_name: '物料制作费用', subsection_code: '1.01', subsection_name: '物料制作&采购', description: '名卡', default_unit: '份', default_unit_price: 12, default_remarks: '', sort_order: 11 },
-  { section_code: '1', section_name: '物料制作费用', subsection_code: '1.01', subsection_name: '物料制作&采购', description: '背板指示牌等 (KT 板)', default_unit: '项', default_unit_price: 100, default_remarks: '指示牌*1 :600*900mm 写真覆亚膜KT板', sort_order: 12 },
-  { section_code: '1', section_name: '物料制作费用', subsection_code: '1.01', subsection_name: '物料制作&采购', description: '设计费', default_unit: '项', default_unit_price: 200, default_remarks: '', sort_order: 13 },
-  { section_code: '1', section_name: '物料制作费用', subsection_code: '1.01', subsection_name: '物料制作&采购', description: '鲜花', default_unit: '份', default_unit_price: 500, default_remarks: '', sort_order: 14 },
-  { section_code: '1', section_name: '物料制作费用', subsection_code: '1.01', subsection_name: '物料制作&采购', description: '品鉴物料', default_unit: '份', default_unit_price: 40, default_remarks: '', sort_order: 15 },
-  { section_code: '2', section_name: '物流运输费用', subsection_code: '2.01', subsection_name: '物料运输', description: '陈列道具\n桌面陈列&\n品鉴杯子', default_unit: '公里/来回', default_unit_price: 7, default_remarks: '广州-深圳往返', sort_order: 20 },
-  { section_code: '2', section_name: '物流运输费用', subsection_code: '2.01', subsection_name: '物料运输', description: '仓库理货费', default_unit: '次', default_unit_price: 100, default_remarks: '仓管人员出库理货&入库盘点', sort_order: 21 },
-  { section_code: '2', section_name: '物流运输费用', subsection_code: '2.01', subsection_name: '物料运输', description: '空瓶回收', default_unit: '场', default_unit_price: 100, default_remarks: '宴会现场管理及回收', sort_order: 22 },
-  { section_code: '3', section_name: '人员费用', subsection_code: '3.01', subsection_name: '执行人员', description: '督导', default_unit: '人次', default_unit_price: 800, default_remarks: '', sort_order: 30 },
-  { section_code: '3', section_name: '人员费用', subsection_code: '3.01', subsection_name: '执行人员', description: '兼职', default_unit: '人次', default_unit_price: 600, default_remarks: '', sort_order: 31 },
-  { section_code: '3', section_name: '人员费用', subsection_code: '3.01', subsection_name: '执行人员', description: '礼仪', default_unit: '人次', default_unit_price: 800, default_remarks: '', sort_order: 32 },
-  { section_code: '3', section_name: '人员费用', subsection_code: '3.01', subsection_name: '执行人员', description: '清洗/熨烫', default_unit: '份', default_unit_price: 80, default_remarks: '桌布，礼仪服装', sort_order: 33 },
-  { section_code: '3', section_name: '人员费用', subsection_code: '3.02', subsection_name: '人员差旅', description: '（高铁往返）', default_unit: '人', default_unit_price: 200, default_remarks: '按实结算，计费方式参照Logistics & Travel', sort_order: 34 },
-  { section_code: '3', section_name: '人员费用', subsection_code: '3.02', subsection_name: '人员差旅', description: '住宿', default_unit: '人', default_unit_price: 350, default_remarks: '', sort_order: 35 },
-  { section_code: '3', section_name: '人员费用', subsection_code: '3.02', subsection_name: '人员差旅', description: '餐补', default_unit: '人', default_unit_price: 100, default_remarks: '', sort_order: 36 },
-  { section_code: '3', section_name: '人员费用', subsection_code: '3.03', subsection_name: '摄影摄像团队', description: '摄影师', default_unit: '人次', default_unit_price: 2500, default_remarks: '', sort_order: 37 },
-  { section_code: '3', section_name: '人员费用', subsection_code: '3.03', subsection_name: '摄影摄像团队', description: '直播云相册', default_unit: '人次', default_unit_price: 1500, default_remarks: '', sort_order: 38 },
-];
+const {
+  EVENT_TEMPLATE_ROWS,
+  EVENT_TEMPLATE_DESC_LEGACY,
+  EVENT_TEMPLATE_DESC_SYNC_CODES,
+  EVENT_TEMPLATE_BY_SUBSECTION,
+  EVENT_TEMPLATE_SUBSECTION_LEGACY_MAP,
+} = require('./eventTemplateRows');
 
 async function seedEventTemplate(db) {
   const [cnt] = await db.query(
@@ -31,14 +18,15 @@ async function seedEventTemplate(db) {
     await db.query(
       `INSERT INTO quotation_template_sections (
         applicable_type, section_code, section_name, subsection_code, subsection_name,
-        description, default_unit, default_unit_price, default_remarks, sort_order, is_active
-      ) VALUES ('EVENT', ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
+        description, item_category, default_unit, default_unit_price, default_remarks, sort_order, is_active
+      ) VALUES ('EVENT', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
       [
         row.section_code,
         row.section_name,
         row.subsection_code,
         row.subsection_name,
         row.description,
+        row.item_category || '',
         row.default_unit,
         row.default_unit_price,
         row.default_remarks || null,
@@ -48,27 +36,101 @@ async function seedEventTemplate(db) {
   }
 }
 
-/** 将种子数据中的默认单价写回模版表（修复曾被清零的 default_unit_price） */
-async function syncEventTemplateDefaultPrices(db) {
+/** 同一 subsection_code 只保留一条活跃模版，其余停用 */
+async function dedupeEventTemplateSections(db) {
   for (const row of EVENT_TEMPLATE_ROWS) {
+    const [hits] = await db.query(
+      `SELECT id, description FROM quotation_template_sections
+       WHERE applicable_type = 'EVENT' AND subsection_code = ?
+       ORDER BY (description = ?) DESC, id ASC`,
+      [row.subsection_code, row.description]
+    );
+    if (!hits.length) continue;
+    const keepId = hits[0].id;
     await db.query(
       `UPDATE quotation_template_sections SET
-        section_code = ?, section_name = ?, subsection_name = ?,
-        default_unit = ?, default_unit_price = ?, default_remarks = ?, sort_order = ?
-      WHERE applicable_type = 'EVENT' AND subsection_code = ? AND description = ?`,
+        section_code = ?, section_name = ?, subsection_name = ?, description = ?, item_category = ?,
+        default_unit = ?, default_unit_price = ?, default_remarks = ?, sort_order = ?, is_active = 1
+      WHERE id = ?`,
       [
         row.section_code,
         row.section_name,
         row.subsection_name,
+        row.description,
+        row.item_category || '',
         row.default_unit,
         row.default_unit_price,
         row.default_remarks || null,
         row.sort_order,
-        row.subsection_code,
-        row.description,
+        keepId,
       ]
     );
+    const dupIds = hits.slice(1).map((h) => h.id);
+    if (dupIds.length) {
+      await db.query(
+        `UPDATE quotation_template_sections SET is_active = 0 WHERE id IN (${dupIds.map(() => '?').join(',')})`,
+        dupIds
+      );
+    }
   }
+}
+
+/** 将种子数据写回模版表（单价/备注/排序；按 subsection_code 匹配） */
+async function syncEventTemplateDefaultPrices(db) {
+  for (const row of EVENT_TEMPLATE_ROWS) {
+    const [hit] = await db.query(
+      `SELECT id FROM quotation_template_sections
+       WHERE applicable_type = 'EVENT' AND subsection_code = ? ORDER BY id ASC LIMIT 1`,
+      [row.subsection_code]
+    );
+    if (hit.length) {
+      await db.query(
+        `UPDATE quotation_template_sections SET
+          section_code = ?, section_name = ?, subsection_name = ?, description = ?, item_category = ?,
+          default_unit = ?, default_unit_price = ?, default_remarks = ?, sort_order = ?, is_active = 1
+        WHERE id = ?`,
+        [
+          row.section_code,
+          row.section_name,
+          row.subsection_name,
+          row.description,
+          row.item_category || '',
+          row.default_unit,
+          row.default_unit_price,
+          row.default_remarks || null,
+          row.sort_order,
+          hit[0].id,
+        ]
+      );
+    } else {
+      await db.query(
+        `INSERT INTO quotation_template_sections (
+          applicable_type, section_code, section_name, subsection_code, subsection_name,
+          description, item_category, default_unit, default_unit_price, default_remarks, sort_order, is_active
+        ) VALUES ('EVENT', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`,
+        [
+          row.section_code,
+          row.section_name,
+          row.subsection_code,
+          row.subsection_name,
+          row.description,
+          row.item_category || '',
+          row.default_unit,
+          row.default_unit_price,
+          row.default_remarks || null,
+          row.sort_order,
+        ]
+      );
+    }
+  }
+}
+
+/** 停用旧版 1/2/3 数字大板块模版，启用 A–E 结构 */
+async function retireLegacyEventTemplateSections(db) {
+  await db.query(
+    `UPDATE quotation_template_sections SET is_active = 0
+     WHERE applicable_type = 'EVENT' AND section_code IN ('1', '2', '3')`
+  );
 }
 
 async function ensureQuotationColumn(db, table, column, ddl) {
@@ -182,6 +244,19 @@ async function ensureQuotationTables(db) {
     'ALTER TABLE quotations ADD COLUMN merged_from_quote_ids JSON NULL COMMENT \'由哪些单场报价合并生成\' AFTER linked_sessions'
   );
 
+  await ensureQuotationColumn(
+    db,
+    'quotation_items',
+    'item_category',
+    "ALTER TABLE quotation_items ADD COLUMN item_category VARCHAR(80) NOT NULL DEFAULT '' AFTER description"
+  );
+  await ensureQuotationColumn(
+    db,
+    'quotation_template_sections',
+    'item_category',
+    "ALTER TABLE quotation_template_sections ADD COLUMN item_category VARCHAR(80) NOT NULL DEFAULT '' AFTER description"
+  );
+
   try {
     await db.query(
       `ALTER TABLE quotations MODIFY COLUMN project_code VARCHAR(500) NULL COMMENT '关联场次项目编号（冗余；多场为摘要）'`
@@ -191,7 +266,97 @@ async function ensureQuotationTables(db) {
   }
 
   await seedEventTemplate(db);
+  await retireLegacyEventTemplateSections(db);
   await syncEventTemplateDefaultPrices(db);
+  await dedupeEventTemplateSections(db);
+  await syncEventTemplateItemDescriptions(db);
+  await retireObsoleteEventSubsections(db);
+  await syncEventTemplateStructureToItems(db);
+  await syncQuotationEventDatesFromActivities(db);
 }
 
-module.exports = { ensureQuotationTables, EVENT_TEMPLATE_ROWS, syncEventTemplateDefaultPrices };
+/** 停用已迁入 F/G 的旧 E-5~E-9 模版行 */
+async function retireObsoleteEventSubsections(db) {
+  const legacyCodes = Object.keys(EVENT_TEMPLATE_SUBSECTION_LEGACY_MAP);
+  if (!legacyCodes.length) return;
+  await db.query(
+    `UPDATE quotation_template_sections SET is_active = 0
+     WHERE applicable_type = 'EVENT' AND subsection_code IN (${legacyCodes.map(() => '?').join(',')})`,
+    legacyCodes
+  );
+}
+
+/** 已有明细：E-5~E-9 → F/G；D-1 去掉模版默认备注「广州-深圳往返」 */
+async function syncEventTemplateStructureToItems(db) {
+  for (const [legacyCode, newCode] of Object.entries(EVENT_TEMPLATE_SUBSECTION_LEGACY_MAP)) {
+    const row = EVENT_TEMPLATE_BY_SUBSECTION[newCode];
+    if (!row) continue;
+    await db.query(
+      `UPDATE quotation_items qi
+       INNER JOIN quotations q ON q.id = qi.quotation_id
+       SET qi.section_code = ?, qi.section_name = ?, qi.subsection_code = ?,
+           qi.item_category = ?, qi.sort_order = ?
+       WHERE q.type = 'EVENT' AND qi.is_custom = 0 AND qi.subsection_code = ?`,
+      [
+        row.section_code,
+        row.section_name,
+        row.subsection_code,
+        row.item_category || '',
+        row.sort_order,
+        legacyCode,
+      ]
+    );
+  }
+  const d1 = EVENT_TEMPLATE_BY_SUBSECTION['D-1'];
+  if (d1) {
+    await db.query(
+      `UPDATE quotation_items qi
+       INNER JOIN quotations q ON q.id = qi.quotation_id
+       SET qi.remarks = ?
+       WHERE q.type = 'EVENT' AND qi.is_custom = 0
+         AND qi.subsection_code = 'D-1' AND qi.remarks = ?`,
+      [d1.default_remarks || '', '广州-深圳往返']
+    );
+  }
+}
+
+/** 单场报价 event_date 与关联场次 activities.date 对齐（修复时区写入差一天） */
+async function syncQuotationEventDatesFromActivities(db) {
+  await db.query(
+    `UPDATE quotations q
+     INNER JOIN activities a ON a.id = q.activity_id
+     SET q.event_date = a.date
+     WHERE q.type = 'EVENT'
+       AND COALESCE(q.quote_mode, 'single') = 'single'
+       AND a.date IS NOT NULL`
+  );
+}
+
+/** 将已有报价单中 B-1 / C-4 / C-5 的旧说明迁到当前模版文案 */
+async function syncEventTemplateItemDescriptions(db) {
+  for (const code of EVENT_TEMPLATE_DESC_SYNC_CODES) {
+    const row = EVENT_TEMPLATE_BY_SUBSECTION[code];
+    const legacy = EVENT_TEMPLATE_DESC_LEGACY[code];
+    if (!row || !legacy?.length) continue;
+    const placeholders = legacy.map(() => '?').join(', ');
+    await db.query(
+      `UPDATE quotation_items qi
+       INNER JOIN quotations q ON q.id = qi.quotation_id
+       SET qi.description = ?
+       WHERE q.type = 'EVENT' AND qi.is_custom = 0
+         AND qi.subsection_code = ?
+         AND qi.description IN (${placeholders})`,
+      [row.description, code, ...legacy]
+    );
+  }
+}
+
+module.exports = {
+  ensureQuotationTables,
+  EVENT_TEMPLATE_ROWS,
+  syncEventTemplateDefaultPrices,
+  dedupeEventTemplateSections,
+  syncEventTemplateItemDescriptions,
+  syncQuotationEventDatesFromActivities,
+  retireLegacyEventTemplateSections,
+};

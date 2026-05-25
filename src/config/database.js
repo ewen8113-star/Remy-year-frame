@@ -13,6 +13,8 @@ const pool = mysql.createPool({
   charset: 'utf8mb4',
   // 与业务一致：读写 TIMESTAMP/DATETIME 按北京时间（上海）
   timezone: '+08:00',
+  // DATE 列返回 YYYY-MM-DD 字符串，避免 JS Date/JSON ISO 在列表里差一天
+  dateStrings: ['DATE'],
 });
 
 // 测试连接

@@ -11,6 +11,7 @@ const {
   fmtNum: fmtNumMulti,
   sanitizeSessionRemarks,
 } = require('./multiPreviewTable');
+const { quoteSheetDisplayName, quoteSheetHeaderProjectName } = require('./quoteSheetLabel');
 
 const LOGO_PATH = path.join(__dirname, '../../public/logo.png');
 const LOGO_PRINT_PATH = path.join(__dirname, '../../public/logo-print.png');
@@ -78,13 +79,28 @@ function itemSubtotal(it) {
   return roundMoney((parseFloat(it.quantity) || 0) * (parseFloat(it.unit_price) || 0));
 }
 
+const {
+  compareQuotationCodes,
+  formatSectionHeaderLabel,
+} = require('./quotationCodes');
+
+function sortGroupedQuotationSections(sections) {
+  sections.sort((a, b) => compareQuotationCodes(a.section_code, b.section_code));
+  sections.forEach((sec) => {
+    sec.subsections.sort((a, b) => compareQuotationCodes(a.subsection_code, b.subsection_code));
+    sec.subsections.forEach((sub) => {
+      sub.items.sort(
+        (a, b) => (a.sort_order || 0) - (b.sort_order || 0) || (a.id || 0) - (b.id || 0)
+      );
+    });
+  });
+  return sections;
+}
+
 function groupItems(items) {
   const sections = [];
   const secMap = new Map();
-  (items || [])
-    .slice()
-    .sort((a, b) => (a.sort_order || 0) - (b.sort_order || 0) || (a.id || 0) - (b.id || 0))
-    .forEach((it) => {
+  (items || []).forEach((it) => {
       const sk = `${it.section_code}|${it.section_name}`;
       if (!secMap.has(sk)) {
         const sec = {
@@ -108,7 +124,7 @@ function groupItems(items) {
   sections.forEach((s) => {
     s.sectionSubtotal = roundMoney(s.sectionSubtotal);
   });
-  return sections;
+  return sortGroupedQuotationSections(sections);
 }
 
 function calcTotals(items, serviceRate, taxRate) {
@@ -138,8 +154,8 @@ function resolveLogoImage() {
   }
 }
 
-function buildMultiTableBody(q, stylePrefix = '') {
-  const layout = buildMultiPreviewTableData(q);
+function buildMultiTableBodyFromData(tableData, stylePrefix = '') {
+  const layout = tableData;
   const body = [
     layout.headers.map((h) => ({ text: h, style: `${stylePrefix}thC` })),
   ];
@@ -147,7 +163,7 @@ function buildMultiTableBody(q, stylePrefix = '') {
   layout.dataRows.forEach((dr, idx) => {
     body.push(
       dr.cells.map((cell, ci) => {
-        const isMoney = ci >= layout.feeColStart && ci <= layout.totalCol;
+        const isMoney = ci >= layout.feeColStart && ci <= layout.totalCol && ci !== layout.remarksCol;
         const isRemarks = ci === layout.remarksCol;
         let text;
         if (isRemarks) {
@@ -172,24 +188,33 @@ function buildMultiTableBody(q, stylePrefix = '') {
   const footerRow = [
     { text: String(fc[0] || '多场含税总计'), style: `${stylePrefix}footer`, colSpan: span, alignment: 'right' },
     ...Array(Math.max(0, span - 1)).fill(''),
-    { text: fmtNumMulti(fc[layout.subtotalCol]), style: `${stylePrefix}footerR`, alignment: 'right' },
-    { text: fmtNumMulti(fc[layout.serviceCol]), style: `${stylePrefix}footerR`, alignment: 'right' },
-    { text: fmtNumMulti(fc[layout.taxCol]), style: `${stylePrefix}footerR`, alignment: 'right' },
-    { text: fmtNumMulti(fc[layout.totalCol]), style: `${stylePrefix}footerR`, alignment: 'right' },
-    { text: '', style: `${stylePrefix}tdL` },
   ];
+  (layout.columns?.totalColumns || []).forEach((col, i) => {
+    footerRow.push({
+      text: fmtNumMulti(fc[span + i]),
+      style: `${stylePrefix}footerR`,
+      alignment: 'right',
+    });
+  });
+  footerRow.push({ text: '', style: `${stylePrefix}tdL` });
   body.push(footerRow);
 
+  const moneyEnd = layout.totalCol;
   const widths = layout.headers.map((_, i) => {
     if (i === layout.remarksCol) return '8%';
     if (i === 0) return '9%';
     if (i === 1 || i === 2) return '8%';
     if (i === 3) return '10%';
-    if (i >= layout.feeColStart && i <= layout.totalCol) return '*';
+    if (i >= layout.feeColStart && i <= moneyEnd) return '*';
     return 'auto';
   });
 
   return { body, widths, layout };
+}
+
+function buildMultiTableBody(q, stylePrefix = '', opts = {}) {
+  const tableData = opts.summaryTable || buildMultiPreviewTableData(q);
+  return buildMultiTableBodyFromData(tableData, stylePrefix);
 }
 
 function countSingleTableRows(q) {
@@ -335,7 +360,7 @@ function buildTableBody(q, opts = {}) {
     : [
         [
           pdfThCell('内容\nItem', thStyle),
-          pdfThCell('', thStyle),
+          pdfThCell('分类', thStyle),
           pdfThCell('说明\nSummary', thStyle),
           pdfThCell('数量\nQty', thStyle),
           pdfThCell('单位\nUnit', thStyle),
@@ -349,10 +374,10 @@ function buildTableBody(q, opts = {}) {
   groups.forEach((sec) => {
     body.push([
       {
-        text: `${sec.section_code}.${sec.section_name}`,
+        text: formatSectionHeaderLabel(sec.section_code, sec.section_name),
         style: `${p}section`,
         colSpan: 6,
-        alignment: 'center',
+        alignment: 'left',
         verticalAlignment: 'middle',
       },
       '',
@@ -375,10 +400,10 @@ function buildTableBody(q, opts = {}) {
           idx === 0
             ? pdfMergeCell(String(sub.subsection_code || ''), `${p}tdC`, rowSpan)
             : { text: '', style: `${p}tdC` };
-        const subNameCell =
-          idx === 0
-            ? pdfMergeCell(String(sub.subsection_name || ''), `${p}tdC`, rowSpan)
-            : { text: '', style: `${p}tdC` };
+        const subNameCell = {
+          text: String(it.item_category || sub.subsection_name || ''),
+          style: `${p}tdC`,
+        };
         const desc = String(it.description || '');
         const cellStyle = compact ? { fontSize: scale.font, lineHeight: scale.lh } : {};
         body.push([
@@ -445,12 +470,17 @@ const PDF_STYLES = buildPdfStyles(null);
 
 function buildQuotationContentParts(q, opts = {}) {
   const compact = !!opts.compact;
-  const headerQ = opts.headerSource || q;
-  const summaryStyleHeader = !!opts.headerSource || !compact;
+  const useSummaryHeader = opts.headerSource && typeof opts.headerSource === 'object';
+  const headerQ = useSummaryHeader ? opts.headerSource : q;
+  const summaryStyleHeader = useSummaryHeader || !compact;
+  const projectNameLine =
+    opts.headerProjectName != null && String(opts.headerProjectName).trim() !== ''
+      ? String(opts.headerProjectName).trim()
+      : String(headerQ.project_name || '').trim();
   const headerStack = [
     labelLine('Client / Brand 客户/品牌：', headerQ.client_brand),
     labelLine('Attend to 客户方负责人：', headerQ.client_contact),
-    labelLine('Project Name 项目名称：', headerQ.project_name),
+    labelLine('Project Name 项目名称：', projectNameLine),
   ];
 
   const headerBlock = { width: '*', stack: headerStack };
@@ -472,10 +502,10 @@ function buildQuotationContentParts(q, opts = {}) {
       }
     : { stack: headerStack, margin: headerMargin };
 
-  const isMulti = isMultiQuote(q);
+  const isMulti = isMultiQuote(q) || !!opts.summaryTable;
   const tablePart = isMulti
     ? (() => {
-        const { body, widths } = buildMultiTableBody(q);
+        const { body, widths } = buildMultiTableBody(q, '', opts);
         return {
           table: { widths, headerRows: 1, body },
           layout: buildPdfTableLayout(compact ? 1 : 2),
@@ -528,22 +558,27 @@ function buildBundledQuotationDocDefinition(multiQuote, singles, opts = {}) {
     Object.assign(styles, buildPdfStyles(compactPdfScale(countSingleTableRows(q))));
   });
 
+  const { buildBundleSummaryTableData } = require('./multiPreviewTable');
+  const summaryTable = buildBundleSummaryTableData(singles);
   const content = [
     { text: 'Summary', style: 'section', margin: [0, 0, 0, 4] },
-    ...buildQuotationContentParts(multiQuote, { ...opts, compact: false }),
+    ...buildQuotationContentParts(multiQuote, {
+      layoutByQuoteId: opts.layoutByQuoteId,
+      pageOrientation: opts.pageOrientation,
+      compact: false,
+      headerSource: multiQuote,
+      summaryTable,
+    }),
   ];
-  (singles || []).forEach((q, idx) => {
-    const sheetTitle = String(q.project_name || q.project_code || `场次${idx + 1}`).trim();
+  (singles || []).forEach((q) => {
     const layout = layoutByQuoteId[String(q.id)] || {};
     content.push({ text: '', pageBreak: 'before' });
-    content.push({ text: sheetTitle, style: 'section', margin: [0, 0, 0, 2] });
     content.push(
       ...buildQuotationContentParts(q, {
-        ...opts,
         compact: true,
         compactLogo: true,
-        headerSource: multiQuote,
         layout,
+        headerProjectName: quoteSheetHeaderProjectName(q),
       })
     );
   });
