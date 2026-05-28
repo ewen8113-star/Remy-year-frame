@@ -87,6 +87,15 @@ const REIMB_CLAIM_STATUS_OPTIONS = [
   { value: 'draft', label: '草稿' },
   { value: 'submitted', label: '待支付' },
   { value: 'paid', label: '已支付' },
+  { value: 'reimbursed', label: '已报销' },
+];
+
+/** 个人报销可选状态（含已支付 / 已报销） */
+const REIMB_PERSONAL_CLAIM_STATUS_OPTIONS = [
+  { value: 'draft', label: '草稿' },
+  { value: 'submitted', label: '待支付' },
+  { value: 'paid', label: '已支付' },
+  { value: 'reimbursed', label: '已报销' },
 ];
 
 function reimbPaymentTypeLabel(v) {
@@ -101,10 +110,19 @@ function reimbClaimStatusLabel(v) {
   return REIMB_CLAIM_STATUS_OPTIONS.find((x) => x.value === v)?.label || '草稿';
 }
 function reimbClaimStatusBadgeClass(v) {
-  if (v === 'paid') return 'badge-success';
+  if (v === 'paid' || v === 'reimbursed') return 'badge-success';
   if (v === 'submitted') return 'badge-accent';
   if (v === 'rejected') return 'badge-danger';
   return 'badge-gray';
+}
+
+function reimbClaimStatusOptionsForRecord(record) {
+  const pt = String(record?.payment_type || 'personal_reimbursement');
+  return pt === 'personal_reimbursement' ? REIMB_PERSONAL_CLAIM_STATUS_OPTIONS : REIMB_CLAIM_STATUS_OPTIONS;
+}
+
+function reimbClaimStatusNeedsPaymentDate(status) {
+  return status === 'paid' || status === 'reimbursed';
 }
 
 function paymentSourceLabel(v) {
@@ -266,6 +284,20 @@ let inventoryPageState = {
   _inboundLedgerCache: [],
   _inboundPendingCache: [],
 };
+
+/** 用酒统计页筛选与缓存 */
+const wineUsageStatsState = {
+  region: '',
+  belonging: '',
+  /** 项目编号关键词（空格分隔多词为 AND，与出库台账搜索一致） */
+  projectCode: '',
+  dateFrom: '',
+  dateTo: '',
+  month: '',
+  lastPayload: null,
+};
+
+let wineStatsSearchTimer = null;
 
 const INV_INBOUND_PAGE_SIZE = 10;
 
@@ -722,6 +754,7 @@ function navigate(page) {
     inventory: '库存管理',
     'inv-outbound': '物品出库',
     'inv-inbound': '物品入库',
+    'inv-wine-stats': '用酒统计',
     material: '额外成本',
     'prop-repair': '道具维修',
     reimbursement: '付款申请',
@@ -752,6 +785,7 @@ function navigate(page) {
     inventory: renderInventory,
     'inv-outbound': renderInventory,
     'inv-inbound': renderInventory,
+    'inv-wine-stats': renderWineUsageStats,
     material: renderMaterialPurchases,
     'prop-repair': renderPropRepairs,
     reimbursement: renderReimbursements,
@@ -788,6 +822,7 @@ function expandSidebarGroupForPage(page) {
     inventory: 'stock',
     'inv-outbound': 'stock',
     'inv-inbound': 'stock',
+    'inv-wine-stats': 'stock',
     users: 'sys',
     dict: 'sys',
     backup: 'sys',
@@ -1311,7 +1346,21 @@ let dashboardChartMetric = localStorage.getItem('remy_dashboardChartMetric') ===
 let dashboardLastPayload = null;
 let dashboardLastQuery = '';
 let dashboardAnalysisTab = 'trend';
+/** 全链路成本选项卡：overview | activity | warehouse | logistics | material_purchase | prop_repair | reimbursement */
+let dashboardCostTab = 'overview';
 let dashboardDetailFilters = { region: '', city: '', costType: '' };
+
+const DASHBOARD_COST_TAB_DEFS = [
+  { key: 'overview', label: '利润总览' },
+  { key: 'activity', label: '场次成本' },
+  { key: 'warehouse', label: '仓储成本' },
+  { key: 'logistics', label: '物流成本' },
+  { key: 'material_purchase', label: '物料/额外' },
+  { key: 'prop_repair', label: '道具维修' },
+  { key: 'reimbursement', label: '报销成本池' },
+];
+
+const DASHBOARD_FULL_COST_CHART_COLORS = ['#6366f1', '#3b82f6', '#0ea5e9', '#10b981', '#f59e0b', '#ef4444', '#a78bfa'];
 
 /** 与后端 ALLOWED_TYPES 一致，用于区域对比时类别柱图类目顺序 */
 const DASHBOARD_ACTIVITY_TYPES = ['晚宴', '品鉴', '培训', '纯设计'];
@@ -1837,6 +1886,113 @@ function setDashboardAnalysisTab(tab) {
   renderDashboard();
 }
 
+function setDashboardCostTab(tab) {
+  const allowed = DASHBOARD_COST_TAB_DEFS.map((t) => t.key);
+  const next = allowed.includes(tab) ? tab : 'overview';
+  if (dashboardCostTab === next) return;
+  dashboardCostTab = next;
+  renderDashboard();
+}
+
+function renderDashboardCostBucketRow(bucket) {
+  if (!bucket) return '';
+  return `<tr>
+    <td>${escapeHtml(bucket.label || '')}</td>
+    <td class="dash-num">${bucket.count ?? '—'}</td>
+    <td class="dash-num">${fmtMoney(bucket.amount || 0)}</td>
+    <td class="dash-num">${formatPercent(bucket.ratio || 0)}</td>
+    <td class="dash-cost-hint">${escapeHtml(bucket.hint || '')}</td>
+  </tr>`;
+}
+
+function renderDashboardCostPanel(dash) {
+  const { overview = {}, costBreakdown = [], reimbCostByModule = [], metricDefinition = {} } = dash;
+  const buckets = Array.isArray(costBreakdown) ? costBreakdown : [];
+  const activeKey = DASHBOARD_COST_TAB_DEFS.some((t) => t.key === dashboardCostTab) ? dashboardCostTab : 'overview';
+  const activeBucket = buckets.find((b) => b.key === activeKey);
+
+  const overviewHtml = `
+    <div class="dash-cost-overview-grid">
+      <div class="dash-cost-kpi">
+        <span class="dash-cost-kpi__label">项目收入（场次报价）</span>
+        <span class="dash-cost-kpi__value">${fmtMoney(overview.totalRevenue || 0)}</span>
+      </div>
+      <div class="dash-cost-kpi dash-cost-kpi--minus">−</div>
+      <div class="dash-cost-kpi">
+        <span class="dash-cost-kpi__label">全链路总成本</span>
+        <span class="dash-cost-kpi__value">${fmtMoney(overview.totalCost || 0)}</span>
+        <span class="dash-cost-kpi__sub">场次 ${fmtMoney(overview.activityCost || 0)} · 其他板块 ${fmtMoney(overview.poolCost || 0)}</span>
+      </div>
+      <div class="dash-cost-kpi dash-cost-kpi--eq">=</div>
+      <div class="dash-cost-kpi dash-cost-kpi--profit">
+        <span class="dash-cost-kpi__label">项目毛利</span>
+        <span class="dash-cost-kpi__value">${fmtMoney(overview.grossProfit || 0)}</span>
+        <span class="dash-cost-kpi__sub">毛利率 ${formatPercent(overview.grossMarginRate || 0)}</span>
+      </div>
+    </div>
+    <p class="dash-hint">${escapeHtml(metricDefinition.cost || '')}</p>
+    <div class="dash-cost-overview-body">
+      <div class="table-wrapper dash-cost-table-wrap">
+        <table class="dash-table">
+          <thead><tr><th>成本板块</th><th class="dash-num">笔数</th><th class="dash-num">金额</th><th class="dash-num">占全链路</th><th>口径说明</th></tr></thead>
+          <tbody>${buckets.map(renderDashboardCostBucketRow).join('') || '<tr><td colspan="5" class="dash-empty">暂无成本数据</td></tr>'}</tbody>
+          <tfoot><tr><th>合计</th><th></th><th class="dash-num">${fmtMoney(overview.totalCost || 0)}</th><th class="dash-num">100%</th><th></th></tr></tfoot>
+        </table>
+      </div>
+      <div class="dash-cost-chart-slot"><canvas id="chartFullCostBreakdown"></canvas></div>
+    </div>`;
+
+  let detailHtml = '';
+  if (activeKey === 'activity') {
+    detailHtml = `
+      <p class="dash-hint">${escapeHtml(metricDefinition.activityCostDetail || '')}</p>
+      <p class="dash-hint">下方「成本结构占比」图展示场次内物流/人员/采购/其他拆分；场次级明细见页面底部表格。</p>`;
+  } else if (activeKey === 'reimbursement') {
+    const reimbRows = (reimbCostByModule || []).map((r) => `
+      <tr>
+        <td>${escapeHtml(r.label || r.module || '')}</td>
+        <td class="dash-num">${r.count ?? 0}</td>
+        <td class="dash-num">${fmtMoney(r.amount || 0)}</td>
+        <td class="dash-num">${formatPercent(r.ratio || 0)}</td>
+      </tr>`).join('');
+    detailHtml = `
+      <p class="dash-hint">按报销类型拆分，同一笔不会与场次成本重复计算。</p>
+      <div class="table-wrapper">
+        <table class="dash-table">
+          <thead><tr><th>报销模块</th><th class="dash-num">笔数</th><th class="dash-num">金额</th><th class="dash-num">占报销池</th></tr></thead>
+          <tbody>${reimbRows || '<tr><td colspan="4" class="dash-empty">暂无报销成本</td></tr>'}</tbody>
+          <tfoot><tr><th>合计</th><th></th><th class="dash-num">${fmtMoney(activeBucket?.amount || 0)}</th><th></th></tr></tfoot>
+        </table>
+      </div>`;
+  } else if (activeBucket) {
+    detailHtml = `
+      <div class="dash-cost-single">
+        <div class="dash-cost-single__amount">${fmtMoney(activeBucket.amount || 0)}</div>
+        <div class="dash-cost-single__meta">${activeBucket.count ?? 0} 笔 · 占全链路 ${formatPercent(activeBucket.ratio || 0)}</div>
+        <p class="dash-hint">${escapeHtml(activeBucket.hint || '')}</p>
+      </div>`;
+  } else {
+    detailHtml = '<p class="dash-empty">暂无该板块数据</p>';
+  }
+
+  const tabsHtml = DASHBOARD_COST_TAB_DEFS.map((t) => {
+    const b = buckets.find((x) => x.key === t.key);
+    const badge = t.key !== 'overview' && b ? fmtMoney(b.amount || 0) : '';
+    return `<button type="button" class="dash-tab ${activeKey === t.key ? 'is-active' : ''}" onclick="setDashboardCostTab('${t.key}')">${escapeHtml(t.label)}${badge ? `<span class="dash-tab__badge">${badge}</span>` : ''}</button>`;
+  }).join('');
+
+  return `
+    <div class="dash-card dash-cost-card">
+      <div class="card-header">
+        <div><div class="card-title">全链路成本与利润</div><div class="card-sub">收入减各板块成本合计为项目毛利</div></div>
+      </div>
+      <div class="dash-tabs dash-tabs--cost">${tabsHtml}</div>
+      <div class="dash-tab-panel is-active dash-cost-panel">
+        ${activeKey === 'overview' ? overviewHtml : detailHtml}
+      </div>
+    </div>`;
+}
+
 function dashboardDetailFilterRows(rows) {
   return (rows || []).filter((r) => {
     if (dashboardDetailFilters.region && String(r.region || '') !== dashboardDetailFilters.region) return false;
@@ -1905,7 +2061,17 @@ async function renderDashboard() {
     dashboardLastPayload = dash;
     dashboardLastQuery = query;
 
-    const { overview = {}, regionSummary = [], trendByMonth = [], costComposition = [], regionCityBreakdown = [], detailRows = [], metricDefinition = {} } = dash;
+    const {
+      overview = {},
+      regionSummary = [],
+      trendByMonth = [],
+      trendByMonthFull = [],
+      costComposition = [],
+      regionCityBreakdown = [],
+      detailRows = [],
+      metricDefinition = {},
+    } = dash;
+    const financeTrendRows = (trendByMonthFull && trendByMonthFull.length) ? trendByMonthFull : trendByMonth;
 
     const regionOptions = [...new Set((detailRows || []).map((r) => String(r.region || '').trim()).filter(Boolean))];
     const cityOptions = [...new Set((detailRows || []).map((r) => String(r.city || '').trim()).filter(Boolean))];
@@ -2020,11 +2186,13 @@ async function renderDashboard() {
 
       <div class="stats-grid page-dashboard__stats">
         <div class="stat-card accent"><div class="stat-label">本期场次总数</div><div class="stat-value">${overview.totalSessions || 0}</div><div class="stat-sub">当前筛选条件</div></div>
-        <div class="stat-card danger"><div class="stat-label">含 PG 礼仪场次</div><div class="stat-value">${overview.pgSessions ?? 0}</div><div class="stat-sub">cost_details.pg &gt; 0（不含 PG 筛选）</div></div>
+        <div class="stat-card danger"><div class="stat-label">含 PG 礼仪场次</div><div class="stat-value">${overview.pgSessions ?? 0}</div><div class="stat-sub">礼仪成本大于 0 的场次</div></div>
         <div class="stat-card success"><div class="stat-label">本期项目总收入</div><div class="stat-value sm">${fmtMoney(overview.totalRevenue || 0)}</div><div class="stat-sub">${escapeHtml(metricDefinition.revenue || '')}</div></div>
         <div class="stat-card warning"><div class="stat-label">本期总成本</div><div class="stat-value sm">${fmtMoney(overview.totalCost || 0)}</div><div class="stat-sub">${escapeHtml(metricDefinition.cost || '')}</div></div>
         <div class="stat-card blue"><div class="stat-label">本期项目毛利率</div><div class="stat-value">${formatPercent(overview.grossMarginRate || 0)}</div><div class="stat-sub">${escapeHtml(metricDefinition.grossMarginRate || '')}</div></div>
       </div>
+
+      ${renderDashboardCostPanel(dash)}
 
       <div class="dash-card dash-summary-card">
         <div class="card-header">
@@ -2048,7 +2216,7 @@ async function renderDashboard() {
           <button type="button" class="dash-tab ${dashboardAnalysisTab === 'drill' ? 'is-active' : ''}" onclick="setDashboardAnalysisTab('drill')">大区详情下钻</button>
         </div>
         <div class="dash-tab-panel ${dashboardAnalysisTab === 'trend' ? 'is-active' : ''}">
-          <div class="card-header"><div><div class="card-title">月度趋势（收入/成本/毛利率）</div><div class="card-sub">双Y轴：柱状=收入/成本，折线=毛利率</div></div></div>
+          <div class="card-header"><div><div class="card-title">月度趋势（收入/成本/毛利率）</div><div class="card-sub">成本含物流月结等各板块当月发生额</div></div></div>
           <canvas id="chartFinanceTrend"></canvas>
         </div>
         <div class="dash-tab-panel ${dashboardAnalysisTab === 'structure' ? 'is-active' : ''}">
@@ -2101,8 +2269,9 @@ async function renderDashboard() {
 
     `;
 
-    drawDashboardFinanceTrend(trendByMonth);
+    drawDashboardFinanceTrend(financeTrendRows);
     drawDashboardCostComposition(costComposition);
+    drawDashboardFullCostBreakdown(dash.costBreakdown || [], dash.overview || {});
     await populateDashboardFilterSelects();
     renderLucideIcons();
   } catch (err) {
@@ -2155,6 +2324,37 @@ function drawDashboardCostComposition(rows) {
       plugins: {
         legend: { position: 'bottom', labels: { color: sec, padding: 12, font: { size: 12 } } },
         tooltip: { callbacks: { label: (ctx) => `${ctx.label} · ${fmtMoney(ctx.raw || 0)}` } },
+      },
+      cutout: '58%',
+    },
+  });
+}
+
+function drawDashboardFullCostBreakdown(buckets, overview) {
+  const ctx = document.getElementById('chartFullCostBreakdown');
+  if (!ctx) return;
+  const sec = dashboardChartCssVar('--text-secondary', '#64748b');
+  const rows = Array.isArray(buckets) ? buckets.filter((b) => b && b.key && b.key !== 'overview') : [];
+  const labels = rows.map((r) => `${r.label || r.key} ${formatPercent(r.ratio || 0)}`);
+  const values = rows.map((r) => Number(r.amount) || 0);
+  const colors = DASHBOARD_FULL_COST_CHART_COLORS.slice(0, rows.length);
+  const totalCost = Number(overview?.totalCost) || values.reduce((s, v) => s + (Number(v) || 0), 0);
+
+  charts.fullCostBreakdown = new Chart(ctx, {
+    type: 'doughnut',
+    data: {
+      labels,
+      datasets: [{ data: values, backgroundColor: colors, borderWidth: 0, hoverOffset: 6 }],
+    },
+    options: {
+      plugins: {
+        legend: { position: 'bottom', labels: { color: sec, padding: 12, font: { size: 12 } } },
+        tooltip: {
+          callbacks: {
+            label: (c) => `${c.label} · ${fmtMoney(c.raw || 0)}`,
+            footer: () => `全链路总成本：${fmtMoney(totalCost)}`,
+          },
+        },
       },
       cutout: '58%',
     },
@@ -2825,11 +3025,19 @@ async function loadActivities() {
   container.innerHTML = '<div style="text-align:center;padding:30px;color:var(--text-muted)">加载中...</div>';
 
   try {
-    // 每次进入场次记录时，自动把“活动日期早于今天且状态=待执行”的记录置为已完成
+    const yf = currentYearFrameId || undefined;
     try {
-      await api('POST', '/activities/auto-complete-overdue', {
-        yearFrameId: currentYearFrameId || undefined,
-      });
+      await api('POST', '/activities/repair-project-codes', { yearFrameId: yf });
+    } catch (e) {
+      console.warn('修复项目编号失败（忽略）', e);
+    }
+    try {
+      await api('POST', '/activities/revert-future-completed', { yearFrameId: yf });
+    } catch (e) {
+      console.warn('纠正未到期已完成状态失败（忽略）', e);
+    }
+    try {
+      await api('POST', '/activities/auto-complete-overdue', { yearFrameId: yf });
     } catch (e) {
       console.warn('自动完结过期场次失败（忽略，不阻断列表加载）', e);
     }
@@ -3321,17 +3529,60 @@ function normalizeProjectCodeToken(raw) {
     .trim();
 }
 
-function genProjectCode() {
-  const code = document.getElementById('actYearFrameCode')?.value || '';
-  const city = normalizeProjectCodeCity(document.getElementById('actCity')?.value || '');
-  syncActivityBrandFromYearFrameCode();
-  const venue = normalizeProjectCodeToken(document.getElementById('actVenue')?.value || '');
-  const client = normalizeProjectCodeToken(document.getElementById('actClient')?.value || '');
-  const brand = normalizeProjectCodeToken(document.getElementById('actBrandField')?.value || '');
-  const type = normalizeProjectCodeToken(document.getElementById('actActivityType')?.value || '');
+/** 活动日期 → 项目编号中的 YYMMDD（北京时间，与出库 PDF 等规则一致） */
+function projectCodeDateYYMMDD(raw) {
+  const p = beijingParts(raw);
+  if (!p) return '';
+  const yy = String(p.year).slice(-2);
+  const mm = String(p.month).padStart(2, '0');
+  const dd = String(p.day).padStart(2, '0');
+  return `${yy}${mm}${dd}`;
+}
 
-  // 年框编号 + 空格 + 城市 + 场地 + 客户名称 + 品牌 + 活动类型
-  const pc = `${code} ${city}${venue}${client}${brand}${type}`.trim();
+/** 年框前缀后的描述段是否以 6 位活动日期开头 */
+function projectCodeHasDateSuffix(projectCode) {
+  return /^\S+\s+\d{6}/.test(String(projectCode || '').trim());
+}
+
+function buildProjectCode({ yearFrameCode, date, city, venue, client, brand, type }) {
+  const code = String(yearFrameCode || '').trim();
+  const datePart = projectCodeDateYYMMDD(date);
+  const suffix =
+    `${normalizeProjectCodeCity(city)}` +
+    `${normalizeProjectCodeToken(venue)}` +
+    `${normalizeProjectCodeToken(client)}` +
+    `${normalizeProjectCodeToken(brand)}` +
+    `${normalizeProjectCodeToken(type)}`;
+  if (!code) return datePart ? `${datePart}${suffix}` : suffix;
+  if (!datePart) return `${code} ${suffix}`.trim();
+  return `${code} ${datePart}${suffix}`.trim();
+}
+
+/** 为已有编号补上或替换 YYMMDD（空格后第一段 6 位数字） */
+function repairProjectCodeDate(projectCode, date) {
+  const s = String(projectCode || '').trim();
+  const datePart = projectCodeDateYYMMDD(date);
+  if (!s || !datePart) return s;
+  const sp = s.indexOf(' ');
+  if (sp < 0) return s;
+  const prefix = s.slice(0, sp);
+  let rest = s.slice(sp + 1).trim();
+  if (/^\d{6}/.test(rest)) rest = datePart + rest.slice(6);
+  else rest = datePart + rest;
+  return `${prefix} ${rest}`.trim();
+}
+
+function genProjectCode() {
+  syncActivityBrandFromYearFrameCode();
+  const pc = buildProjectCode({
+    yearFrameCode: document.getElementById('actYearFrameCode')?.value || '',
+    date: document.getElementById('actDate')?.value || '',
+    city: document.getElementById('actCity')?.value || '',
+    venue: document.getElementById('actVenue')?.value || '',
+    client: document.getElementById('actClient')?.value || '',
+    brand: document.getElementById('actBrandField')?.value || '',
+    type: document.getElementById('actActivityType')?.value || '',
+  });
   const el = document.getElementById('actProjectCode');
   if (el) el.value = pc;
 }
@@ -3851,14 +4102,33 @@ async function saveActivity() {
   const isVirt = document.getElementById('actIsVirtual')?.value === '1';
   const brandAmbassadorEl = document.getElementById('actBrandAmbassador');
   const brandAmbassadorVal = brandAmbassadorEl ? String(brandAmbassadorEl.value || '').trim() : '';
+  const actDateVal = document.getElementById('actDate').value || null;
+  let projectCode = String(document.getElementById('actProjectCode').value || '').trim();
+  if (!isVirt && actDateVal) {
+    if (!projectCodeHasDateSuffix(projectCode)) {
+      projectCode = repairProjectCodeDate(projectCode, actDateVal);
+    }
+    if (!projectCodeHasDateSuffix(projectCode)) {
+      projectCode = buildProjectCode({
+        yearFrameCode: document.getElementById('actYearFrameCode').value,
+        date: actDateVal,
+        city: document.getElementById('actCity').value,
+        venue: document.getElementById('actVenue').value,
+        client: document.getElementById('actClient').value,
+        brand: document.getElementById('actBrandField').value,
+        type: document.getElementById('actActivityType').value,
+      });
+    }
+  }
+
   const body = {
     year_frame_id: currentYearFrameId || 1,
     year_frame_code: document.getElementById('actYearFrameCode').value,
-    project_code: document.getElementById('actProjectCode').value,
+    project_code: projectCode,
     activity_type: document.getElementById('actActivityType').value,
     city: document.getElementById('actCity').value,
     brand: document.getElementById('actBrandField').value,
-    date: document.getElementById('actDate').value || null,
+    date: actDateVal,
     client: document.getElementById('actClient').value,
     client_name: document.getElementById('actClient').value,
     region: document.getElementById('actRegion').value,
@@ -9279,8 +9549,10 @@ function reimbClaimStatusChanged() {
   const status = document.getElementById('reimbClaimStatus')?.value || 'draft';
   const wrap = document.getElementById('reimbPaymentDateWrap');
   const paymentDate = document.getElementById('reimbPaymentDate');
-  if (wrap) wrap.style.display = status === 'paid' ? 'block' : 'none';
-  if (status === 'paid' && paymentDate && !paymentDate.value) paymentDate.value = todayDateInputValue();
+  if (wrap) wrap.style.display = reimbClaimStatusNeedsPaymentDate(status) ? 'block' : 'none';
+  if (reimbClaimStatusNeedsPaymentDate(status) && paymentDate && !paymentDate.value) {
+    paymentDate.value = todayDateInputValue();
+  }
 }
 
 function paymentOrderKey(row) {
@@ -9827,22 +10099,31 @@ let reimbursementPreviewState = {
   type: '',
   csvText: '',
   filename: '',
+  recordId: null,
 };
 
-function openReimbursementPreviewModal({ title, bodyHtml, type = '', csvText = '', filename = '' }) {
+function openReimbursementPreviewModal({ title, bodyHtml, type = '', csvText = '', filename = '', recordId = null }) {
   const titleEl = document.getElementById('modalReimbPreviewTitle');
   const bodyEl = document.getElementById('modalReimbPreviewBody');
   const csvBtn = document.getElementById('reimbPreviewDownloadCsvBtn');
+  const excelBtn = document.getElementById('reimbPreviewDownloadExcelBtn');
+  const printBtn = document.getElementById('reimbPreviewPrintBtn');
   const pdfBtn = document.getElementById('reimbPreviewPrintPdfBtn');
-  if (!titleEl || !bodyEl || !csvBtn || !pdfBtn) {
+  if (!titleEl || !bodyEl || !csvBtn || !printBtn || !pdfBtn) {
     showToast('预览弹窗未就绪，请刷新页面重试', 'warning');
     return;
   }
-  reimbursementPreviewState = { type, csvText, filename };
+  reimbursementPreviewState = { type, csvText, filename, recordId: recordId != null ? Number(recordId) : null };
   titleEl.textContent = title || '预览';
   bodyEl.innerHTML = bodyHtml || '';
   csvBtn.style.display = type === 'csv' ? 'inline-flex' : 'none';
-  pdfBtn.style.display = type === 'pdf' ? 'inline-flex' : 'none';
+  if (excelBtn) {
+    const showExcel = type === 'pdf' && Number.isFinite(reimbursementPreviewState.recordId);
+    excelBtn.style.display = showExcel ? 'inline-flex' : 'none';
+  }
+  const showPdfActions = type === 'pdf';
+  printBtn.style.display = showPdfActions ? 'inline-flex' : 'none';
+  pdfBtn.style.display = showPdfActions ? 'inline-flex' : 'none';
   openModal('modalReimbPreview');
 }
 
@@ -9862,6 +10143,59 @@ function reimbursementPreviewPrintPdf() {
   }
   frame.contentWindow.focus();
   frame.contentWindow.print();
+}
+
+/** 导出 PDF：调用系统打印对话框并选择「另存为 PDF」 */
+function reimbursementPreviewExportPdf() {
+  const frame = document.getElementById('reimbPreviewPdfFrame');
+  if (!frame || !frame.contentWindow) {
+    showToast('PDF 预览内容未就绪', 'warning');
+    return;
+  }
+  showToast('请在打印窗口的目标打印机中选择「另存为 PDF」或「Save as PDF」', 'info');
+  frame.contentWindow.focus();
+  frame.contentWindow.print();
+}
+
+async function reimbursementDownloadExcel(id) {
+  const nid = Number(id);
+  if (!Number.isFinite(nid)) {
+    showToast('请先保存记录后再导出 Excel', 'warning');
+    return;
+  }
+  try {
+    const res = await fetch(`/api/reimbursements/${nid}/excel`, { credentials: 'include' });
+    if (!res.ok) {
+      let msg = `导出失败 (${res.status})`;
+      try {
+        const j = await res.json();
+        if (j?.error) msg = j.error;
+      } catch (_) { /* ignore */ }
+      throw new Error(msg);
+    }
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = invFilenameFromDisposition(
+      res.headers.get('content-disposition'),
+      `盛融报销单_${nid}_${todayDateInputValue()}.xlsx`,
+    );
+    a.click();
+    URL.revokeObjectURL(url);
+    showToast('Excel 已下载', 'success');
+  } catch (e) {
+    showToast(e.message || 'Excel 导出失败', 'error');
+  }
+}
+
+function reimbursementPreviewDownloadExcel() {
+  const id = reimbursementPreviewState.recordId;
+  if (!Number.isFinite(id)) {
+    showToast('请先保存记录后再导出 Excel', 'warning');
+    return;
+  }
+  reimbursementDownloadExcel(id);
 }
 
 /** 与列表 CSV / 打印共用结构（来源于 GET /reimbursements/:id） */
@@ -9890,7 +10224,8 @@ function reimbursementPayloadFromRecord(r) {
 }
 
 function reimbClaimStatusSheetLabel(v) {
-  if (v === 'paid') return '已报销';
+  if (v === 'paid') return '已支付';
+  if (v === 'reimbursed') return '已报销';
   if (v === 'submitted') return '待支付';
   if (v === 'rejected') return '已驳回';
   return '草稿';
@@ -9952,14 +10287,91 @@ function buildReimbursementRosterAttachmentHtml(activities) {
   </section>`;
 }
 
+/** A4 横版单页尽量容纳的行数；超出才分页 */
+const REIMB_PRINT_MAX_ROWS_ONE_PAGE = 32;
+
+function buildReimbursementPrintTableHeadHtml() {
+  return `<colgroup>
+      <col style="width:4%">
+      <col style="width:11%">
+      <col style="width:7%">
+      <col style="width:8%">
+      <col style="width:14%">
+      <col style="width:8%">
+      <col style="width:4%">
+      <col style="width:7%">
+      <col style="width:10%">
+      <col style="width:7%">
+      <col style="width:6%">
+      <col style="width:14%">
+    </colgroup>
+    <thead>
+      <tr>
+        <th>序号</th>
+        <th>项目编号</th>
+        <th>板块</th>
+        <th>类别</th>
+        <th>内容说明</th>
+        <th>报销金额含税</th>
+        <th>发票</th>
+        <th>发票日期</th>
+        <th>发票号码</th>
+        <th>收款方</th>
+        <th>报销状态</th>
+        <th>备注</th>
+      </tr>
+    </thead>`;
+}
+
+function buildReimbursementPrintLineRowHtml(row, idx, ctx) {
+  const { payee, statusLabel, projectBase, brand } = ctx;
+  if (!row) {
+    return `<tr>
+      <td class="sr-c">${idx + 1}</td>
+      <td></td><td></td><td></td><td></td>
+      <td class="sr-m"></td>
+      <td></td><td></td><td></td>
+      <td></td>
+      <td class="sr-c"></td>
+      <td class="sr-remarks"></td>
+    </tr>`;
+  }
+  const blockLabel = REIMB_DETAIL_BLOCKS.find((x) => x.value === row.block)?.label || row.block || '';
+  const catLabel =
+    (REIMB_DETAIL_CATEGORY_OPTIONS[row.block] || []).find(([v]) => v === row.category)?.[1] || row.category || '';
+  const rowBrand = String(row.brand || '').trim();
+  const lineProject =
+    projectBase
+    || (REIMB_DETAIL_BRAND_OPTIONS.includes(rowBrand) ? rowBrand : '')
+    || reimbBrandYearFrameCodeForPdf(brand)
+    || rowBrand
+    || '—';
+  const inv = row.invoice === '无' ? '无' : '有';
+  return `<tr>
+    <td class="sr-c">${idx + 1}</td>
+    <td class="sr-wrap">${escapeHtml(lineProject)}</td>
+    <td class="sr-wrap">${escapeHtml(blockLabel)}</td>
+    <td class="sr-wrap">${escapeHtml(catLabel)}</td>
+    <td class="sr-wrap">${escapeHtml(row.description || '')}</td>
+    <td class="sr-m">${fmtMoney(row.subtotal || 0)}</td>
+    <td class="sr-c">${escapeHtml(inv)}</td>
+    <td class="sr-c">${row.invoice_date ? escapeHtml(String(row.invoice_date).slice(0, 10)) : ''}</td>
+    <td class="sr-invoice-no sr-wrap">${escapeHtml(row.invoice_no || '')}</td>
+    <td class="sr-wrap">${escapeHtml(payee)}</td>
+    <td class="sr-c">${escapeHtml(statusLabel)}</td>
+    <td class="sr-remarks">${escapeHtml(row.remarks || '')}</td>
+  </tr>`;
+}
+
 /**
- * 盛融报销单打印版式（对齐纸质模板：主表 + 项目归属附件页）
+ * 盛融报销单打印版式：A4 横版，行多时分页，备注列自动换行
  */
 function buildReimbursementPrintableHtml(p) {
   const detailRows = Array.isArray(p.detail_rows) ? p.detail_rows.filter(Boolean) : [];
-  const padSlots = Math.max(15, detailRows.length);
-  const rows = [];
-  for (let i = 0; i < padSlots; i += 1) rows.push(detailRows[i] || null);
+  const rows =
+    detailRows.length >= 3
+      ? detailRows
+      : [...detailRows, ...Array(Math.max(0, 3 - detailRows.length)).fill(null)];
 
   const gross = roundMoney2(detailRows.reduce((s, row) => s + roundMoney2(row && row.subtotal), 0));
   const totalShow = roundMoney2(gross > 0 ? gross : p.amount || 0);
@@ -9970,112 +10382,21 @@ function buildReimbursementPrintableHtml(p) {
   const monthLabel = dStr.length >= 7 ? `${parseInt(dStr.slice(5, 7), 10)}月` : '—';
   const filer = getCurrentUserName() || (detailRows[0] && detailRows[0].applicant) || '—';
   const statusLabel = reimbClaimStatusSheetLabel(p.claim_status);
+  const lineCtx = { payee, statusLabel, projectBase, brand: p.brand || '' };
 
-  const lineRows = rows
-    .map((row, idx) => {
-      if (!row) {
-        return `<tr>
-          <td class="sr-c">${idx + 1}</td>
-          <td></td><td></td><td></td><td></td>
-          <td class="sr-m"></td>
-          <td></td><td></td><td></td>
-          <td></td>
-          <td class="sr-c"></td>
-          <td></td>
-        </tr>`;
-      }
-      const blockLabel = REIMB_DETAIL_BLOCKS.find((x) => x.value === row.block)?.label || row.block || '';
-      const catLabel = (REIMB_DETAIL_CATEGORY_OPTIONS[row.block] || []).find(([v]) => v === row.category)?.[1] || row.category || '';
-      // 项目编号优先使用单据项目编号；无则按行品牌（年框编号），最后兜底单据 brand 推断
-      const rowBrand = String(row.brand || '').trim();
-      const lineProject =
-        projectBase
-        || (REIMB_DETAIL_BRAND_OPTIONS.includes(rowBrand) ? rowBrand : '')
-        || reimbBrandYearFrameCodeForPdf(p.brand)
-        || rowBrand
-        || '—';
-      const inv = row.invoice === '无' ? '无' : '有';
-      return `<tr>
-        <td class="sr-c">${idx + 1}</td>
-        <td>${escapeHtml(lineProject)}</td>
-        <td>${escapeHtml(blockLabel)}</td>
-        <td>${escapeHtml(catLabel)}</td>
-        <td>${escapeHtml(row.description || '')}</td>
-        <td class="sr-m">${fmtMoney(row.subtotal || 0)}</td>
-        <td class="sr-c">${escapeHtml(inv)}</td>
-        <td>${row.invoice_date ? escapeHtml(String(row.invoice_date).slice(0, 10)) : ''}</td>
-        <td class="sr-invoice-no">${escapeHtml(row.invoice_no || '')}</td>
-        <td>${escapeHtml(payee)}</td>
-        <td class="sr-c">${escapeHtml(statusLabel)}</td>
-        <td>${escapeHtml(row.remarks || '')}</td>
-      </tr>`;
-    })
-    .join('');
+  const pageChunks = [];
+  if (rows.length <= REIMB_PRINT_MAX_ROWS_ONE_PAGE) {
+    pageChunks.push(rows);
+  } else {
+    for (let i = 0; i < rows.length; i += REIMB_PRINT_MAX_ROWS_ONE_PAGE) {
+      pageChunks.push(rows.slice(i, i + REIMB_PRINT_MAX_ROWS_ONE_PAGE));
+    }
+  }
+  if (!pageChunks.length) pageChunks.push([null, null, null]);
 
-  return `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">
-<title>盛融报销单</title>
-<style>
-  @page { size: A4; margin: 12mm 10mm 14mm; }
-  * { box-sizing: border-box; }
-  body { font-family: "Songti SC","SimSun","Noto Serif SC",serif; font-size: 10.5px; color: #1a1a1a; margin: 0; padding: 12px 8px 24px; line-height: 1.45; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-  .sr-sheet { max-width: 190mm; margin: 0 auto; }
-  .sr-title { text-align: center; font-size: 17px; font-weight: 700; letter-spacing: 0.35em; margin: 0 0 10px; }
-  .sr-meta { display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; font-size: 11px; }
-  .sr-meta span { white-space: nowrap; }
-  table.sr-table { width: 100%; border-collapse: collapse; table-layout: auto; }
-  table.sr-table th, table.sr-table td {
-    border: 1px solid #000;
-    padding: 3px 5px;
-    vertical-align: middle;
-    white-space: nowrap;
-    overflow: hidden;
-  }
-  table.sr-table thead th {
-    background: #ececec;
-    font-weight: 600;
-    font-size: 9.5px;
-    text-align: center;
-    line-height: 1.25;
-    white-space: nowrap;
-  }
-  .sr-c { text-align: center; }
-  .sr-m { text-align: right; font-variant-numeric: tabular-nums; }
-  .sr-invoice-no { font-size: 9px; letter-spacing: -0.1px; }
-  .sr-footer { margin-top: 10px; font-size: 11px; display: grid; grid-template-columns: 1fr 1fr; gap: 6px 16px; align-items: center; }
-  .sr-footer-row { grid-column: 1 / -1; display: flex; flex-wrap: wrap; justify-content: space-between; gap: 12px; border-top: 1px solid #000; padding-top: 8px; margin-top: 4px; }
-  .sr-note { margin-top: 8px; font-size: 10px; color: #333; }
-  @media print {
-    body { padding: 0; }
-    .sr-footer-row { break-inside: avoid; }
-  }
-</style></head><body>
-  <div class="sr-sheet">
-    <h1 class="sr-title">盛融报销单</h1>
-    <div class="sr-meta">
-      <span>提报月份：<strong>${escapeHtml(monthLabel)}</strong></span>
-      <span>申请日期：${escapeHtml(dStr || '—')}</span>
-      <span>品牌：${escapeHtml(p.brand || '按明细行归属')}</span>
-    </div>
-    <table class="sr-table" aria-label="报销明细">
-      <thead>
-        <tr>
-          <th>序号</th>
-          <th>项目编号</th>
-          <th>板块</th>
-          <th>类别</th>
-          <th>内容说明</th>
-          <th>报销金额含税</th>
-          <th>发票</th>
-          <th>发票日期</th>
-          <th>发票号码</th>
-          <th>收款方</th>
-          <th>报销状态</th>
-          <th>备注</th>
-        </tr>
-      </thead>
-      <tbody>${lineRows}</tbody>
-    </table>
-    <div class="sr-footer">
+  // 备注：footer 放在最后一页内，避免单独占一页
+
+  const footerHtml = `<div class="sr-footer">
       <div><strong>合计金额（含税）：</strong>${fmtMoney(totalShow)}</div>
       <div><strong>备用金抵扣：</strong>${advance > 0 ? fmtMoney(advance) : '—'}</div>
       <div class="sr-footer-row">
@@ -10083,7 +10404,97 @@ function buildReimbursementPrintableHtml(p) {
         <span><strong>填报人：</strong>${escapeHtml(filer)}</span>
       </div>
     </div>
-    <p class="sr-note">已计入项目成本：${p.merged_into_activity ? '是' : '否'}　｜　使用浏览器「打印 → 另存为 PDF」可选路径导出电子版。</p>
+    <p class="sr-note">已计入项目成本：${p.merged_into_activity ? '是' : '否'}　｜　纸张：A4 横向；行多时将自动分页。导出 PDF 请在打印窗口选择「另存为 PDF」。</p>`;
+
+  const pagesWithFooterHtml = pageChunks
+    .map((chunk, pageIdx) => {
+      const pageNo = pageIdx + 1;
+      const totalPages = pageChunks.length;
+      const startIdx = pageChunks
+        .slice(0, pageIdx)
+        .reduce((n, c) => n + c.length, 0);
+      const tbody = chunk
+        .map((row, i) => buildReimbursementPrintLineRowHtml(row, startIdx + i, lineCtx))
+        .join('');
+      const pageLabel =
+        totalPages > 1
+          ? `<p class="sr-page-no">第 ${pageNo} / ${totalPages} 页</p>`
+          : '';
+      const continueHint =
+        pageIdx < totalPages - 1 ? '<p class="sr-page-continue">（接下页）</p>' : '';
+      const footerOnLast = pageIdx === totalPages - 1 ? footerHtml : '';
+      return `<section class="sr-page">
+      ${pageIdx === 0 ? `<h1 class="sr-title">盛融报销单</h1>
+    <div class="sr-meta">
+      <span>提报月份：<strong>${escapeHtml(monthLabel)}</strong></span>
+      <span>申请日期：${escapeHtml(dStr || '—')}</span>
+      <span>品牌：${escapeHtml(p.brand || '按明细行归属')}</span>
+    </div>` : `<div class="sr-meta sr-meta--sub">
+      <span>盛融报销单（续）</span>
+      <span>提报月份：${escapeHtml(monthLabel)}</span>
+      <span>申请日期：${escapeHtml(dStr || '—')}</span>
+    </div>`}
+    ${pageLabel}
+    <table class="sr-table" aria-label="报销明细">
+      ${buildReimbursementPrintTableHeadHtml()}
+      <tbody>${tbody}</tbody>
+    </table>
+    ${continueHint}
+    ${footerOnLast}
+  </section>`;
+    })
+    .join('');
+
+  return `<!DOCTYPE html><html lang="zh-CN"><head><meta charset="utf-8">
+<title>盛融报销单</title>
+<style>
+  @page { size: A4 landscape; margin: 8mm 10mm 10mm; }
+  * { box-sizing: border-box; }
+  body { font-family: "Songti SC","SimSun","Noto Serif SC",serif; font-size: 9.5px; color: #1a1a1a; margin: 0; padding: 8px 6px 16px; line-height: 1.4; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  .sr-sheet { width: 100%; max-width: 277mm; margin: 0 auto; }
+  .sr-page { page-break-after: always; }
+  .sr-page:last-of-type { page-break-after: auto; }
+  .sr-title { text-align: center; font-size: 16px; font-weight: 700; letter-spacing: 0.35em; margin: 0 0 8px; }
+  .sr-meta { display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; gap: 8px; margin-bottom: 6px; font-size: 10.5px; }
+  .sr-meta--sub { justify-content: flex-start; gap: 16px; font-size: 10px; color: #333; }
+  .sr-meta span { white-space: nowrap; }
+  .sr-page-no { margin: 0 0 4px; font-size: 10px; text-align: right; color: #444; }
+  .sr-page-continue { margin: 4px 0 0; font-size: 10px; text-align: right; color: #666; }
+  table.sr-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+  table.sr-table th, table.sr-table td {
+    border: 1px solid #000;
+    padding: 2px 4px;
+    vertical-align: top;
+    word-break: break-word;
+  }
+  table.sr-table thead th {
+    background: #ececec;
+    font-weight: 600;
+    font-size: 9px;
+    text-align: center;
+    line-height: 1.2;
+    vertical-align: middle;
+    white-space: nowrap;
+  }
+  table.sr-table thead { display: table-header-group; }
+  table.sr-table tr { page-break-inside: avoid; break-inside: avoid; }
+  .sr-c { text-align: center; white-space: nowrap; vertical-align: middle; }
+  .sr-m { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; vertical-align: middle; }
+  .sr-wrap { white-space: normal; line-height: 1.35; }
+  .sr-remarks { white-space: normal; line-height: 1.35; font-size: 9px; }
+  .sr-invoice-no { font-size: 8.5px; letter-spacing: -0.1px; }
+  .sr-footer { margin-top: 8px; font-size: 10.5px; display: grid; grid-template-columns: 1fr 1fr; gap: 6px 16px; align-items: center; page-break-inside: avoid; break-inside: avoid; }
+  .sr-footer-row { grid-column: 1 / -1; display: flex; flex-wrap: wrap; justify-content: space-between; gap: 12px; border-top: 1px solid #000; padding-top: 6px; margin-top: 4px; }
+  .sr-note { margin-top: 6px; font-size: 9.5px; color: #333; }
+  @media print {
+    body { padding: 0; }
+    .sr-page { page-break-after: always; }
+    .sr-page:last-of-type { page-break-after: auto; }
+    .sr-footer, .sr-note { break-inside: avoid; page-break-inside: avoid; }
+  }
+</style></head><body>
+  <div class="sr-sheet">
+    ${pagesWithFooterHtml}
   </div>
 </body></html>`;
 }
@@ -10119,6 +10530,7 @@ async function reimbursementPrintTemplateById(id) {
     openReimbursementPreviewModal({
       title: `盛融报销单 · #${id}`,
       type: 'pdf',
+      recordId: id,
       bodyHtml: `<iframe id="reimbPreviewPdfFrame" style="width:100%;height:70vh;border:1px solid #e5e7eb;border-radius:8px;background:#fff" srcdoc="${escapeHtml(html)}"></iframe>`,
     });
   } catch (e) {
@@ -10133,6 +10545,63 @@ async function reimbursementPrintTemplateById(id) {
 let reimbursementDetailState = { id: null, record: null };
 /** 'reimbursement' | 'material' —— 当前 detail modal 的来源；控制 footer 按钮行为 */
 let detailModalContext = 'reimbursement';
+
+function buildReimbursementClaimStatusEditorHtml(record) {
+  const r = record || {};
+  if (String(r.payment_type || 'personal_reimbursement') !== 'personal_reimbursement') {
+    return `<span class="badge ${reimbClaimStatusBadgeClass(r.claim_status)}">${escapeHtml(reimbClaimStatusLabel(r.claim_status || ''))}</span>`;
+  }
+  const meta = reimbReadDetailMeta(r.remarks || '');
+  const claimStatus = r.claim_status || 'draft';
+  const paymentDate = meta.payment_date || '';
+  const options = reimbClaimStatusOptionsForRecord(r)
+    .map((x) => `<option value="${x.value}" ${x.value === claimStatus ? 'selected' : ''}>${escapeHtml(x.label)}</option>`)
+    .join('');
+  const showDate = reimbClaimStatusNeedsPaymentDate(claimStatus);
+  return `<div class="reimb-claim-status-edit" onclick="event.stopPropagation()">
+    <select class="form-control form-control-sm" id="reimbDetailClaimStatus" onchange="reimbDetailClaimStatusChanged()">${options}</select>
+    <input type="date" class="form-control form-control-sm" id="reimbDetailPaymentDate" value="${escapeHtml(paymentDate)}" style="display:${showDate ? 'block' : 'none'}" />
+    <button type="button" class="btn btn-primary btn-sm" onclick="reimbursementSaveClaimStatus()">保存状态</button>
+  </div>`;
+}
+
+function reimbDetailClaimStatusChanged() {
+  const status = document.getElementById('reimbDetailClaimStatus')?.value || 'draft';
+  const dateEl = document.getElementById('reimbDetailPaymentDate');
+  if (!dateEl) return;
+  dateEl.style.display = reimbClaimStatusNeedsPaymentDate(status) ? 'block' : 'none';
+  if (reimbClaimStatusNeedsPaymentDate(status) && !dateEl.value) {
+    dateEl.value = todayDateInputValue();
+  }
+}
+
+async function reimbursementSaveClaimStatus() {
+  const id = reimbursementDetailState.id;
+  if (!id) return;
+  if (!hasWriteAccess()) {
+    showToast('仅管理员可修改状态', 'warning');
+    return;
+  }
+  const claim_status = document.getElementById('reimbDetailClaimStatus')?.value || 'draft';
+  const payment_date = document.getElementById('reimbDetailPaymentDate')?.value || '';
+  if (reimbClaimStatusNeedsPaymentDate(claim_status) && !payment_date) {
+    showToast('状态为已支付或已报销时，请填写付款日期', 'warning');
+    return;
+  }
+  try {
+    const r = await api('PATCH', `/reimbursements/${id}/claim-status`, {
+      claim_status,
+      payment_date: payment_date || undefined,
+    });
+    reimbursementDetailState.record = r;
+    const bodyEl = document.getElementById('modalReimbDetailBody');
+    if (bodyEl) bodyEl.innerHTML = buildReimbursementDetailModalHtml(r);
+    showToast('状态已更新', 'success');
+    if (currentPage === 'reimbursement') await renderReimbursements();
+  } catch (e) {
+    showToast(e.message || '更新失败', 'error');
+  }
+}
 
 function buildReimbursementDetailModalHtml(record) {
   const r = record || {};
@@ -10154,7 +10623,10 @@ function buildReimbursementDetailModalHtml(record) {
       `<span class="reimb-detail-value ${amountCls}">${fmtMoney(amount)}</span>`,
       true,
     ],
-    ['状态', `<span class="badge ${reimbClaimStatusBadgeClass(r.claim_status)}">${escapeHtml(reimbClaimStatusLabel(r.claim_status || ''))}</span>`, true],
+    ['状态', buildReimbursementClaimStatusEditorHtml(r), true],
+    ...(meta.payment_date
+      ? [['付款日期', `<span class="reimb-detail-value">${escapeHtml(fmtDateShort(meta.payment_date))}</span>`, true]]
+      : []),
     ['付款状态', paymentStatusHtml(r.payment_status, r.payment_order_id)],
     ['收款方', escapeHtml(r.payee_name || '—')],
     ['合并场次', r.merged_into_activity ? '<span class="badge badge-success">已计入</span>' : '<span class="badge badge-gray">未计入</span>'],
@@ -10218,9 +10690,11 @@ function buildReimbursementDetailModalHtml(record) {
 }
 
 function detailModalSyncFooter() {
-  // 成本登记详情仅做编辑/删除/关闭，PDF/打印一律走付款申请 → 付款单出单
   const pdfBtn = document.getElementById('reimbDetailPdfBtn');
-  if (pdfBtn) pdfBtn.style.display = 'none';
+  const excelBtn = document.getElementById('reimbDetailExcelBtn');
+  const showReimb = detailModalContext === 'reimbursement';
+  if (pdfBtn) pdfBtn.style.display = showReimb ? 'inline-flex' : 'none';
+  if (excelBtn) excelBtn.style.display = showReimb ? 'inline-flex' : 'none';
 }
 
 async function reimbursementOpenDetailModal(id) {
@@ -10348,9 +10822,17 @@ async function reimbursementDetailDelete() {
   }
 }
 
-/** @deprecated 成本登记详情已禁用 PDF 预览；保留以兼容旧入口 */
+/** 成本登记详情：盛融报销单模板预览 / 打印 / 导出 PDF */
 async function reimbursementDetailPdfPreview() {
-  showToast('请在「付款申请」中生成付款单进行预览/导出', 'info');
+  const id = reimbursementDetailState.id;
+  if (!Number.isFinite(id)) return;
+  await reimbursementPrintTemplateById(id);
+}
+
+function reimbursementDetailExcelDownload() {
+  const id = reimbursementDetailState.id;
+  if (!Number.isFinite(id)) return;
+  reimbursementDownloadExcel(id);
 }
 
 async function reimbursementEditById(id) {
@@ -10424,10 +10906,11 @@ async function showReimbursementForm(record) {
   const payeeVal = record && record.payee_name ? String(record.payee_name) : '';
   const costModuleVal = record && record.cost_module ? String(record.cost_module) : 'activity';
   const claimStatusVal = record && record.claim_status ? String(record.claim_status) : 'draft';
+  const paymentTypeVal = record && record.payment_type ? String(record.payment_type) : 'personal_reimbursement';
   const costModuleOptions = REIMB_COST_MODULE_OPTIONS
     .map((x) => `<option value="${x.value}" ${x.value === costModuleVal ? 'selected' : ''}>${x.label}</option>`)
     .join('');
-  const claimStatusOptions = REIMB_CLAIM_STATUS_OPTIONS
+  const claimStatusOptions = reimbClaimStatusOptionsForRecord({ payment_type: paymentTypeVal })
     .map((x) => `<option value="${x.value}" ${x.value === claimStatusVal ? 'selected' : ''}>${x.label}</option>`)
     .join('');
 
@@ -10498,7 +10981,7 @@ async function showReimbursementForm(record) {
             <label class="form-label">收款方</label>
             <input type="text" class="form-control" id="reimbPayeeName" placeholder="用于付款合并；生成付款单前必填" value="${escapeHtml(payeeVal)}">
           </div>
-          <div class="form-group" id="reimbPaymentDateWrap" style="display:${claimStatusVal === 'paid' ? 'block' : 'none'}">
+          <div class="form-group" id="reimbPaymentDateWrap" style="display:${reimbClaimStatusNeedsPaymentDate(claimStatusVal) ? 'block' : 'none'}">
             <label class="form-label">付款日期</label>
             <input type="date" class="form-control" id="reimbPaymentDate" value="${escapeHtml(paymentDateVal)}">
           </div>
@@ -10556,6 +11039,9 @@ async function showReimbursementForm(record) {
       </div>
       <footer class="reimb-inline-footer">
         <button type="button" class="btn btn-secondary" onclick="hideReimbursementInline()">取消</button>
+        <button type="button" class="btn btn-secondary" onclick="reimbursementPrintCurrentForm()">预览 / 打印</button>
+        <button type="button" class="btn btn-secondary" onclick="reimbursementPreviewCsvFromForm()">CSV 预览</button>
+        ${rid ? `<button type="button" class="btn btn-secondary" onclick="reimbursementDownloadExcel(${rid})">导出 Excel</button>` : ''}
         <button type="button" class="btn btn-primary" onclick="saveReimbursementForm()">保存</button>
       </footer>
     </section>
@@ -10652,8 +11138,8 @@ async function saveReimbursementForm() {
     showToast('项目编号请从下拉候选中选中；若不关联请清空输入', 'warning');
     return;
   }
-  if (claim_status === 'paid' && !payment_date) {
-    showToast('状态为已支付时，请填写付款日期', 'warning');
+  if (reimbClaimStatusNeedsPaymentDate(claim_status) && !payment_date) {
+    showToast('状态为已支付或已报销时，请填写付款日期', 'warning');
     return;
   }
   if (!rows.length) {
@@ -11094,6 +11580,8 @@ function reimbursementRenderListDom() {
                     <td class="reimbursement-list-remarks" title="${escapeHtml(visibleRemarks)}">${escapeHtml(visibleRemarks || '—')}</td>
                     <td onclick="event.stopPropagation()">
                       <div class="reimbursement-row-actions">
+                      <button type="button" class="btn btn-secondary btn-sm" title="盛融报销单预览/打印" onclick="event.stopPropagation();reimbursementPrintTemplateById(${r.id})">打印</button>
+                      <button type="button" class="btn btn-secondary btn-sm" title="导出盛融报销单 Excel" onclick="event.stopPropagation();reimbursementDownloadExcel(${r.id})">Excel</button>
                       <button type="button" class="btn btn-secondary btn-sm" onclick="reimbursementEditById(${r.id})">编辑</button>
                       <button type="button" class="btn btn-danger btn-sm" onclick="deleteReimbursementRecord(${r.id})">删除</button>
                       </div>
@@ -12793,11 +13281,421 @@ function invItemWineCatalogKey(it) {
   return `${n}\0${ds}`;
 }
 
+/** 与酒品目录入库、后端排查一致：仅用容量 volume_label 作为规格键 */
+function invWineCatalogMatchSpec(c) {
+  return String(c?.volume_label || '').trim();
+}
+
 function invCatalogRowWineKey(c) {
-  const spec = wineCatalogSpecLine(c);
   const n = String(c.name || '').trim();
-  const ds = spec == null ? '' : String(spec).trim();
+  const ds = invWineCatalogMatchSpec(c);
   return `${n}\0${ds}`;
+}
+
+const INV_WINE_AUDIT_STATUS_LABEL = {
+  catalog_ok: '已与目录一致',
+  catalog_spec_mismatch: '规格与目录展示不一致',
+  catalog_name_only: '名称在目录、规格未对齐',
+  not_in_catalog: '未在酒品目录',
+};
+
+async function invOpenWineAuditModal() {
+  openModal('modalInvWineAudit');
+  const body = document.getElementById('invWineAuditBody');
+  if (!body) return;
+  body.innerHTML = '<div class="empty-state">正在对照各仓库物料与酒品目录…</div>';
+  try {
+    const res = await api('GET', '/inventory/wine-audit');
+    invRenderWineAuditBody(res.data || res);
+  } catch (e) {
+    body.innerHTML = `<div class="empty-state"><div class="empty-title">加载失败</div><div class="empty-sub">${escapeHtml(e.message || '')}</div></div>`;
+  }
+  renderLucideIcons();
+}
+
+function invRenderWineAuditBody(payload) {
+  const body = document.getElementById('invWineAuditBody');
+  if (!body || !payload) return;
+  const s = payload.summary || {};
+  const rules = payload.rules || {};
+  const rows = [];
+  (payload.warehouses_all || payload.warehouses || []).forEach((wh) => {
+    (wh.needs_review || []).forEach((it) => {
+      rows.push({ wh, it, kind: 'needs_review' });
+    });
+  });
+  const mismatchRows = [];
+  (payload.warehouses_all || []).forEach((wh) => {
+    (wh.spec_mismatch || []).forEach((it) => {
+      if (!it.needs_review) mismatchRows.push({ wh, it });
+    });
+  });
+
+  const rowHtml = (list, emptyMsg) => {
+    if (!list.length) {
+      return `<tr><td colspan="7" class="inv-wine-audit-empty">${escapeHtml(emptyMsg)}</td></tr>`;
+    }
+    return list
+      .map(({ wh, it }) => {
+        const spec = it.dimensions ? escapeHtml(String(it.dimensions)) : '—';
+        const status =
+          INV_WINE_AUDIT_STATUS_LABEL[it.catalog_status] || it.catalog_status_label || it.catalog_status;
+        const wineTag = invItemIsWineTagged(it)
+          ? `<span class="inv-badge-wine">已标记</span> ${escapeHtml(it.wine_label || it.name || '')}`
+          : '<span style="color:var(--text-muted)">未标记</span>';
+        return `<tr>
+          <td>${escapeHtml(wh.warehouse_label || '—')}</td>
+          <td><strong>${escapeHtml(it.name || '')}</strong></td>
+          <td>${spec}</td>
+          <td class="numeric">${escapeHtml(String(it.quantity_on_hand ?? 0))}</td>
+          <td class="inv-wine-audit-tag-col">${wineTag}</td>
+          <td><span class="inv-wine-audit-badge inv-wine-audit-badge--${escapeHtml(it.catalog_status)}">${escapeHtml(status)}</span></td>
+          <td class="inv-wine-audit-hint">${it.is_common ? '常用物料 ' : ''}疑似酒类${it.catalog_status === 'not_in_catalog' ? '，建议核对是否应从酒品目录添加或补标签' : '，建议统一规格写法'}${invItemIsWineTagged(it) ? '' : ' · 可点「批量对齐目录标签」或到物料编辑勾选参与用酒统计'}</td>
+        </tr>`;
+      })
+      .join('');
+  };
+
+  body.innerHTML = `
+    <p class="form-hint inv-wine-audit-lead">用于不定期核对<strong>各仓库实物酒</strong>是否与<strong>酒品目录</strong>一致。下列「待核对」为疑似酒类且未与目录规格完全对齐的物料（含手工录入、物品目录导入等）。</p>
+    <div class="inv-wine-audit-summary">
+      <div class="inv-wine-audit-stat"><span class="k">酒品目录条数</span><span class="v">${s.catalog_count ?? 0}</span></div>
+      <div class="inv-wine-audit-stat"><span class="k">仓库物料总数</span><span class="v">${s.item_count ?? 0}</span></div>
+      <div class="inv-wine-audit-stat"><span class="k">疑似酒类</span><span class="v">${s.suspected_count ?? 0}</span></div>
+      <div class="inv-wine-audit-stat"><span class="k">已与目录一致</span><span class="v">${s.catalog_ok_count ?? 0}</span></div>
+      <div class="inv-wine-audit-stat inv-wine-audit-stat--warn"><span class="k">待核对</span><span class="v">${s.needs_review_count ?? 0}</span></div>
+      <div class="inv-wine-audit-stat"><span class="k">仅规格不一致</span><span class="v">${s.spec_mismatch_count ?? 0}</span></div>
+    </div>
+    <details class="inv-wine-audit-rules">
+      <summary>识别规则说明</summary>
+      <ul>
+        <li><strong>目录一致</strong>：${escapeHtml(rules.catalog_match || '')}</li>
+        <li><strong>疑似酒类</strong>：${escapeHtml(rules.suspected || '')}</li>
+        <li><strong>酒类标签</strong>：在物料编辑中勾选「参与用酒统计」并填写「酒类统计名」；从酒品目录添加的物料会自动标记。可在本页下方使用「批量对齐目录标签」。</li>
+      </ul>
+    </details>
+    <h4 class="inv-wine-audit-section-title">待核对（疑似酒 · 未与目录完全对齐）· ${rows.length} 条</h4>
+    <div class="table-wrapper inv-wine-audit-table-wrap">
+      <table class="data-table inv-wine-audit-table">
+        <thead><tr><th>仓库</th><th>物料名称</th><th>规格</th><th>库存</th><th>用酒标签</th><th>对照结果</th><th>说明</th></tr></thead>
+        <tbody>${rowHtml(rows, '暂无待核对项，各仓疑似酒类均已与酒品目录对齐。')}</tbody>
+      </table>
+    </div>
+    ${
+      mismatchRows.length
+        ? `<h4 class="inv-wine-audit-section-title">已在目录但规格写法不一致 · ${mismatchRows.length} 条</h4>
+    <div class="table-wrapper inv-wine-audit-table-wrap">
+      <table class="data-table inv-wine-audit-table">
+        <thead><tr><th>仓库</th><th>物料名称</th><th>规格</th><th>库存</th><th>用酒标签</th><th>对照结果</th><th>说明</th></tr></thead>
+        <tbody>${rowHtml(mismatchRows, '')}</tbody>
+      </table>
+    </div>`
+        : ''
+    }
+    <div class="inv-wine-audit-actions">
+      <button type="button" class="btn btn-secondary btn-sm" onclick="invBackfillWineTags()">批量对齐目录标签</button>
+      <span class="form-hint">将名称+规格与酒品目录一致的物料自动标记为酒类并写入统计名</span>
+    </div>`;
+}
+
+async function invBackfillWineTags() {
+  try {
+    const res = await api('POST', '/inventory/items/backfill-wine-tags');
+    showToast(`已更新 ${res.updated ?? 0} 条物料的酒类标签`, 'success');
+    invOpenWineAuditModal();
+  } catch (e) {
+    showToast(e.message || '批量标记失败', 'error');
+  }
+}
+
+function invItemIsWineTagged(it) {
+  if (!it) return false;
+  if (Number(it.is_wine) === 1 || it.is_wine === true) return true;
+  return false;
+}
+
+function invWineBadgeHtml(it) {
+  if (!invItemIsWineTagged(it)) return '';
+  const lbl = String(it.wine_label || it.name || '参与用酒统计').trim();
+  return `<span class="inv-badge-wine" title="${escapeHtml(lbl)}">酒</span>`;
+}
+
+function invWineUsageStatsQueryString(download) {
+  const yf = currentYearFrameId || 1;
+  const p = new URLSearchParams();
+  p.set('yearFrameId', String(yf));
+  if (wineUsageStatsState.region) p.set('region', wineUsageStatsState.region);
+  if (wineUsageStatsState.belonging) p.set('belonging', wineUsageStatsState.belonging);
+  if (wineUsageStatsState.projectCode) p.set('project_code', wineUsageStatsState.projectCode);
+  if (wineUsageStatsState.dateFrom) p.set('date_from', wineUsageStatsState.dateFrom);
+  if (wineUsageStatsState.dateTo) p.set('date_to', wineUsageStatsState.dateTo);
+  if (wineUsageStatsState.month) p.set('month', wineUsageStatsState.month);
+  if (download) p.set('download', '1');
+  return p.toString();
+}
+
+function invRenderWineUsageStatsTable(payload) {
+  const wines = payload?.wines || [];
+  const rows = payload?.rows || [];
+  const summary = payload?.summary || {};
+  const filters = payload?.filters || {};
+  const searchQ = String(filters.project_code || '').trim();
+  const searchHint = searchQ
+    ? `<div class="inv-ob-search-result-hint">项目编号关键词「${escapeHtml(searchQ)}」· 显示 <strong>${rows.length}</strong> 个场次</div>`
+    : '';
+  if (!wines.length) {
+    return `${searchHint}<div class="empty-state inv-wine-stats-empty">用酒统计列加载失败，请刷新重试。</div>`;
+  }
+  const headCells = wines
+    .map((w) => {
+      const name =
+        w.isPlaceholder || String(w.label || '').startsWith('__slot__')
+          ? w.displayName || w.label
+          : w.label || w.displayName;
+      const vol = w.volume ? String(w.volume) : '';
+      const normTail = (s) =>
+        String(s || '')
+          .toLowerCase()
+          .replace(/\s+/g, '')
+          .replace(/毫升/g, 'ml');
+      const showVolLine =
+        vol &&
+        !normTail(name).endsWith(normTail(vol)) &&
+        !normTail(name).includes(normTail(vol));
+      const volLine = showVolLine
+        ? `<span class="inv-wine-stats-wine-vol">${escapeHtml(vol)}</span>`
+        : '';
+      const title = vol && !showVolLine ? `${name} · ${vol}` : name;
+      return `<th class="inv-wine-stats-wine-col" title="${escapeHtml(title)} · 合计 ${w.total} 瓶">
+        <div class="inv-wine-stats-wine-head">
+          <span class="inv-wine-stats-wine-name">${escapeHtml(name)}</span>
+          ${volLine}
+          <span class="inv-wine-stats-wine-total">合计 ${w.total}</span>
+        </div>
+      </th>`;
+    })
+    .join('');
+  const bodyRows = rows
+    .map((r) => {
+      const cells = wines
+        .map((w) => {
+          const q = r.quantities[w.label];
+          const txt = q > 0 ? String(q) : '—';
+          return `<td class="inv-wine-stats-qty numeric">${escapeHtml(txt)}</td>`;
+        })
+        .join('');
+      return `<tr>
+        <td class="inv-wine-stats-fixed">${escapeHtml(r.region || '—')}</td>
+        <td class="inv-wine-stats-fixed inv-wine-stats-proj">${escapeHtml(r.project_code || '—')}</td>
+        <td class="inv-wine-stats-fixed">${escapeHtml(r.belonging || '—')}</td>
+        ${cells}
+      </tr>`;
+    })
+    .join('');
+  return `
+    ${searchHint}
+    <p class="form-hint inv-wine-stats-summary">共 <strong>${summary.session_count ?? 0}</strong> 个场次 · 固定 <strong>${summary.wine_column_count ?? wines.length}</strong> 列酒品 · 本期有出库 <strong>${summary.wine_kind_count ?? 0}</strong> 种 · 合计 <strong>${summary.total_bottles ?? 0}</strong> 瓶</p>
+    <div class="inv-wine-stats-table-wrap table-wrapper" id="invWineStatsPrintArea">
+      <table class="data-table inv-wine-stats-table">
+        <thead>
+          <tr>
+            <th class="inv-wine-stats-fixed">区域</th>
+            <th class="inv-wine-stats-fixed">项目编号</th>
+            <th class="inv-wine-stats-fixed">归属</th>
+            ${headCells}
+          </tr>
+        </thead>
+        <tbody>${bodyRows || '<tr><td colspan="' + (3 + wines.length) + '" class="inv-wine-stats-empty-cell">无匹配场次</td></tr>'}</tbody>
+      </table>
+    </div>`;
+}
+
+async function invLoadWineUsageStats() {
+  const host = document.getElementById('invWineStatsTableHost');
+  if (!host) return;
+  host.innerHTML = '<div class="empty-state">加载中…</div>';
+  try {
+    const qs = invWineUsageStatsQueryString(false);
+    const res = await api('GET', `/inventory/wine-usage-stats?${qs}`);
+    const payload = res.data || res;
+    wineUsageStatsState.lastPayload = payload;
+    host.innerHTML = invRenderWineUsageStatsTable(payload);
+  } catch (e) {
+    host.innerHTML = `<div class="empty-state"><div class="empty-title">加载失败</div><div class="empty-sub">${escapeHtml(e.message || '')}</div></div>`;
+  }
+}
+
+function invWineStatsReadFiltersFromDom() {
+  wineUsageStatsState.region = document.getElementById('invWineStatsRegion')?.value || '';
+  wineUsageStatsState.belonging = document.getElementById('invWineStatsBelonging')?.value || '';
+  wineUsageStatsState.projectCode = document.getElementById('invWineStatsSearch')?.value?.trim() || '';
+  wineUsageStatsState.dateFrom = document.getElementById('invWineStatsDateFrom')?.value || '';
+  wineUsageStatsState.dateTo = document.getElementById('invWineStatsDateTo')?.value || '';
+  wineUsageStatsState.month = document.getElementById('invWineStatsMonth')?.value || '';
+}
+
+function invWineStatsApplyFilters() {
+  invWineStatsReadFiltersFromDom();
+  invLoadWineUsageStats();
+}
+
+function invOnWineStatsSearchInput(value) {
+  const v = String(value == null ? '' : value);
+  wineUsageStatsState.projectCode = v.trim();
+  const input = document.getElementById('invWineStatsSearch');
+  if (input && input.value !== v) input.value = v;
+  const wrap = document.getElementById('invWineStatsSearchWrap');
+  if (wrap) {
+    const existed = wrap.querySelector('.inv-ob-search-clear');
+    if (v.trim() && !existed) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'inv-ob-search-clear';
+      btn.setAttribute('aria-label', '清除搜索');
+      btn.innerHTML = '<i data-lucide="x" aria-hidden="true"></i>';
+      btn.addEventListener('click', () => invOnWineStatsSearchInput(''));
+      wrap.appendChild(btn);
+      renderLucideIcons();
+    } else if (!v.trim() && existed) {
+      existed.remove();
+    }
+  }
+  clearTimeout(wineStatsSearchTimer);
+  wineStatsSearchTimer = setTimeout(() => invWineStatsApplyFilters(), 400);
+}
+
+function invWineStatsResetFilters() {
+  wineUsageStatsState.region = '';
+  wineUsageStatsState.belonging = '';
+  wineUsageStatsState.projectCode = '';
+  wineUsageStatsState.dateFrom = '';
+  wineUsageStatsState.dateTo = '';
+  wineUsageStatsState.month = '';
+  renderWineUsageStats();
+}
+
+async function invWineStatsDownloadExcel() {
+  try {
+    const qs = invWineUsageStatsQueryString(true);
+    const res = await fetch(`/api/inventory/wine-usage-stats/excel?${qs}`, { credentials: 'include' });
+    if (!res.ok) {
+      let msg = `导出失败 (${res.status})`;
+      try {
+        const j = await res.json();
+        if (j?.error) msg = j.error;
+      } catch (_) { /* ignore */ }
+      throw new Error(msg);
+    }
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = invFilenameFromDisposition(
+      res.headers.get('content-disposition'),
+      `用酒统计_${todayDateInputValue()}.xlsx`,
+    );
+    a.click();
+    URL.revokeObjectURL(url);
+    showToast('Excel 已下载', 'success');
+  } catch (e) {
+    showToast(e.message || 'Excel 导出失败', 'error');
+  }
+}
+
+function invWineStatsPrint() {
+  const area = document.getElementById('invWineStatsPrintArea');
+  if (!area) {
+    showToast('请先加载统计表格', 'warning');
+    return;
+  }
+  const win = window.open('', '_blank');
+  if (!win) {
+    showToast('无法打开打印窗口，请允许弹窗', 'warning');
+    return;
+  }
+  const payload = wineUsageStatsState.lastPayload;
+  const summary = payload?.summary || {};
+  win.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>用酒统计</title>
+    <style>
+      body{font-family:system-ui,sans-serif;font-size:12px;padding:16px;color:#111}
+      h1{font-size:18px;margin:0 0 8px}
+      .meta{color:#444;margin-bottom:12px}
+      table{border-collapse:collapse;width:100%}
+      th,td{border:1px solid #888;padding:4px 6px;text-align:center}
+      th{background:#f0f0f0;font-size:11px}
+      td.proj{text-align:left;max-width:220px;word-break:break-all}
+      .wine-h{display:block;font-weight:700}
+      .wine-t{font-size:10px;color:#555}
+    </style></head><body>
+    <h1>用酒统计</h1>
+    <p class="meta">场次 ${summary.session_count ?? 0} · 酒品 ${summary.wine_kind_count ?? 0} · 合计 ${summary.total_bottles ?? 0} 瓶</p>
+    ${area.outerHTML}
+    </body></html>`);
+  win.document.close();
+  win.focus();
+  win.print();
+}
+
+async function renderWineUsageStats() {
+  const container = document.getElementById('pageContainer');
+  let regionOpts = '';
+  let belongingOpts = '<option value="">全部归属</option>';
+  try {
+    const regions = await api('GET', '/lookups?category=activity_region');
+    regionOpts = (regions || [])
+      .map(
+        (r) =>
+          `<option value="${escapeHtml(String(r.value))}"${wineUsageStatsState.region === String(r.value) ? ' selected' : ''}>${escapeHtml(String(r.label || r.value))}</option>`,
+      )
+      .join('');
+  } catch (e) {
+    console.warn('用酒统计·区域筛选项加载失败', e);
+  }
+  try {
+    const rows = await api('GET', '/lookups?category=activity_belonging');
+    belongingOpts +=
+      (rows || [])
+        .map(
+          (r) =>
+            `<option value="${escapeHtml(String(r.value))}"${wineUsageStatsState.belonging === String(r.value) ? ' selected' : ''}>${escapeHtml(String(r.label || r.value))}</option>`,
+        )
+        .join('') || '';
+  } catch (_) { /* ignore */ }
+
+  const searchVal = escapeHtml(wineUsageStatsState.projectCode || '');
+  const searchClearBtn = wineUsageStatsState.projectCode
+    ? `<button type="button" class="inv-ob-search-clear" aria-label="清除搜索" onclick="invOnWineStatsSearchInput('')"><i data-lucide="x" aria-hidden="true"></i></button>`
+    : '';
+
+  container.innerHTML = `
+    <div class="inv-wine-stats-page">
+      <p class="form-hint inv-wine-stats-lead">按<strong>场次</strong>汇总已标记「参与用酒统计」的出库酒品数量。酒品列按<strong>固定顺序</strong>全部展示（含本期零用量）；数字为各场次出库瓶数，无出库显示「—」。表头为仓库<strong>酒类统计名</strong>全文。</p>
+      <div class="toolbar inv-wine-stats-toolbar">
+        <select class="filter-select" id="invWineStatsRegion" onchange="invWineStatsApplyFilters()">
+          <option value="">全部区域</option>${regionOpts}
+        </select>
+        <select class="filter-select" id="invWineStatsBelonging" onchange="invWineStatsApplyFilters()">${belongingOpts}</select>
+        <div class="inv-ob-search inv-wine-stats-search" id="invWineStatsSearchWrap">
+          <input type="search" id="invWineStatsSearch" class="form-control form-control-sm inv-ob-search-input"
+            placeholder="关键词：项目编号（空格分隔多词）"
+            value="${searchVal}"
+            oninput="invOnWineStatsSearchInput(this.value)"
+            aria-label="按项目编号关键词筛选">
+          ${searchClearBtn}
+        </div>
+        <input type="month" class="filter-input" id="invWineStatsMonth" value="${escapeHtml(wineUsageStatsState.month)}" onchange="invWineStatsApplyFilters()" title="按活动月份">
+        <input type="date" class="filter-input" id="invWineStatsDateFrom" value="${escapeHtml(wineUsageStatsState.dateFrom)}" onchange="invWineStatsApplyFilters()" title="活动日起">
+        <input type="date" class="filter-input" id="invWineStatsDateTo" value="${escapeHtml(wineUsageStatsState.dateTo)}" onchange="invWineStatsApplyFilters()" title="活动日止">
+        <button type="button" class="btn btn-secondary btn-sm" onclick="invWineStatsResetFilters()">重置</button>
+        <button type="button" class="btn btn-primary btn-sm" onclick="invWineStatsApplyFilters()">查询</button>
+        <span style="flex:1"></span>
+        <button type="button" class="btn btn-secondary btn-sm" onclick="invWineStatsDownloadExcel()">导出 Excel</button>
+        <button type="button" class="btn btn-secondary btn-sm" onclick="invWineStatsPrint()">打印</button>
+      </div>
+      <div id="invWineStatsTableHost"></div>
+    </div>`;
+
+  await invLoadWineUsageStats();
 }
 
 function invSetItemsListFilter(mode) {
@@ -13180,8 +14078,12 @@ function invSelectWarehouse(warehouseId) {
 }
 
 function invItemActionsHtml(it) {
+  const wineBtn = invItemIsWineTagged(it)
+    ? `<button type="button" class="btn btn-xs btn-ghost inv-admin-only inv-btn-wine-on" onclick="event.stopPropagation();invToggleItemWine(${it.id}, 0)" title="取消参与用酒统计">取消酒标</button>`
+    : `<button type="button" class="btn btn-xs btn-ghost inv-admin-only" onclick="event.stopPropagation();invToggleItemWine(${it.id}, 1)" title="标记为酒类并参与用酒统计">标为酒类</button>`;
   return `<span class="inv-item-actions">
     <button type="button" class="btn btn-xs btn-secondary inv-admin-only" onclick="event.stopPropagation();invOpenEditItem(${it.id})">编辑</button>
+    ${wineBtn}
     <button type="button" class="btn btn-xs btn-ghost inv-admin-only" onclick="event.stopPropagation();invToggleItemCommon(${it.id}, ${invItemIsCommon(it) ? 0 : 1})" title="常用物料会在新建出库时优先列出">${invItemIsCommon(it) ? '取消常用' : '设为常用'}</button>
     <button type="button" class="btn btn-xs btn-ghost inv-admin-only" onclick="event.stopPropagation();invDeleteItem(${it.id})">删除</button>
   </span>`;
@@ -13197,13 +14099,14 @@ function invRenderItemsPanel(items, viewMode) {
     const rows = items
       .map((it) => {
         const commonBadge = invItemIsCommon(it) ? '<span class="inv-badge-common">常用</span>' : '';
+        const wineBadge = invWineBadgeHtml(it);
         const to = invStatQty(it.total_outbound);
         const tdmg = invStatQty(it.total_damaged);
         const tlost = invStatQty(it.total_lost);
         return `<tr class="inv-item-clickable-row" data-item-id="${it.id}" onclick="invOpenItemDetail(${it.id})">
           <td class="inv-items-col-thumb"><div class="inv-list-thumb">${invItemImageInnerHtml(it)}</div></td>
           <td class="inv-items-col-name">
-            <div class="inv-list-name">${escapeHtml(it.name)} ${commonBadge}</div>
+            <div class="inv-list-name">${escapeHtml(it.name)} ${commonBadge}${wineBadge}</div>
           </td>
           <td class="inv-items-col-spec">${escapeHtml(it.dimensions || '—')}</td>
           <td class="inv-items-col-stat" title="归还登记中损坏合计">${tdmg}</td>
@@ -13238,11 +14141,12 @@ function invRenderItemsPanel(items, viewMode) {
     const tiles = items
       .map((it) => {
         const commonBadge = invItemIsCommon(it) ? '<span class="inv-badge-common">常用</span>' : '';
+        const wineBadge = invWineBadgeHtml(it);
         return `
         <div class="inv-thumb-tile inv-item-clickable-card" data-item-id="${it.id}" onclick="invOpenItemDetail(${it.id})">
           <div class="inv-thumb-tile-img">${invItemImageInnerHtml(it)}</div>
           <div class="inv-thumb-tile-body">
-            <div class="inv-thumb-tile-title">${escapeHtml(it.name)} ${commonBadge}</div>
+            <div class="inv-thumb-tile-title">${escapeHtml(it.name)} ${commonBadge}${wineBadge}</div>
             <div class="inv-thumb-tile-meta">
               <span class="${invStockClass(it)}">库存 ${it.quantity_on_hand}</span>
               ${invItemActionsHtml(it)}
@@ -13261,11 +14165,12 @@ function invRenderItemsPanel(items, viewMode) {
         .map((it) => {
           const img = (it.image_urls && it.image_urls[0]) ? `<img src="${escapeHtml(it.image_urls[0])}" alt="">` : '<span style="color:var(--text-muted);font-size:12px">无图</span>';
           const commonBadge = invItemIsCommon(it) ? '<span class="inv-badge-common">常用</span>' : '';
+          const wineBadge = invWineBadgeHtml(it);
           return `
           <div class="inv-item-card inv-item-clickable-card" data-item-id="${it.id}" onclick="invOpenItemDetail(${it.id})">
             <div class="inv-item-card-img">${img}</div>
             <div style="padding:12px">
-              <div style="font-weight:700;font-size:14px;margin-bottom:6px;display:flex;align-items:center;gap:6px;flex-wrap:wrap">${escapeHtml(it.name)} ${commonBadge}</div>
+              <div style="font-weight:700;font-size:14px;margin-bottom:6px;display:flex;align-items:center;gap:6px;flex-wrap:wrap">${escapeHtml(it.name)} ${commonBadge}${wineBadge}</div>
               <div style="font-size:12px;color:var(--text-muted);margin-bottom:8px">${escapeHtml(it.dimensions || '—')} ｜ ${escapeHtml((it.description || '').slice(0, 80))}${(it.description || '').length > 80 ? '…' : ''}</div>
               <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">
                 <span class="${invStockClass(it)}">库存 ${it.quantity_on_hand} <span style="font-size:11px;font-weight:500">(${invStockLabel(it)})</span></span>
@@ -13410,6 +14315,7 @@ async function invOpenItemDetail(itemId) {
         <div style="display:grid;grid-template-columns:96px 1fr;gap:7px 12px;font-size:13px;line-height:1.55">
           <div style="color:var(--text-muted)">名称</div><div style="font-weight:700">${escapeHtml(it.name || '—')}</div>
           <div style="color:var(--text-muted)">规格</div><div>${escapeHtml(it.dimensions || '—')}</div>
+          <div style="color:var(--text-muted)">用酒统计</div><div>${invItemIsWineTagged(it) ? `是 · ${escapeHtml(it.wine_label || it.name || '—')}` : '否'}</div>
           <div style="color:var(--text-muted)">库存</div><div><span class="${invStockClass(it)}">${escapeHtml(String(it.quantity_on_hand ?? 0))}</span></div>
           <div style="color:var(--text-muted)">累计出库</div><div>${escapeHtml(String(invStatQty(it.total_outbound)))}</div>
           <div style="color:var(--text-muted)">损坏 / 丢失</div><div>${escapeHtml(String(invStatQty(it.total_damaged)))} / ${escapeHtml(String(invStatQty(it.total_lost)))}</div>
@@ -15175,7 +16081,7 @@ async function renderInventory() {
         cat = [];
       }
       const set = new Set((Array.isArray(cat) ? cat : []).map((c) => invCatalogRowWineKey(c)));
-      displayItems = items.filter((it) => set.has(invItemWineCatalogKey(it)));
+      displayItems = items.filter((it) => invItemIsWineTagged(it) || set.has(invItemWineCatalogKey(it)));
     }
   }
 
@@ -15229,6 +16135,13 @@ async function renderInventory() {
       panelHtml = invRenderItemsPanel(displayItems, itemsViewMode);
     }
   } else if (invPage === 'outbound') {
+    try {
+      await api('POST', '/inventory/outbound/repair-project-codes', {
+        yearFrameId: currentYearFrameId || undefined,
+      });
+    } catch (e) {
+      console.warn('出库单项目编号同步失败（忽略）', e);
+    }
     let allOrders = [];
     try {
       allOrders = await api('GET', `/inventory/outbound${invOutboundListQuery()}`);
@@ -15360,6 +16273,7 @@ async function renderInventory() {
       <button type="button" class="btn btn-primary btn-sm inv-admin-only" onclick="invOpenNewItemModal()" ${inventoryPageState.warehouseId ? '' : 'disabled'}>添加物料</button>
       <button type="button" class="btn btn-secondary btn-sm inv-admin-only" onclick="invOpenAddItemCatalogModal()" ${inventoryPageState.warehouseId ? '' : 'disabled'}>物品目录</button>
       <button type="button" class="btn btn-secondary btn-sm inv-admin-only" onclick="invOpenAddWineModal()" ${inventoryPageState.warehouseId ? '' : 'disabled'}>酒品目录</button>
+      <button type="button" class="btn btn-secondary btn-sm" onclick="invOpenWineAuditModal()" title="各仓库疑似酒类 vs 酒品目录">酒品对照排查</button>
       <button type="button" class="btn btn-secondary btn-sm inv-admin-only" onclick="invOpenInboundModal()" ${inventoryPageState.warehouseId ? '' : 'disabled'}>物料入库</button>
       <span class="form-hint" style="flex:1;min-width:200px;margin:0">仓库与物料为 <strong>25/26 财年共用</strong>；点击「+ 新建仓库」可补建；点击仓库卡片右上「编辑」可改名称/品牌/区域/城市/备注。按项目编号匹配场次时请先选左侧年度。</span>
     </div>`;
@@ -15369,6 +16283,7 @@ async function renderInventory() {
     </div>
     <div class="inv-toolbar inv-toolbar-master">
       <button type="button" class="btn btn-primary btn-sm inv-admin-only" onclick="openWineCatalogModal(null)">添加酒品</button>
+      <button type="button" class="btn btn-secondary btn-sm" onclick="invOpenWineAuditModal()" title="各仓库疑似酒类 vs 酒品目录">酒品对照排查</button>
       <span class="form-hint" style="flex:1;min-width:200px;margin:0">酒品<strong>目录</strong>为全局主数据（品牌、名称、规格、图片），<strong>不含分仓库存</strong>；向某仓库加酒请在对应仓库下使用「添加酒品」。</span>
     </div>`;
   const masterToolbarEmpty = `
@@ -15720,6 +16635,30 @@ async function invToggleItemCommon(id, asCommon) {
   try {
     await api('PUT', `/inventory/items/${id}`, { is_common: Boolean(asCommon) });
     showToast(asCommon ? '已设为常用物料' : '已取消常用', 'success');
+    await renderInventory();
+    invRestorePageScrollPosition(pageScrollSnapshot);
+  } catch (e) {
+    showToast(e.message || '更新失败', 'error');
+  }
+}
+
+async function invToggleItemWine(id, asWine) {
+  if (!hasWriteAccess()) {
+    showToast('仅管理员可修改酒类标签', 'warning');
+    return;
+  }
+  const pageScrollSnapshot = invCapturePageScrollPosition(id);
+  try {
+    let wineLabel = null;
+    if (asWine) {
+      const it = await api('GET', `/inventory/items/${id}`);
+      wineLabel = String(it.wine_label || '').trim() || String(it.name || '').trim() || null;
+    }
+    await api('PUT', `/inventory/items/${id}`, {
+      is_wine: Boolean(asWine),
+      wine_label: asWine ? wineLabel : null,
+    });
+    showToast(asWine ? '已标记为酒类（参与用酒统计）' : '已取消酒类标记', 'success');
     await renderInventory();
     invRestorePageScrollPosition(pageScrollSnapshot);
   } catch (e) {
@@ -16120,12 +17059,22 @@ function invItemModalFormHtml(opts) {
   const descVal = it && it.description != null ? escapeHtml(it.description) : '';
   const alertVal =
     it && it.alert_below != null && it.alert_below !== '' ? String(Math.max(0, parseInt(it.alert_below, 10) || 0)) : '';
+  const isWine = it && invItemIsWineTagged(it);
+  const wineLblVal = it && it.wine_label != null ? escapeHtml(String(it.wine_label)) : '';
   return `
     <div class="inv-item-modal-form">
       <input type="hidden" id="invEditItemId" value="${escapeHtml(idVal)}">
       <div class="form-group">
         <label class="form-label">物品名称 <span class="required">*</span></label>
         <input class="form-control" id="invEditItemName" value="${nameVal}">
+      </div>
+      <div class="form-group inv-item-edit-wine-row">
+        <label class="form-label" style="display:flex;align-items:center;gap:8px;cursor:pointer;margin:0;font-weight:500">
+          <input type="checkbox" id="invEditItemIsWine" ${isWine ? 'checked' : ''} onchange="invToggleWineLabelField()">
+          <span>参与用酒统计（酒类标签）</span>
+        </label>
+        <input class="form-control" id="invEditItemWineLabel" value="${wineLblVal}" placeholder="统计归并名，如 人头马 CLUB 700ml" style="margin-top:8px;${isWine ? '' : 'display:none'}">
+        <p class="form-hint" style="margin:6px 0 0">勾选后按此名称汇总到「用酒统计」，避免名称/规格写法不一致导致统计错误。</p>
       </div>
       ${statRow}
       <div class="inv-item-edit-core-row">
@@ -16165,6 +17114,13 @@ function invItemModalFormHtml(opts) {
         <button type="button" class="btn btn-secondary" onclick="invCancelEditItem()">取消</button>
       </div>
     </div>`;
+}
+
+function invToggleWineLabelField() {
+  const ck = document.getElementById('invEditItemIsWine');
+  const inp = document.getElementById('invEditItemWineLabel');
+  if (!inp) return;
+  inp.style.display = ck && ck.checked ? '' : 'none';
 }
 
 async function invOpenEditItem(itemId) {
@@ -16674,18 +17630,26 @@ async function invSubmitAddWineToWarehouse() {
 function invCapturePageScrollPosition(anchorItemId) {
   const container = document.getElementById('pageContainer');
   const scrollingEl = document.scrollingElement || document.documentElement;
+  const masterScroll = container ? container.querySelector('.inv-master-scroll-body') : null;
   const listWrap = container ? container.querySelector('.inv-items-table-wrap') : null;
   const normalizedAnchorId = Number(anchorItemId);
   const anchorEl =
     container && Number.isFinite(normalizedAnchorId) && normalizedAnchorId > 0
       ? container.querySelector(`[data-item-id="${normalizedAnchorId}"]`)
       : null;
+  let anchorOffsetInMaster = null;
+  if (anchorEl && masterScroll) {
+    const scrollRect = masterScroll.getBoundingClientRect();
+    const anchorRect = anchorEl.getBoundingClientRect();
+    anchorOffsetInMaster = anchorRect.top - scrollRect.top + masterScroll.scrollTop;
+  }
   return {
     containerTop: container ? container.scrollTop : null,
     pageTop: Math.max(0, window.scrollY || scrollingEl?.scrollTop || 0),
+    masterScrollTop: masterScroll ? masterScroll.scrollTop : null,
     listWrapTop: listWrap ? listWrap.scrollTop : null,
     anchorItemId: Number.isFinite(normalizedAnchorId) && normalizedAnchorId > 0 ? normalizedAnchorId : null,
-    anchorTop: anchorEl ? anchorEl.getBoundingClientRect().top : null,
+    anchorOffsetInMaster,
   };
 }
 
@@ -16693,6 +17657,10 @@ function invRestorePageScrollPosition(snapshot) {
   if (!snapshot) return;
   const restoreOnce = () => {
     const container = document.getElementById('pageContainer');
+    const masterScroll = container ? container.querySelector('.inv-master-scroll-body') : null;
+    if (masterScroll && Number.isFinite(snapshot.masterScrollTop)) {
+      masterScroll.scrollTop = Math.max(0, snapshot.masterScrollTop);
+    }
     if (container && Number.isFinite(snapshot.containerTop)) {
       container.scrollTop = Math.max(0, snapshot.containerTop);
     }
@@ -16700,20 +17668,28 @@ function invRestorePageScrollPosition(snapshot) {
     if (listWrap && Number.isFinite(snapshot.listWrapTop)) {
       listWrap.scrollTop = Math.max(0, snapshot.listWrapTop);
     }
-    const targetTop = Number.isFinite(snapshot.pageTop) ? Math.max(0, snapshot.pageTop) : 0;
-    window.scrollTo(0, targetTop);
-    if (container && snapshot.anchorItemId && Number.isFinite(snapshot.anchorTop)) {
+    if (Number.isFinite(snapshot.pageTop)) {
+      window.scrollTo(0, Math.max(0, snapshot.pageTop));
+    }
+    if (container && snapshot.anchorItemId) {
       const anchorEl = container.querySelector(`[data-item-id="${snapshot.anchorItemId}"]`);
-      if (anchorEl) {
-        const nowTop = anchorEl.getBoundingClientRect().top;
-        const delta = nowTop - snapshot.anchorTop;
-        if (Math.abs(delta) > 1) window.scrollBy(0, delta);
+      if (anchorEl && masterScroll && Number.isFinite(snapshot.anchorOffsetInMaster)) {
+        const scrollRect = masterScroll.getBoundingClientRect();
+        const anchorRect = anchorEl.getBoundingClientRect();
+        const currentOffset = anchorRect.top - scrollRect.top + masterScroll.scrollTop;
+        const delta = currentOffset - snapshot.anchorOffsetInMaster;
+        if (Math.abs(delta) > 1) masterScroll.scrollTop = Math.max(0, masterScroll.scrollTop - delta);
+      } else if (anchorEl) {
+        anchorEl.scrollIntoView({ block: 'nearest', inline: 'nearest' });
       }
     }
   };
   requestAnimationFrame(() => {
     restoreOnce();
-    requestAnimationFrame(restoreOnce);
+    requestAnimationFrame(() => {
+      restoreOnce();
+      setTimeout(restoreOnce, 0);
+    });
   });
 }
 
@@ -16767,6 +17743,8 @@ async function invSaveEditItem() {
         showToast('请先点击仓库卡片', 'warning');
         return;
       }
+      const isWineNew = document.getElementById('invEditItemIsWine')?.checked === true;
+      const wineLblNew = document.getElementById('invEditItemWineLabel')?.value?.trim() || null;
       await api('POST', '/inventory/items', {
         inv_warehouse_id: inventoryPageState.warehouseId,
         name,
@@ -16776,9 +17754,13 @@ async function invSaveEditItem() {
         alert_below: alertBelow,
         image_urls: urls,
         is_common: document.getElementById('invEditItemIsCommon')?.checked === true,
+        is_wine: isWineNew,
+        wine_label: isWineNew ? wineLblNew || name : null,
       });
       showToast('已添加', 'success');
     } else {
+      const isWineEdit = document.getElementById('invEditItemIsWine')?.checked === true;
+      const wineLblEdit = document.getElementById('invEditItemWineLabel')?.value?.trim() || null;
       await api('PUT', `/inventory/items/${id}`, {
         name,
         quantity_on_hand: qty,
@@ -16787,6 +17769,8 @@ async function invSaveEditItem() {
         alert_below: alertBelow,
         image_urls: urls,
         is_common: document.getElementById('invEditItemIsCommon')?.checked === true,
+        is_wine: isWineEdit,
+        wine_label: isWineEdit ? wineLblEdit || name : null,
         stats_damaged_override: statsDamagedOverride,
         stats_lost_override: statsLostOverride,
       });

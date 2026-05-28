@@ -4782,11 +4782,13 @@ button.btn-secondary.btn-sm.btn-cloud-album-muted:disabled {
 }
 
 .reimbursement-list-wrap {
-  overflow-x: hidden;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
 }
 
 .reimbursement-registration-table {
   width: 100%;
+  min-width: 1180px;
   table-layout: fixed;
 }
 
@@ -4818,14 +4820,43 @@ button.btn-secondary.btn-sm.btn-cloud-album-muted:disabled {
 .reimbursement-registration-table th:nth-child(8),
 .reimbursement-registration-table td:nth-child(8) { width: 9%; }
 .reimbursement-registration-table th:nth-child(9),
-.reimbursement-registration-table td:nth-child(9) { width: 10%; }
+.reimbursement-registration-table td:nth-child(9) { width: 8%; }
+.reimbursement-registration-table th:nth-child(10),
+.reimbursement-registration-table td:nth-child(10) { width: 8%; }
 .reimbursement-registration-table th:nth-child(11),
-.reimbursement-registration-table td:nth-child(11) { width: 140px; }
+.reimbursement-registration-table td:nth-child(11) { width: 14%; }
 
-.reimbursement-registration-table td:nth-child(11) {
+.reimbursement-registration-table th:nth-child(12),
+.reimbursement-registration-table td:nth-child(12) {
+  width: 248px;
+  min-width: 248px;
+  max-width: 248px;
   overflow: visible;
   text-overflow: clip;
+  padding-left: 10px;
   padding-right: 12px;
+  position: sticky;
+  right: 0;
+  z-index: 2;
+  background: var(--bg-card, #fff);
+  box-shadow: -6px 0 10px -6px rgba(15, 23, 42, 0.12);
+}
+
+.reimbursement-registration-table thead th:nth-child(12) {
+  z-index: 3;
+  background: var(--bg-input, #f8fafc);
+}
+
+.reimbursement-registration-table tbody tr.reimb-list-row:hover td:nth-child(12) {
+  background: var(--bg-input);
+}
+
+.reimbursement-registration-table tbody tr.reimb-list-row--selected td:nth-child(12) {
+  background: color-mix(in srgb, var(--accent, #2563eb) 8%, var(--bg-card, #fff));
+}
+
+.reimbursement-registration-table tbody tr.reimb-list-row--selected:hover td:nth-child(12) {
+  background: color-mix(in srgb, var(--accent, #2563eb) 14%, var(--bg-card, #fff));
 }
 
 .reimbursement-list-remarks {
@@ -5069,6 +5100,17 @@ button.btn-secondary.btn-sm.btn-cloud-album-muted:disabled {
 /* 物料采购列表整行 hover 反馈（§2 hover-vs-tap + tap-feedback） */
 .mp-list-row:hover td {
   background: var(--bg-card-hover, rgba(255, 255, 255, 0.04));
+}
+
+.reimb-claim-status-edit {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  min-width: 140px;
+}
+.reimb-claim-status-edit .form-control-sm {
+  max-width: 168px;
 }
 
 .reimb-detail-footer {
@@ -5663,12 +5705,131 @@ body.auth-page-body::before {
   color: #374151;
   font-size: 13px;
   cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.dash-tab__badge {
+  display: inline-flex;
+  align-items: center;
+  height: 18px;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: #f3f4f6;
+  color: #111827;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
 }
 
 .dash-tab.is-active {
   background: #111827;
   border-color: #111827;
   color: #fff;
+}
+
+.dash-tab.is-active .dash-tab__badge {
+  background: rgba(255, 255, 255, 0.18);
+  color: #fff;
+}
+
+.dash-cost-overview-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr) auto minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+  padding: 12px 14px;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  background: #f9fafb;
+  margin: 12px 0;
+}
+
+.dash-cost-kpi {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.dash-cost-kpi__label {
+  font-size: 12px;
+  color: #6b7280;
+}
+
+.dash-cost-kpi__value {
+  font-size: 18px;
+  font-weight: 700;
+  color: #111827;
+  font-variant-numeric: tabular-nums;
+}
+
+.dash-cost-kpi__sub {
+  font-size: 12px;
+  color: #6b7280;
+}
+
+.dash-cost-kpi--minus,
+.dash-cost-kpi--eq {
+  font-size: 18px;
+  font-weight: 700;
+  color: #6b7280;
+  text-align: center;
+}
+
+.dash-cost-kpi--profit .dash-cost-kpi__value {
+  color: #047857;
+}
+
+.dash-cost-overview-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1.3fr) minmax(0, 0.7fr);
+  gap: 14px;
+  align-items: start;
+}
+
+.dash-cost-chart-slot {
+  padding: 12px;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  background: #fff;
+}
+
+.dash-cost-single {
+  padding: 14px;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  background: #fff;
+}
+
+.dash-cost-single__amount {
+  font-size: 22px;
+  font-weight: 800;
+  color: #111827;
+  font-variant-numeric: tabular-nums;
+}
+
+.dash-cost-single__meta {
+  margin-top: 6px;
+  font-size: 12px;
+  color: #6b7280;
+}
+
+.dash-cost-hint {
+  color: #6b7280;
+  font-size: 12px;
+}
+
+@media (max-width: 1100px) {
+  .dash-cost-overview-body {
+    grid-template-columns: 1fr;
+  }
+  .dash-cost-overview-grid {
+    grid-template-columns: 1fr;
+  }
+  .dash-cost-kpi--minus,
+  .dash-cost-kpi--eq {
+    display: none;
+  }
 }
 
 .dash-tab-panel {
@@ -8070,4 +8231,15 @@ body.aq-print-mode .top-bar {
   #mpDashBody > div[style*="grid-template-columns:1fr 1fr"] {
     grid-template-columns: 1fr !important;
   }
+}
+
+/* 数字输入：0 / 0.00 以暗色 placeholder 提示，有值时正常字色 */
+input[type="number"].num-hint-inp:placeholder-shown {
+  color: var(--text-muted);
+}
+input[type="number"].num-hint-inp:not(:placeholder-shown) {
+  color: var(--text-primary);
+}
+input[type="number"].num-hint-inp:focus {
+  color: var(--text-primary);
 }

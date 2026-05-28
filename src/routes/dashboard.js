@@ -242,6 +242,304 @@ function buildWarehouseFilters(query) {
   return { whereClause: where.join(' AND '), params };
 }
 
+/** 财年起始公历年（4 月 1 日所在年），优先从 dateStart 推断 */
+function fiscalStartYearFromQuery(query) {
+  const start = normalizeDateOnly(query.dateStart);
+  if (start) {
+    const y = parseInt(start.slice(0, 4), 10);
+    const m = parseInt(start.slice(5, 7), 10);
+    if (Number.isFinite(y) && Number.isFinite(m)) return m >= 4 ? y : y - 1;
+  }
+  const end = normalizeDateOnly(query.dateEnd);
+  if (end) {
+    const y = parseInt(end.slice(0, 4), 10);
+    const m = parseInt(end.slice(5, 7), 10);
+    if (Number.isFinite(y) && Number.isFinite(m)) return m >= 4 ? y : y - 1;
+  }
+  const now = new Date();
+  return now.getMonth() + 1 >= 4 ? now.getFullYear() : now.getFullYear() - 1;
+}
+
+/** 仓储 month(1-12) → YYYY-MM */
+function warehouseMonthToYm(fiscalStartYear, monthNum) {
+  const m = parseInt(monthNum, 10);
+  if (!Number.isFinite(m) || m < 1 || m > 12) return '';
+  const y = m >= 4 ? fiscalStartYear : fiscalStartYear + 1;
+  return `${y}-${String(m).padStart(2, '0')}`;
+}
+
+function buildPoolBaseFilters(alias, query) {
+  const prefix = alias ? `${alias}.` : '';
+  const where = [`COALESCE(${prefix}merged_into_activity, 0) = 0`];
+  const params = [];
+  if (query.yearFrameId) {
+    where.push(`${prefix}year_frame_id = ?`);
+    params.push(parseInt(query.yearFrameId, 10));
+  }
+  return { where, params };
+}
+
+function pushPoolDateRange(where, params, column, query) {
+  const start = normalizeDateOnly(query.dateStart);
+  const end = normalizeDateOnly(query.dateEnd);
+  if (start) {
+    where.push(`${column} >= ?`);
+    params.push(start);
+  }
+  if (end) {
+    where.push(`${column} <= ?`);
+    params.push(end);
+  }
+}
+
+/** settlement_month 规范为 YYYY-MM，便于与财年月度区间比较 */
+const LOGISTICS_SETTLEMENT_YM_SQL = `CONCAT(
+  SUBSTRING_INDEX(TRIM(l.settlement_month), '-', 1),
+  '-',
+  LPAD(SUBSTRING_INDEX(TRIM(l.settlement_month), '-', -1), 2, '0')
+)`;
+
+function fiscalYmBoundsFromQuery(query) {
+  const start = normalizeDateOnly(query.dateStart);
+  const end = normalizeDateOnly(query.dateEnd);
+  return {
+    ymStart: start ? start.slice(0, 7) : '',
+    ymEnd: end ? end.slice(0, 7) : '',
+    dateStart: start,
+    dateEnd: end,
+  };
+}
+
+/** 物流：有发货日用发货日；月结/无发货日用 settlement_month */
+function pushLogisticsDateRange(where, params, query) {
+  const { ymStart, ymEnd, dateStart, dateEnd } = fiscalYmBoundsFromQuery(query);
+  if (!dateStart && !dateEnd && !ymStart && !ymEnd) return;
+  const parts = [];
+  const p = [];
+  if (dateStart && dateEnd) {
+    parts.push('(l.shipping_date IS NOT NULL AND l.shipping_date >= ? AND l.shipping_date <= ?)');
+    p.push(dateStart, dateEnd);
+  } else if (dateStart) {
+    parts.push('(l.shipping_date IS NOT NULL AND l.shipping_date >= ?)');
+    p.push(dateStart);
+  } else if (dateEnd) {
+    parts.push('(l.shipping_date IS NOT NULL AND l.shipping_date <= ?)');
+    p.push(dateEnd);
+  }
+  if (ymStart && ymEnd) {
+    parts.push(`(
+      (l.shipping_date IS NULL OR TRIM(COALESCE(l.shipping_date, '')) = '')
+      AND l.settlement_month IS NOT NULL AND TRIM(l.settlement_month) <> ''
+      AND ${LOGISTICS_SETTLEMENT_YM_SQL} >= ? AND ${LOGISTICS_SETTLEMENT_YM_SQL} <= ?
+    )`);
+    p.push(ymStart, ymEnd);
+  }
+  if (!parts.length) return;
+  where.push(`(${parts.join(' OR ')})`);
+  params.push(...p);
+}
+
+function pushPoolBrands(where, params, column, query) {
+  const brands = parseCsv(query.brands);
+  pushIn(where, params, column, brands);
+}
+
+function pushPoolRegions(where, params, column, query) {
+  const regions = [...new Set(parseCsv(query.regions).map((r) => r.split('-')[0]))];
+  pushIn(where, params, column, regions);
+}
+
+/** 全链路成本池（与成本管理口径一致：merged_into_activity=0 的公共池 + 场次 total_cost） */
+async function queryFullCostBreakdown(query, activityCost, activityCount) {
+  const fiscalStartYear = fiscalStartYearFromQuery(query);
+  const whMonths = parseMonthRangeFromDates(query.dateStart, query.dateEnd);
+
+  const whBase = buildPoolBaseFilters('w', query);
+  const whWhere = [...whBase.where, 'COALESCE(w.no_actual_cost, 0) = 0'];
+  const whParams = [...whBase.params];
+  if (whMonths.length) {
+    whWhere.push(`(
+      w.month IS NULL OR TRIM(w.month) = ''
+      OR CAST(w.month AS UNSIGNED) IN (${whMonths.map(() => '?').join(',')})
+    )`);
+    whParams.push(...whMonths);
+  }
+  pushPoolRegions(whWhere, whParams, 'w.region', query);
+  pushPoolBrands(whWhere, whParams, 'w.brand', query);
+
+  const logBase = buildPoolBaseFilters('l', query);
+  const logWhere = [...logBase.where];
+  const logParams = [...logBase.params];
+  pushLogisticsDateRange(logWhere, logParams, query);
+  pushPoolBrands(logWhere, logParams, 'l.brand', query);
+
+  const mpBase = buildPoolBaseFilters('mp', query);
+  const mpWhere = [...mpBase.where];
+  const mpParams = [...mpBase.params];
+  pushPoolDateRange(mpWhere, mpParams, 'mp.purchase_date', query);
+  const mpBrands = parseCsv(query.brands);
+  let mpJoin = '';
+  if (mpBrands.length) {
+    mpJoin = ' INNER JOIN brand_inventory bi ON bi.id = mp.brand_id ';
+    mpWhere.push(`bi.brand_code IN (${mpBrands.map(() => '?').join(',')})`);
+    mpParams.push(...mpBrands);
+  }
+
+  const prBase = buildPoolBaseFilters('pr', query);
+  const prWhere = [...prBase.where, 'COALESCE(pr.no_cost, 0) = 0'];
+  const prParams = [...prBase.params];
+  pushPoolRegions(prWhere, prParams, 'pr.region', query);
+  if (mpBrands.length) {
+    prWhere.push(`pr.brand_id IN (SELECT id FROM brand_inventory WHERE brand_code IN (${mpBrands.map(() => '?').join(',')}))`);
+    prParams.push(...mpBrands);
+  }
+
+  const rbBase = buildPoolBaseFilters('r', query);
+  const rbWhere = [...rbBase.where];
+  const rbParams = [...rbBase.params];
+
+  const [
+    [whRows],
+    [logRows],
+    [mpRows],
+    [prRows],
+    [rbRows],
+    [rbModuleRows],
+    [whMonthRows],
+    [logMonthRows],
+    [mpMonthRows],
+    [prMonthRows],
+    [rbMonthRows],
+  ] = await Promise.all([
+    db.query(
+      `SELECT COALESCE(SUM(w.actual_cost), 0) AS amount, COUNT(*) AS cnt
+       FROM warehouse w WHERE ${whWhere.join(' AND ')}`,
+      whParams
+    ),
+    db.query(
+      `SELECT COALESCE(SUM(l.fee), 0) AS amount, COUNT(*) AS cnt
+       FROM logistics l WHERE ${logWhere.join(' AND ')}`,
+      logParams
+    ),
+    db.query(
+      `SELECT COALESCE(SUM(mp.total_amount), 0) AS amount, COUNT(*) AS cnt
+       FROM material_purchases mp ${mpJoin} WHERE ${mpWhere.join(' AND ')}`,
+      mpParams
+    ),
+    db.query(
+      `SELECT COALESCE(SUM(pr.total_amount), 0) AS amount, COUNT(*) AS cnt
+       FROM prop_repairs pr WHERE ${prWhere.join(' AND ')}`,
+      prParams
+    ),
+    db.query(
+      `SELECT COALESCE(SUM(r.amount), 0) AS amount, COUNT(*) AS cnt
+       FROM reimbursements r WHERE ${rbWhere.join(' AND ')}`,
+      rbParams
+    ),
+    db.query(
+      `SELECT COALESCE(r.cost_module, 'general') AS cost_module,
+              COALESCE(SUM(r.amount), 0) AS amount, COUNT(*) AS cnt
+       FROM reimbursements r WHERE ${rbWhere.join(' AND ')}
+       GROUP BY COALESCE(r.cost_module, 'general')
+       ORDER BY amount DESC`,
+      rbParams
+    ),
+    db.query(
+      `SELECT w.month AS m, COALESCE(SUM(w.actual_cost), 0) AS amount
+       FROM warehouse w WHERE ${whWhere.join(' AND ')} AND w.month IS NOT NULL AND TRIM(w.month) <> ''
+       GROUP BY w.month`,
+      whParams
+    ),
+    db.query(
+      `SELECT ym, COALESCE(SUM(fee), 0) AS amount FROM (
+         SELECT l.fee,
+           CASE
+             WHEN l.shipping_date IS NOT NULL THEN DATE_FORMAT(l.shipping_date, '%Y-%m')
+             WHEN l.settlement_month IS NOT NULL AND TRIM(l.settlement_month) <> '' THEN ${LOGISTICS_SETTLEMENT_YM_SQL}
+             ELSE NULL
+           END AS ym
+         FROM logistics l WHERE ${logWhere.join(' AND ')}
+       ) t WHERE ym IS NOT NULL GROUP BY ym`,
+      logParams
+    ),
+    db.query(
+      `SELECT DATE_FORMAT(mp.purchase_date, '%Y-%m') AS ym, COALESCE(SUM(mp.total_amount), 0) AS amount
+       FROM material_purchases mp ${mpJoin} WHERE ${mpWhere.join(' AND ')} AND mp.purchase_date IS NOT NULL
+       GROUP BY DATE_FORMAT(mp.purchase_date, '%Y-%m')`,
+      mpParams
+    ),
+    db.query(
+      `SELECT DATE_FORMAT(pr.repair_date, '%Y-%m') AS ym, COALESCE(SUM(pr.total_amount), 0) AS amount
+       FROM prop_repairs pr WHERE ${prWhere.join(' AND ')} AND pr.repair_date IS NOT NULL
+       GROUP BY DATE_FORMAT(pr.repair_date, '%Y-%m')`,
+      prParams
+    ),
+    db.query(
+      `SELECT DATE_FORMAT(r.date, '%Y-%m') AS ym, COALESCE(SUM(r.amount), 0) AS amount
+       FROM reimbursements r WHERE ${rbWhere.join(' AND ')} AND r.date IS NOT NULL
+       GROUP BY DATE_FORMAT(r.date, '%Y-%m')`,
+      rbParams
+    ),
+  ]);
+
+  const whAmount = round2(whRows[0]?.amount);
+  const logAmount = round2(logRows[0]?.amount);
+  const mpAmount = round2(mpRows[0]?.amount);
+  const prAmount = round2(prRows[0]?.amount);
+  const rbAmount = round2(rbRows[0]?.amount);
+  const actAmount = round2(activityCost);
+
+  const buckets = [
+    { key: 'activity', label: '场次成本', amount: actAmount, count: activityCount || 0, hint: '当前筛选场次合计' },
+    { key: 'warehouse', label: '仓储成本', amount: whAmount, count: Number(whRows[0]?.cnt || 0), hint: '仓储登记，未重复计入场次' },
+    { key: 'logistics', label: '物流成本', amount: logAmount, count: Number(logRows[0]?.cnt || 0), hint: '物流登记（含月结月份）' },
+    { key: 'material_purchase', label: '物料/额外成本', amount: mpAmount, count: Number(mpRows[0]?.cnt || 0), hint: '物料采购登记' },
+    { key: 'prop_repair', label: '道具维修', amount: prAmount, count: Number(prRows[0]?.cnt || 0), hint: '道具维修登记' },
+    { key: 'reimbursement', label: '报销成本池', amount: rbAmount, count: Number(rbRows[0]?.cnt || 0), hint: '付款申请/报销，按年框汇总' },
+  ];
+  const totalPoolCost = round2(whAmount + logAmount + mpAmount + prAmount + rbAmount);
+  const totalFullCost = round2(actAmount + totalPoolCost);
+
+  const reimbModuleLabels = {
+    activity: '报销·场次',
+    warehouse: '报销·仓储',
+    logistics: '报销·物流',
+    prop_repair: '报销·道具维修',
+    material_purchase: '报销·物料',
+    general: '报销·内部/统筹',
+  };
+  const reimbByModule = (rbModuleRows || []).map((row) => ({
+    module: row.cost_module || 'general',
+    label: reimbModuleLabels[row.cost_module] || `报销·${row.cost_module || '其他'}`,
+    amount: round2(row.amount),
+    count: Number(row.cnt || 0),
+    ratio: 0,
+  }));
+  const rbTotalForRatio = reimbByModule.reduce((s, r) => s + r.amount, 0);
+  reimbByModule.forEach((r) => {
+    r.ratio = ratio(r.amount, rbTotalForRatio);
+  });
+
+  const poolMonthlyMap = new Map();
+  const addPoolMonth = (ym, amount) => {
+    if (!ym) return;
+    poolMonthlyMap.set(ym, round2((poolMonthlyMap.get(ym) || 0) + (parseFloat(amount) || 0)));
+  };
+  (whMonthRows || []).forEach((row) => addPoolMonth(warehouseMonthToYm(fiscalStartYear, row.m), row.amount));
+  (logMonthRows || []).forEach((row) => addPoolMonth(row.ym, row.amount));
+  (mpMonthRows || []).forEach((row) => addPoolMonth(row.ym, row.amount));
+  (prMonthRows || []).forEach((row) => addPoolMonth(row.ym, row.amount));
+  (rbMonthRows || []).forEach((row) => addPoolMonth(row.ym, row.amount));
+
+  return {
+    buckets: buckets.map((b) => ({ ...b, ratio: ratio(b.amount, totalFullCost) })),
+    reimbByModule,
+    totalPoolCost,
+    totalFullCost,
+    poolMonthlyMap,
+  };
+}
+
 router.get('/options', async (req, res) => {
   try {
     const activityBase = ['activity_type IN (?, ?, ?, ?)'];
@@ -576,6 +874,22 @@ router.get('/', async (req, res) => {
       ratio: ratio(item.amount, detailCost),
     }));
 
+    const fullCost = await queryFullCostBreakdown(req.query, detailCost, detailRows.length);
+    const grossProfitFull = round2(detailRevenue - fullCost.totalFullCost);
+    const trendByMonthFull = trendByMonth.map((row) => {
+      const poolAdd = fullCost.poolMonthlyMap.get(row.month) || 0;
+      const fullCostMonth = round2(row.cost + poolAdd);
+      const gp = round2(row.revenue - fullCostMonth);
+      return {
+        ...row,
+        activityCost: row.cost,
+        poolCost: round2(poolAdd),
+        cost: fullCostMonth,
+        grossProfit: gp,
+        grossMarginRate: ratio(gp, row.revenue),
+      };
+    });
+
     res.json({
       summary: {
         activityCount,
@@ -589,17 +903,27 @@ router.get('/', async (req, res) => {
         totalSessions: detailRows.length,
         pgSessions: pgSessionsInScope,
         totalRevenue: detailRevenue,
-        totalCost: detailCost,
-        grossProfit,
-        grossMarginRate: ratio(grossProfit, detailRevenue),
+        activityCost: detailCost,
+        poolCost: fullCost.totalPoolCost,
+        totalCost: fullCost.totalFullCost,
+        grossProfit: grossProfitFull,
+        grossMarginRate: ratio(grossProfitFull, detailRevenue),
+        /** @deprecated 与 activityCost 相同，保留兼容 */
+        sessionOnlyCost: detailCost,
+        sessionOnlyGrossProfit: grossProfit,
+        sessionOnlyGrossMarginRate: ratio(grossProfit, detailRevenue),
       },
       metricDefinition: {
-        revenue: '活动报价合计（activities.quoted_price）',
-        cost: '场次总成本以 activities.total_cost 为准；物流/人员/采购为 cost_details 分项汇总，「其他」为总成本与前三类差额（含代垫、备用金抵扣等）',
-        grossMarginRate: '(收入-成本)/收入',
+        revenue: '当前筛选场次的报价合计',
+        cost: '场次成本 + 仓储 + 物流 + 物料 + 维修 + 报销（未重复计入场次的部分）',
+        grossMarginRate: '毛利 = 收入 − 总成本；毛利率 = 毛利 ÷ 收入',
+        activityCostDetail: '场次内按物流、人员、采购等分项汇总',
       },
+      costBreakdown: fullCost.buckets,
+      reimbCostByModule: fullCost.reimbByModule,
       regionSummary,
       trendByMonth,
+      trendByMonthFull,
       costComposition,
       regionCityBreakdown,
       detailRows,

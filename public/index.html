@@ -81,6 +81,10 @@
             <span class="nav-icon"><i data-lucide="database" style="width:16px;height:16px"></i></span>
             <span class="nav-text">库存管理</span>
           </a>
+          <a class="nav-item" data-page="inv-wine-stats" onclick="navigate('inv-wine-stats')">
+            <span class="nav-icon"><i data-lucide="wine" style="width:16px;height:16px"></i></span>
+            <span class="nav-text">用酒统计</span>
+          </a>
         </div>
       </div>
 
@@ -355,6 +359,17 @@
       <button type="button" class="btn btn-danger btn-sm" onclick="clearActivityCostRegistrationFromDetail()">删除登记</button>
       <button type="button" class="btn btn-secondary" onclick="closeModal()">关闭</button>
       <button type="button" class="btn btn-primary" onclick="openCostEditFromDetail()">编辑成本</button>
+    </div>
+  </div>
+
+  <div class="modal wide" id="modalInvWineAudit" style="max-width:960px" onclick="event.stopPropagation()">
+    <div class="modal-header">
+      <span class="modal-title"><i data-lucide="scan-search" style="width:14px;height:14px;vertical-align:-2px;margin-right:4px"></i>酒品对照排查</span>
+      <button type="button" class="modal-close" onclick="closeModal()">✕</button>
+    </div>
+    <div class="modal-body inv-wine-audit-body" id="invWineAuditBody" style="max-height:72vh;overflow-y:auto"></div>
+    <div class="modal-footer">
+      <button type="button" class="btn btn-secondary" onclick="closeModal()">关闭</button>
     </div>
   </div>
 
@@ -687,7 +702,9 @@
     <div class="modal-footer">
       <button type="button" class="btn btn-secondary" onclick="closeModal()">关闭</button>
       <button type="button" class="btn btn-secondary" id="reimbPreviewDownloadCsvBtn" onclick="reimbursementPreviewDownloadCsv()" style="display:none">下载 CSV</button>
-      <button type="button" class="btn btn-primary" id="reimbPreviewPrintPdfBtn" onclick="reimbursementPreviewPrintPdf()" style="display:none">打印 / 导出 PDF</button>
+      <button type="button" class="btn btn-secondary" id="reimbPreviewDownloadExcelBtn" onclick="reimbursementPreviewDownloadExcel()" style="display:none">导出 Excel</button>
+      <button type="button" class="btn btn-secondary" id="reimbPreviewPrintBtn" onclick="reimbursementPreviewPrintPdf()" style="display:none">直接打印</button>
+      <button type="button" class="btn btn-primary" id="reimbPreviewPrintPdfBtn" onclick="reimbursementPreviewExportPdf()" style="display:none">导出 PDF</button>
     </div>
   </div>
 
@@ -703,6 +720,8 @@
         <button type="button" class="btn btn-danger" id="reimbDetailDeleteBtn" onclick="reimbursementDetailDelete()">删除</button>
       </div>
       <div class="reimb-detail-footer-right">
+        <button type="button" class="btn btn-secondary" id="reimbDetailExcelBtn" onclick="reimbursementDetailExcelDownload()">导出 Excel</button>
+        <button type="button" class="btn btn-secondary" id="reimbDetailPdfBtn" onclick="reimbursementDetailPdfPreview()">预览 / 打印</button>
         <button type="button" class="btn btn-secondary" onclick="closeModal()">关闭</button>
       </div>
     </div>
@@ -935,14 +954,15 @@
       <span class="modal-title">新建单场报价</span>
       <button type="button" class="modal-close" onclick="closeModal()">✕</button>
     </div>
-    <div class="modal-body" id="modalActivityQuoteBody" style="max-height:70vh;overflow:auto"></div>
+    <div class="modal-body modal-activity-quote-body" id="modalActivityQuoteBody"></div>
     <div class="modal-footer" id="modalActivityQuoteFooter"></div>
   </div>
 
   <!-- 全局 Toast -->
   <div class="toast-container" id="toastContainer"></div>
 
-  <script src="app.js?v=20260501-fullbackup-v1"></script>
-  <script src="activity-quotes.js?v=20260520-aq-v21"></script>
+  <script src="disable-number-input-wheel.js?v=2"></script>
+  <script src="app.js?v=20260527-dashboard-cost-fix-v1"></script>
+  <script src="activity-quotes.js?v=20260522-aq-v23"></script>
 </body>
 </html>
