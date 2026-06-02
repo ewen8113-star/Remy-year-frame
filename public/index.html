@@ -717,11 +717,11 @@
     <div class="modal-footer reimb-detail-footer">
       <div class="reimb-detail-footer-left">
         <button type="button" class="btn btn-secondary" id="reimbDetailEditBtn" onclick="reimbursementDetailEdit()">编辑</button>
+        <button type="button" class="btn btn-secondary" id="reimbDetailUnmergeBtn" onclick="reimbursementDetailUnmerge()" style="display:none">撤销合并</button>
         <button type="button" class="btn btn-danger" id="reimbDetailDeleteBtn" onclick="reimbursementDetailDelete()">删除</button>
       </div>
       <div class="reimb-detail-footer-right">
-        <button type="button" class="btn btn-secondary" id="reimbDetailExcelBtn" onclick="reimbursementDetailExcelDownload()">导出 Excel</button>
-        <button type="button" class="btn btn-secondary" id="reimbDetailPdfBtn" onclick="reimbursementDetailPdfPreview()">预览 / 打印</button>
+<button type="button" class="btn btn-secondary" id="reimbDetailPdfBtn" onclick="reimbursementDetailPdfPreview()">预览 / 打印</button>
         <button type="button" class="btn btn-secondary" onclick="closeModal()">关闭</button>
       </div>
     </div>
@@ -962,7 +962,7 @@
   <div class="toast-container" id="toastContainer"></div>
 
   <script src="disable-number-input-wheel.js?v=2"></script>
-  <script src="app.js?v=20260527-dashboard-cost-fix-v1"></script>
-  <script src="activity-quotes.js?v=20260522-aq-v23"></script>
+  <script src="app.js?v=20260602-reimb-detail-fallback"></script>
+  <script src="activity-quotes.js?v=20260602-aq-list-actions-v1"></script>
 </body>
 </html>

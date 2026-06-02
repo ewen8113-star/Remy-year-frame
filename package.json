@@ -36,6 +36,7 @@
     "migrate:reimbursement-v2": "node src/scripts/addReimbursementV2Columns.js",
     "migrate:reimbursement-brand": "node src/scripts/addReimbursementBrandColumn.js",
     "migrate:reimbursement-payment-center": "node src/scripts/addReimbursementPaymentCenterColumns.js",
+    "migrate:reimbursement-payee-payment": "node src/scripts/addReimbursementPayeePaymentColumns.js",
     "migrate:payment-orders": "node src/scripts/addPaymentOrdersTables.js",
     "migrate:inventory": "node src/scripts/addInventoryTables.js",
     "import:inventory-excel": "node src/scripts/importInventoryItemsFromExcel.js",

@@ -4783,13 +4783,16 @@ button.btn-secondary.btn-sm.btn-cloud-album-muted:disabled {
 
 .reimbursement-list-wrap {
   overflow-x: auto;
+  overflow-y: visible;
   -webkit-overflow-scrolling: touch;
+  max-width: 100%;
+  border-radius: 0 0 var(--radius) var(--radius);
 }
 
 .reimbursement-registration-table {
-  width: 100%;
-  min-width: 1180px;
-  table-layout: fixed;
+  width: max-content;
+  min-width: 100%;
+  table-layout: auto;
 }
 
 .reimbursement-list-wrap thead th {
@@ -4803,28 +4806,41 @@ button.btn-secondary.btn-sm.btn-cloud-album-muted:disabled {
   text-overflow: ellipsis;
 }
 
+.reimbursement-list-wrap tbody td.reimbursement-list-code {
+  overflow: visible;
+  text-overflow: clip;
+  white-space: nowrap;
+  min-width: 220px;
+  max-width: none;
+  font-size: 11px;
+  font-family: 'SF Mono', 'Consolas', monospace;
+  color: var(--text-primary);
+}
+
+.reimbursement-list-wrap thead th:nth-child(5) {
+  min-width: 220px;
+}
+
 .reimbursement-registration-table th:nth-child(1),
-.reimbursement-registration-table td:nth-child(1) { width: 5.5%; }
+.reimbursement-registration-table td:nth-child(1) { width: 36px; min-width: 36px; }
 .reimbursement-registration-table th:nth-child(2),
-.reimbursement-registration-table td:nth-child(2) { width: 8%; }
+.reimbursement-registration-table td:nth-child(2) { min-width: 52px; }
 .reimbursement-registration-table th:nth-child(3),
-.reimbursement-registration-table td:nth-child(3) { width: 9%; }
+.reimbursement-registration-table td:nth-child(3) { min-width: 72px; }
 .reimbursement-registration-table th:nth-child(4),
-.reimbursement-registration-table td:nth-child(4) { width: 10%; }
-.reimbursement-registration-table th:nth-child(5),
-.reimbursement-registration-table td:nth-child(5) { width: 7%; }
+.reimbursement-registration-table td:nth-child(4) { min-width: 72px; }
 .reimbursement-registration-table th:nth-child(6),
-.reimbursement-registration-table td:nth-child(6) { width: 8%; }
+.reimbursement-registration-table td:nth-child(6) { min-width: 64px; }
 .reimbursement-registration-table th:nth-child(7),
-.reimbursement-registration-table td:nth-child(7) { width: 7%; }
+.reimbursement-registration-table td:nth-child(7) { min-width: 88px; }
 .reimbursement-registration-table th:nth-child(8),
-.reimbursement-registration-table td:nth-child(8) { width: 9%; }
+.reimbursement-registration-table td:nth-child(8) { min-width: 64px; }
 .reimbursement-registration-table th:nth-child(9),
-.reimbursement-registration-table td:nth-child(9) { width: 8%; }
+.reimbursement-registration-table td:nth-child(9) { min-width: 72px; }
 .reimbursement-registration-table th:nth-child(10),
-.reimbursement-registration-table td:nth-child(10) { width: 8%; }
+.reimbursement-registration-table td:nth-child(10) { min-width: 64px; }
 .reimbursement-registration-table th:nth-child(11),
-.reimbursement-registration-table td:nth-child(11) { width: 14%; }
+.reimbursement-registration-table td:nth-child(11) { min-width: 120px; max-width: 200px; }
 
 .reimbursement-registration-table th:nth-child(12),
 .reimbursement-registration-table td:nth-child(12) {
@@ -6245,6 +6261,19 @@ tbody td {
 
 .reimb-span-2 { grid-column: span 2; }
 .reimb-span-3 { grid-column: span 3; }
+.reimb-payee-field { grid-column: span 1; min-width: 0; max-width: 140px; }
+.reimb-pay-method-field { grid-column: span 1; min-width: 0; max-width: 148px; }
+.reimb-bank-field { grid-column: span 1; min-width: 0; }
+.reimb-payee-account-picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.reimb-payee-pick-btn {
+  max-width: 100%;
+  text-align: left;
+  white-space: normal;
+}
 
 .reimb-project-readonly {
   font-size: 13px;
@@ -6561,6 +6590,12 @@ tbody td {
   font-variant-numeric: tabular-nums;
   font-size: 12px;
   color: var(--text-secondary);
+}
+
+.reimb-detail-table--compact .reimb-col-cost-month {
+  min-width: 72px;
+  width: 72px;
+  max-width: 84px;
 }
 
 .reimb-detail-table--compact .reimb-line-subtotal {
@@ -7493,9 +7528,16 @@ tbody td {
 .aq-toolbar-filters { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .aq-toolbar-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .aq-list-actions { white-space: nowrap; }
-.aq-list-pc-cell { min-width: 120px; max-width: 200px; vertical-align: middle; }
+.aq-list-table .aq-list-pc-col { width: 28%; min-width: 220px; }
+.aq-list-table .aq-list-actions-col { width: 168px; }
+.aq-list-pc-cell { min-width: 200px; max-width: none; vertical-align: middle; }
+.aq-pc-single {
+  font-size: 12px;
+  white-space: nowrap;
+  font-family: var(--font-mono, ui-monospace, monospace);
+}
 .aq-pc-stack { display: flex; flex-direction: column; gap: 3px; line-height: 1.35; }
-.aq-pc-line code { font-size: 12px; }
+.aq-pc-line code { font-size: 12px; white-space: nowrap; }
 .aq-pc-ellipsis {
   color: var(--text-muted);
   text-align: center;

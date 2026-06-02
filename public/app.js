@@ -180,6 +180,32 @@ const REIMB_DETAIL_BRAND_OPTIONS = [
   'Remy-RC',
   '其他',
 ];
+
+function reimbDefaultCostMonth() {
+  const d = document.getElementById('reimbDate')?.value || '';
+  if (d && d.length >= 7) {
+    const m = parseInt(d.slice(5, 7), 10);
+    if (Number.isFinite(m) && m >= 1 && m <= 12) return m;
+  }
+  const now = new Date();
+  return now.getMonth() + 1;
+}
+
+function reimbCostMonthOptionsHtml(selected) {
+  const sel = selected != null && selected !== '' ? parseInt(selected, 10) : NaN;
+  const opts = ['<option value="">—</option>'];
+  for (let m = 1; m <= 12; m += 1) {
+    opts.push(`<option value="${m}" ${m === sel ? 'selected' : ''}>${m}月</option>`);
+  }
+  return opts.join('');
+}
+
+function reimbFormatCostMonth(v) {
+  const m = parseInt(v, 10);
+  if (!Number.isFinite(m) || m < 1 || m > 12) return '';
+  return `${m}月`;
+}
+
 function reimbDetailBrandFromLegacyBrand(brand) {
   const b = String(brand || '').trim().toUpperCase();
   if (b === 'PHD') return 'N220630-RC PHD';
@@ -4930,6 +4956,7 @@ async function renderCost() {
               <div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:10px">
                 ${renderCostYmFilterButtons('withCost', withCostKeys, costWithCostYMFilter)}
               </div>
+              <div style="margin-top:8px">同一场次可多次计入成本（如多笔报销、付款申请）；不同费用栏目分别记录，相同栏目金额累加。此类场次不再显示「无成本」按钮，避免误操作清空成本。</div>
             </div>
           </div>
           <button class="btn btn-secondary btn-sm" onclick="toggleCostSection('withCost')">展开/收起</button>
@@ -4947,7 +4974,6 @@ async function renderCost() {
                 <th>类型</th>
                 <th>报价</th>
                 <th>成本</th>
-                <th style="min-width:84px;text-align:center;white-space:nowrap" title="改标为无成本">无成本</th>
                 <th>利润</th>
                 <th style="white-space:nowrap">操作</th>
               </tr>
@@ -4965,9 +4991,6 @@ async function renderCost() {
                     <td><span class="badge badge-${typeColor(a.activity_type)}">${a.activity_type||'—'}</span></td>
                     <td class="amount amount-revenue">${fmtMoney(a.quoted_price)}</td>
                     <td class="amount amount-cost">${fmtMoney(a.total_cost)}</td>
-                    <td style="text-align:center" onclick="event.stopPropagation()">
-                      <button type="button" class="cost-no-cost-pill" title="改标为无成本" aria-label="本场活动无成本发生" onclick="openActivityNoCostConfirm(${a.id})">无成本</button>
-                    </td>
                     <td class="amount ${profit>=0?'amount-revenue':'amount-cost'}">${fmtMoney(profit)}</td>
                     <td style="white-space:nowrap" onclick="event.stopPropagation()">
                       <button type="button" class="btn btn-secondary btn-sm" onclick="showCostFillFromCost(${a.id})">编辑</button>
@@ -6991,6 +7014,18 @@ const DICT_CATEGORY_DEFS = {
       { key: 'phone', label: '联系电话', type: 'tel' },
     ],
     nameField: 'employee_name',
+  },
+  personal_payee: {
+    label: '个人收款信息',
+    icon: 'wallet',
+    desc: '个人报销收款方：姓名 + 付款方式 + 银行信息（自动记忆，下次填充）',
+    fields: [
+      { key: 'payee_name', label: '姓名', type: 'text', required: true },
+      { key: 'payment_method', label: '付款方式', type: 'text' },
+      { key: 'bank_name', label: '开户行', type: 'text' },
+      { key: 'bank_account', label: '银行账号', type: 'text' },
+    ],
+    nameField: 'payee_name',
   },
 };
 
@@ -9295,6 +9330,318 @@ function reimbRemarksWithMeta(remarks, meta) {
   return `${visible}${REIMB_DETAIL_META_PREFIX}${JSON.stringify(meta)}`;
 }
 
+/** 从项目编号提取品牌线（PHD / X.O / CLUB 等） */
+function extractBrandFromProjectCode(projectCodeRaw) {
+  const s = String(projectCodeRaw || '').toUpperCase().replace(/\s+/g, '');
+  if (!s) return '';
+  if (s.includes('CLUB')) return 'CLUB';
+  if (s.includes('PHD')) return 'PHD';
+  if (s.includes('X.O') || s.includes('XO')) return 'X.O';
+  if (s.includes('REMY')) return 'REMY';
+  if (s.includes('RC')) return 'RC';
+  return '';
+}
+
+const REIMB_BRAND_SORT_ORDER = ['PHD', 'X.O', 'CLUB', 'REMY', 'RC'];
+
+function reimbIsPlaceholderProjectCode(pc) {
+  const s = String(pc || '').trim();
+  return !s || s === '—' || s === '内部';
+}
+
+/** 汇总明细行品牌（多场次合并时用顿号连接） */
+function reimbBrandsLabelFromRows(rows, fallbackBrand) {
+  const brands = new Set();
+  (rows || []).forEach((row) => {
+    const pc = String(row.project_code || row.line_project || '').trim();
+    const fromPc = extractBrandFromProjectCode(pc);
+    if (fromPc) brands.add(fromPc);
+    else {
+      const b = String(row.brand || '').trim();
+      if (b && b !== '内部') brands.add(b);
+    }
+  });
+  const fb = String(fallbackBrand || '').trim();
+  if (!brands.size && fb && fb !== '内部') {
+    fb.split(/[,，、/]+/).forEach((p) => {
+      const t = p.trim();
+      if (t) brands.add(t);
+    });
+  }
+  if (!brands.size) return '';
+  return [...brands]
+    .sort((a, b) => {
+      const ia = REIMB_BRAND_SORT_ORDER.indexOf(a);
+      const ib = REIMB_BRAND_SORT_ORDER.indexOf(b);
+      if (ia >= 0 && ib >= 0) return ia - ib;
+      if (ia >= 0) return -1;
+      if (ib >= 0) return 1;
+      return a.localeCompare(b, 'zh-CN');
+    })
+    .join('，');
+}
+
+/** 合并报销：按 merge_sources 为各行补回来源项目编号 */
+function reimbEnrichDetailRowsWithMergeSources(rows, meta) {
+  const list = Array.isArray(rows) ? rows.map((r) => ({ ...r })) : [];
+  const sources = Array.isArray(meta?.merge_sources) ? meta.merge_sources : [];
+  if (!sources.length) return list;
+  if (!list.some((r) => reimbIsPlaceholderProjectCode(r.project_code || r.line_project))) return list;
+
+  const enriched = [];
+  let rowIdx = 0;
+  sources.forEach((src) => {
+    const srcMeta = reimbReadDetailMeta(src.remarks || '');
+    const srcRows = Array.isArray(srcMeta.rows) ? srcMeta.rows.filter(Boolean) : [];
+    const srcRowCount = srcRows.length || 1;
+    const pc = String(src.related_project_code || '').trim();
+    const pcBrand = extractBrandFromProjectCode(pc);
+    for (let i = 0; i < srcRowCount && rowIdx < list.length; i += 1) {
+      const row = list[rowIdx];
+      const existingPc = String(row.project_code || row.line_project || '').trim();
+      const usePc = reimbIsPlaceholderProjectCode(existingPc) ? pc : existingPc;
+      enriched.push({
+        ...row,
+        project_code: usePc || row.project_code,
+        brand: (!row.brand || row.brand === '内部') && pcBrand ? pcBrand : row.brand,
+      });
+      rowIdx += 1;
+    }
+  });
+  while (rowIdx < list.length) {
+    enriched.push(list[rowIdx]);
+    rowIdx += 1;
+  }
+  return enriched.length ? enriched : list;
+}
+
+/** remarks 无明细 JSON 时，从 cost_details / 发票字段还原行（兼容旧数据） */
+function reimbDetailRowsFromCostDetails(r) {
+  if (!r) return [];
+  const parsed = reimbParseJsonObject(r.cost_details || {});
+  const legacyBrand = r.brand ? reimbDetailBrandFromLegacyBrand(r.brand) : '';
+  const invoices = Array.isArray(r.invoices) ? r.invoices : [];
+  const hasInvoice = !!(r.has_invoice === 1 || r.has_invoice === true);
+  return Object.entries(parsed)
+    .filter(([key, value]) => key !== 'advance_offset' && roundMoney2(value) > 0)
+    .map(([key, value], idx) => {
+      const block =
+        Object.keys(REIMB_DETAIL_CATEGORY_OPTIONS).find((b) =>
+          (REIMB_DETAIL_CATEGORY_OPTIONS[b] || []).some(([cat]) => cat === key),
+        ) || 'personnel';
+      const amt = roundMoney2(value);
+      const inv = invoices.length === 1 ? invoices[0] : invoices[idx] || null;
+      return {
+        brand: legacyBrand || '',
+        block,
+        category: key,
+        quantity: 1,
+        unit_price: amt,
+        subtotal: amt,
+        invoice: hasInvoice ? '有' : '无',
+        cost_month: reimbDefaultCostMonth(),
+        invoice_no: inv?.invoice_no || '',
+        invoice_date: inv?.invoice_date || '',
+        description: inv?.invoice_content || '',
+      };
+    });
+}
+
+/** 明细行：优先 remarks JSON；缺失时从 cost_details 还原 */
+function reimbResolveDetailRowsFromRecord(r, meta) {
+  const metaRows = Array.isArray(meta?.rows) ? meta.rows.filter(Boolean) : [];
+  const raw = metaRows.length ? metaRows : reimbDetailRowsFromCostDetails(r);
+  return reimbEnrichDetailRowsWithMergeSources(raw, meta || {});
+}
+
+const REIMB_PAYMENT_METHOD_OPTIONS = [
+  { value: 'bank_transfer', label: '银行汇款' },
+  { value: 'wechat_alipay', label: '微信/支付宝' },
+  { value: 'platform', label: '平台' },
+];
+
+function reimbPaymentMethodLabel(v) {
+  const hit = REIMB_PAYMENT_METHOD_OPTIONS.find((x) => x.value === v);
+  return hit ? hit.label : v || '—';
+}
+
+function reimbPaymentMethodOptionsHtml(selected) {
+  return REIMB_PAYMENT_METHOD_OPTIONS.map(
+    (x) => `<option value="${x.value}" ${x.value === selected ? 'selected' : ''}>${escapeHtml(x.label)}</option>`,
+  ).join('');
+}
+
+function reimbPaymentMethodChanged() {
+  const method = document.getElementById('reimbPaymentMethod')?.value || '';
+  const showBank = method === 'bank_transfer';
+  const bankNameWrap = document.getElementById('reimbPayeeBankNameWrap');
+  const bankAcctWrap = document.getElementById('reimbPayeeBankAccountWrap');
+  if (bankNameWrap) bankNameWrap.style.display = showBank ? '' : 'none';
+  if (bankAcctWrap) bankAcctWrap.style.display = showBank ? '' : 'none';
+  if (!showBank) {
+    reimbHidePayeeAccountPicker();
+    return;
+  }
+  reimbTryFillPayeeFromDict();
+}
+
+function reimbHidePayeeAccountPicker() {
+  const wrap = document.getElementById('reimbPayeeAccountPickerWrap');
+  const picker = document.getElementById('reimbPayeeAccountPicker');
+  if (wrap) wrap.style.display = 'none';
+  if (picker) picker.innerHTML = '';
+}
+
+function reimbFillPayeeBankFromDict(entry) {
+  const c = entry?.content || {};
+  const bank = document.getElementById('reimbPayeeBankName');
+  const acct = document.getElementById('reimbPayeeBankAccount');
+  if (bank && c.bank_name) bank.value = c.bank_name;
+  if (acct && c.bank_account) acct.value = c.bank_account;
+  reimbHidePayeeAccountPicker();
+}
+
+function reimbShowPayeeAccountPicker(entries) {
+  const wrap = document.getElementById('reimbPayeeAccountPickerWrap');
+  const picker = document.getElementById('reimbPayeeAccountPicker');
+  if (!wrap || !picker) return;
+  picker.innerHTML = entries
+    .map((e) => {
+      const c = e.content || {};
+      const label = `${c.bank_name || '—'} · ${c.bank_account || ''}`;
+      return `<button type="button" class="btn btn-secondary btn-sm reimb-payee-pick-btn" data-entry-id="${e.id}">${escapeHtml(label)}</button>`;
+    })
+    .join('');
+  wrap.style.display = 'block';
+  picker.querySelectorAll('.reimb-payee-pick-btn').forEach((btn) => {
+    btn.onclick = () => {
+      const id = Number(btn.dataset.entryId);
+      const entry = entries.find((x) => Number(x.id) === id);
+      if (entry) {
+        reimbFillPayeeBankFromDict(entry);
+        api('POST', `/dict/${entry.id}/touch`).catch(() => {});
+      }
+    };
+  });
+}
+
+async function reimbTryFillPayeeFromDict() {
+  const name = document.getElementById('reimbPayeeName')?.value?.trim();
+  const method = document.getElementById('reimbPaymentMethod')?.value || '';
+  if (!name || !method) {
+    reimbHidePayeeAccountPicker();
+    return;
+  }
+  if (method !== 'bank_transfer') {
+    reimbHidePayeeAccountPicker();
+    return;
+  }
+  try {
+    const rows = await api('GET', `/dict?category=personal_payee&q=${encodeURIComponent(name)}`);
+    const list = Array.isArray(rows) ? rows : [];
+    const matches = list.filter((e) => {
+      const c = e.content || {};
+      const pn = String(c.payee_name || e.name || '').trim();
+      return pn === name && String(c.payment_method || '') === method;
+    });
+    if (matches.length === 1) {
+      reimbFillPayeeBankFromDict(matches[0]);
+      api('POST', `/dict/${matches[0].id}/touch`).catch(() => {});
+    } else if (matches.length > 1) {
+      reimbShowPayeeAccountPicker(matches);
+    } else {
+      reimbHidePayeeAccountPicker();
+    }
+  } catch (_) {
+    reimbHidePayeeAccountPicker();
+  }
+}
+
+async function reimbUpsertPersonalPayeeDict(payeeName, paymentMethod, bankName, bankAccount) {
+  if (!payeeName || !paymentMethod) return;
+  const content = {
+    payee_name: payeeName,
+    payment_method: paymentMethod,
+    bank_name: paymentMethod === 'bank_transfer' ? bankName || '' : '',
+    bank_account: paymentMethod === 'bank_transfer' ? bankAccount || '' : '',
+  };
+  try {
+    const rows = await api('GET', `/dict?category=personal_payee&q=${encodeURIComponent(payeeName)}`);
+    const list = Array.isArray(rows) ? rows : [];
+    const existing = list.find((e) => {
+      const c = e.content || {};
+      if (String(c.payee_name || e.name || '').trim() !== payeeName) return false;
+      if (String(c.payment_method || '') !== paymentMethod) return false;
+      if (paymentMethod === 'bank_transfer') {
+        return String(c.bank_account || '').trim() === String(bankAccount || '').trim();
+      }
+      return true;
+    });
+    if (existing) {
+      await api('PUT', `/dict/${existing.id}`, {
+        category: 'personal_payee',
+        name: payeeName,
+        content,
+        is_active: true,
+      });
+      await api('POST', `/dict/${existing.id}/touch`);
+    } else {
+      await api('POST', '/dict', {
+        category: 'personal_payee',
+        name: payeeName,
+        content,
+      });
+    }
+  } catch (_) {
+    /* 字典写入失败不阻断保存 */
+  }
+}
+
+/** 合并结果是否含可撤销的快照（新版合并会写入 merge_sources） */
+function reimbCanUnmerge(r) {
+  if (!r) return false;
+  if (String(r.payment_status || 'unpaid').toLowerCase() === 'paid') return false;
+  if (r.payment_order_id) return false;
+  const claim = String(r.claim_status || 'draft');
+  if (claim === 'paid' || claim === 'reimbursed') return false;
+  if (r.merged_into_activity === 1 || r.merged_into_activity === true) return false;
+  const meta = reimbReadDetailMeta(r.remarks || '');
+  return Array.isArray(meta.merge_sources) && meta.merge_sources.length >= 2;
+}
+
+/** 保存合并前各条记录的完整快照，供撤销合并时恢复 */
+function reimbBuildMergeSourceSnapshot(r) {
+  if (!r) return null;
+  return {
+    source_id: r.id,
+    year_frame_id: r.year_frame_id,
+    activity_id: r.activity_id,
+    reimbursement_type: r.reimbursement_type,
+    payment_type: r.payment_type || 'personal_reimbursement',
+    cost_module: r.cost_module || 'activity',
+    claim_status: r.claim_status || 'draft',
+    city: r.city,
+    brand: r.brand,
+    payee_name: r.payee_name,
+    payment_method: r.payment_method || null,
+    payee_bank_name: r.payee_bank_name || null,
+    payee_bank_account: r.payee_bank_account || null,
+    payment_status: r.payment_status || 'unpaid',
+    amount: r.amount,
+    cost_details: reimbParseJsonObject(r.cost_details),
+    merged_into_activity: r.merged_into_activity === 1 || r.merged_into_activity === true ? 1 : 0,
+    has_invoice: r.has_invoice === 1 || r.has_invoice === true ? 1 : 0,
+    invoices: Array.isArray(r.invoices) ? r.invoices : [],
+    date: r.date ? String(r.date).slice(0, 10) : '',
+    related_project_code: r.related_project_code,
+    props: r.props,
+    printing: r.printing,
+    express: r.express,
+    other: r.other,
+    remarks: r.remarks,
+  };
+}
+
 function reimbCategoryOptionsHtml(block, selected) {
   const opts = REIMB_DETAIL_CATEGORY_OPTIONS[block] || [];
   return opts
@@ -9320,12 +9667,14 @@ function reimbNewDetailRowData(row, index) {
   const block = row?.block || 'personnel';
   const firstCategory = (REIMB_DETAIL_CATEGORY_OPTIONS[block] || [])[0]?.[0] || '';
   const rawBrand = row?.brand;
+  const pcBrand = extractBrandFromProjectCode(row?.project_code || row?.line_project || '');
   const brand =
-    typeof rawBrand === 'string' && rawBrand.trim()
+    typeof rawBrand === 'string' && rawBrand.trim() && rawBrand.trim() !== '内部'
       ? rawBrand.trim()
-      : reimbDetailDefaultBrand || REIMB_DETAIL_BRAND_OPTIONS[3] || '内部';
+      : pcBrand || reimbDetailDefaultBrand || REIMB_DETAIL_BRAND_OPTIONS[3] || '内部';
   return {
     brand,
+    project_code: row?.project_code || row?.line_project || '',
     block,
     category: row?.category || firstCategory,
     description: row?.description || '',
@@ -9334,6 +9683,7 @@ function reimbNewDetailRowData(row, index) {
     invoice: row?.invoice || '有',
     invoice_date: row?.invoice_date || '',
     invoice_no: row?.invoice_no || '',
+    cost_month: row?.cost_month != null && row?.cost_month !== '' ? parseInt(row.cost_month, 10) : reimbDefaultCostMonth(),
     applicant: row?.applicant || getCurrentUserName(),
     remarks: row?.remarks || '',
     _index: index,
@@ -9342,8 +9692,9 @@ function reimbNewDetailRowData(row, index) {
 
 function reimbDetailRowHtml(row, index) {
   const r = reimbNewDetailRowData(row, index);
+  const pcAttr = escapeHtml(r.project_code || '');
   return `
-    <tr class="reimb-detail-row">
+    <tr class="reimb-detail-row" data-project-code="${pcAttr}">
       <td class="reimb-row-no">${index + 1}</td>
       <td class="reimb-col-brand"><select class="form-control reimb-line-brand" title="按品牌分摊年框">${reimbBrandOptionsHtml(r.brand)}</select></td>
       <td><select class="form-control reimb-line-block" onchange="reimbDetailBlockChanged(this)">${reimbBlockOptionsHtml(r.block)}</select></td>
@@ -9352,6 +9703,7 @@ function reimbDetailRowHtml(row, index) {
       <td><input type="number" class="form-control reimb-line-qty" min="0" step="0.01" value="${escapeHtml(r.quantity)}" oninput="reimbUpdateDetailTotals()"></td>
       <td><input type="number" class="form-control reimb-line-price" min="0" step="0.01" value="${escapeHtml(r.unit_price)}" oninput="reimbUpdateDetailTotals()"></td>
       <td class="amount reimb-line-subtotal">¥0.00</td>
+      <td class="reimb-col-cost-month"><select class="form-control reimb-line-cost-month" title="费用归属月份">${reimbCostMonthOptionsHtml(r.cost_month)}</select></td>
       <td>
         <select class="form-control reimb-line-invoice">
           <option value="有" ${r.invoice !== '无' ? 'selected' : ''}>有</option>
@@ -9407,12 +9759,14 @@ function reimbCollectDetailRows() {
     const subtotal = roundMoney2(quantity * unit_price);
     const item = {
       brand: row.querySelector('.reimb-line-brand')?.value?.trim() || '',
+      project_code: row.dataset.projectCode || '',
       block: row.querySelector('.reimb-line-block')?.value || '',
       category: row.querySelector('.reimb-line-category')?.value || '',
       description: row.querySelector('.reimb-line-desc')?.value?.trim() || '',
       quantity,
       unit_price,
       subtotal,
+      cost_month: parseInt(row.querySelector('.reimb-line-cost-month')?.value, 10) || null,
       invoice: row.querySelector('.reimb-line-invoice')?.value || '有',
       invoice_date: row.querySelector('.reimb-line-invoice-date')?.value || '',
       invoice_no: row.querySelector('.reimb-line-invoice-no')?.value?.trim() || '',
@@ -9424,12 +9778,14 @@ function reimbCollectDetailRows() {
   return rows;
 }
 
-function reimbResolveRecordBrand(rows) {
+function reimbResolveRecordBrand(rows, fallbackBrand) {
+  const label = reimbBrandsLabelFromRows(rows, fallbackBrand);
+  if (label) return label;
   for (const row of rows || []) {
     const b = String(row?.brand || '').trim();
-    if (b) return b;
+    if (b && b !== '内部') return b;
   }
-  return '';
+  return String(fallbackBrand || '').trim() || '内部';
 }
 
 function reimbRowsToCostDetails(rows, advanceAmount) {
@@ -9819,6 +10175,9 @@ async function buildPaymentOrderSheetHtml(order) {
   let mergedIntoActivity = false;
   let firstPaymentType = null;
   let firstCostModule = null;
+  let firstPaymentMethod = null;
+  let firstPayeeBankName = null;
+  let firstPayeeBankAccount = null;
 
   for (const rid of reimbIds) {
     try {
@@ -9826,6 +10185,9 @@ async function buildPaymentOrderSheetHtml(order) {
       const p = reimbursementPayloadFromRecord(rec);
       if (!firstPaymentType) firstPaymentType = p.payment_type;
       if (!firstCostModule) firstCostModule = p.cost_module;
+      if (!firstPaymentMethod && p.payment_method) firstPaymentMethod = p.payment_method;
+      if (!firstPayeeBankName && p.payee_bank_name) firstPayeeBankName = p.payee_bank_name;
+      if (!firstPayeeBankAccount && p.payee_bank_account) firstPayeeBankAccount = p.payee_bank_account;
       if (Array.isArray(p.detail_rows) && p.detail_rows.length) {
         p.detail_rows.forEach((row) => {
           detailRows.push({
@@ -9879,6 +10241,9 @@ async function buildPaymentOrderSheetHtml(order) {
     activity_id: null,
     brand: '',
     payee_name: order.payee_name || '',
+    payment_method: firstPaymentMethod,
+    payee_bank_name: firstPayeeBankName,
+    payee_bank_account: firstPayeeBankAccount,
     project_code: '',
     payment_type: firstPaymentType || 'personal_reimbursement',
     cost_module: firstCostModule || 'activity',
@@ -10018,6 +10383,9 @@ function reimbExportPayloadFromForm() {
   const actId = parseInt(document.getElementById('reimbActivityId')?.value, 10);
   const act = (reimbursementPageState.activities || []).find((x) => Number(x.id) === actId);
   const payee_name = document.getElementById('reimbPayeeName')?.value?.trim() || '';
+  const payment_method = document.getElementById('reimbPaymentMethod')?.value || '';
+  const payee_bank_name = document.getElementById('reimbPayeeBankName')?.value?.trim() || '';
+  const payee_bank_account = document.getElementById('reimbPayeeBankAccount')?.value?.trim() || '';
   const payment_type = document.getElementById('reimbPaymentType')?.value || 'personal_reimbursement';
   const cost_module = document.getElementById('reimbCostModule')?.value || 'activity';
   const claim_status = document.getElementById('reimbClaimStatus')?.value || 'draft';
@@ -10039,6 +10407,9 @@ function reimbExportPayloadFromForm() {
     activity_id: actId,
     brand,
     payee_name,
+    payment_method: payment_method || null,
+    payee_bank_name: payment_method === 'bank_transfer' ? payee_bank_name : null,
+    payee_bank_account: payment_method === 'bank_transfer' ? payee_bank_account : null,
     payment_type,
     cost_module,
     claim_status,
@@ -10072,14 +10443,14 @@ function buildReimbursementCsvText(p) {
     );
   }
   lines.push('');
-  lines.push('编号,板块,类别,内容说明,数量,单价,小计,发票,发票日期,发票号码,申请人,备注');
+  lines.push('编号,板块,类别,内容说明,数量,单价,小计,费用归属,发票,发票日期,发票号码,申请人,备注');
   const detailRows = Array.isArray(p.detail_rows) && p.detail_rows.length ? p.detail_rows : [];
   detailRows.forEach((row, idx) => {
     const blockLabel = REIMB_DETAIL_BLOCKS.find((x) => x.value === row.block)?.label || row.block || '';
     const catLabel = (REIMB_DETAIL_CATEGORY_OPTIONS[row.block] || []).find(([v]) => v === row.category)?.[1] || row.category || '';
     lines.push([
       idx + 1, esc(blockLabel), esc(catLabel), esc(row.description), row.quantity, row.unit_price, row.subtotal,
-      esc(row.invoice), row.invoice_date, esc(row.invoice_no), esc(row.applicant), esc(row.remarks),
+      esc(reimbFormatCostMonth(row.cost_month) || ''), esc(row.invoice), row.invoice_date, esc(row.invoice_no), esc(row.applicant), esc(row.remarks),
     ].join(','));
   });
   if (p.advance_amount) lines.push(['备用金抵扣', '', '', '', '', '', -roundMoney2(p.advance_amount)].join(','));
@@ -10201,21 +10572,41 @@ function reimbursementPreviewDownloadExcel() {
 /** 与列表 CSV / 打印共用结构（来源于 GET /reimbursements/:id） */
 function reimbursementPayloadFromRecord(r) {
   const meta = reimbReadDetailMeta(r.remarks || '');
+  const projectCode = String(r.related_project_code || '').trim();
+  const brand = String(r.brand || '').trim();
+  const enrichedRows = reimbResolveDetailRowsFromRecord(r, meta);
+  const detailRows = enrichedRows.map((row) => {
+    const rowBrand = String(row.brand || '').trim();
+    const rowPc = String(row.project_code || row.line_project || '').trim();
+    const lineProject =
+      rowPc && !reimbIsPlaceholderProjectCode(rowPc)
+        ? rowPc
+        : projectCode
+          || (rowBrand && rowBrand !== '内部' ? rowBrand : '')
+          || reimbBrandYearFrameCodeForPdf(brand)
+          || rowBrand
+          || '—';
+    return { ...row, line_project: lineProject };
+  });
+  const brandsLabel = reimbBrandsLabelFromRows(detailRows, brand);
   return {
     id: r.id,
     date: r.date,
     remarks: reimbVisibleRemarks(r.remarks || ''),
     activity_id: r.activity_id,
-    brand: r.brand || '',
+    brand: brandsLabel || brand || '按明细行归属',
     payee_name: String(r.payee_name || '').trim(),
-    project_code: r.related_project_code || '',
+    payment_method: r.payment_method || null,
+    payee_bank_name: r.payee_bank_name || null,
+    payee_bank_account: r.payee_bank_account || null,
+    project_code: projectCode,
     payment_type: r.payment_type || 'personal_reimbursement',
     cost_module: r.cost_module || 'activity',
     claim_status: r.claim_status || 'draft',
     has_invoice: !!(r.has_invoice === 1 || r.has_invoice === true),
     invoices: Array.isArray(r.invoices) ? r.invoices : [],
     cost_details: parseActivityCostDetails({ cost_details: r.cost_details }),
-    detail_rows: Array.isArray(meta.rows) ? meta.rows : [],
+    detail_rows: detailRows,
     advance_amount: roundMoney2(meta.advance_amount),
     amount: parseFloat(r.amount) || 0,
     merged_into_activity: !!(r.merged_into_activity === 1 || r.merged_into_activity === true),
@@ -10290,77 +10681,170 @@ function buildReimbursementRosterAttachmentHtml(activities) {
 /** A4 横版单页尽量容纳的行数；超出才分页 */
 const REIMB_PRINT_MAX_ROWS_ONE_PAGE = 32;
 
-function buildReimbursementPrintTableHeadHtml() {
-  return `<colgroup>
-      <col style="width:4%">
-      <col style="width:11%">
-      <col style="width:7%">
-      <col style="width:8%">
-      <col style="width:14%">
-      <col style="width:8%">
-      <col style="width:4%">
-      <col style="width:7%">
-      <col style="width:10%">
-      <col style="width:7%">
-      <col style="width:6%">
-      <col style="width:14%">
-    </colgroup>
-    <thead>
-      <tr>
-        <th>序号</th>
-        <th>项目编号</th>
-        <th>板块</th>
-        <th>类别</th>
-        <th>内容说明</th>
-        <th>报销金额含税</th>
-        <th>发票</th>
-        <th>发票日期</th>
-        <th>发票号码</th>
-        <th>收款方</th>
-        <th>报销状态</th>
-        <th>备注</th>
-      </tr>
-    </thead>`;
+/** 打印列元数据：表头可换行，数据列按内容自适应宽度 */
+const REIMB_PRINT_COL_META = {
+  idx: { header: '序号', th: 'sr-th-tight', td: 'sr-c sr-td-tight' },
+  project: { header: '项目编号', th: 'sr-th-project', td: 'sr-project-code' },
+  block: { header: '板块', th: 'sr-th-text', td: 'sr-wrap sr-td-text' },
+  category: { header: '类别', th: 'sr-th-text', td: 'sr-wrap sr-td-text' },
+  description: { header: '内容说明', th: 'sr-th-desc', td: 'sr-wrap sr-td-desc' },
+  amount: { header: '报销金额含税', th: 'sr-th-money', td: 'sr-c sr-td-money' },
+  cost_month: { header: '费用归属', th: 'sr-th-tight', td: 'sr-c sr-td-tight' },
+  invoice: { header: '发票', th: 'sr-th-tight', td: 'sr-c sr-td-tight' },
+  invoice_date: { header: '发票日期', th: 'sr-th-tight', td: 'sr-c sr-td-tight' },
+  invoice_no: { header: '发票号码', th: 'sr-th-invno', td: 'sr-invoice-no' },
+  payee: { header: '收款方', th: 'sr-th-text', td: 'sr-wrap sr-td-text' },
+  status: { header: '报销状态', th: 'sr-th-text', td: 'sr-c sr-td-text' },
+  remarks: { header: '备注', th: 'sr-th-desc', td: 'sr-remarks sr-td-desc' },
+};
+
+function reimbPrintResolveLineProject(row, ctx) {
+  if (!row) return '';
+  const rowPc = String(row.project_code || row.line_project || '').trim();
+  if (rowPc && !reimbIsPlaceholderProjectCode(rowPc)) return rowPc;
+  const rowBrand = String(row.brand || '').trim();
+  const { projectBase, brand } = ctx;
+  if (projectBase && !reimbIsPlaceholderProjectCode(projectBase)) return projectBase;
+  return (
+    (REIMB_DETAIL_BRAND_OPTIONS.includes(rowBrand) ? rowBrand : '')
+    || reimbBrandYearFrameCodeForPdf(brand)
+    || (rowBrand && rowBrand !== '内部' ? rowBrand : '')
+    || '—'
+  );
 }
 
-function buildReimbursementPrintLineRowHtml(row, idx, ctx) {
-  const { payee, statusLabel, projectBase, brand } = ctx;
-  if (!row) {
-    return `<tr>
-      <td class="sr-c">${idx + 1}</td>
-      <td></td><td></td><td></td><td></td>
-      <td class="sr-m"></td>
-      <td></td><td></td><td></td>
-      <td></td>
-      <td class="sr-c"></td>
-      <td class="sr-remarks"></td>
-    </tr>`;
+/** 扫描明细：无内容的可选列自动隐藏，把宽度让给项目编号等长字段 */
+function reimbPrintBuildColumnPlan(detailRows, ctx) {
+  const rows = (detailRows || []).filter(Boolean);
+  const any = (fn) => rows.some(fn);
+  const plan = ['idx', 'project', 'block', 'category'];
+  if (any((r) => String(r.description || '').trim())) plan.push('description');
+  plan.push('amount', 'cost_month', 'invoice');
+  if (any((r) => r.invoice_date && String(r.invoice_date).trim())) plan.push('invoice_date');
+  if (any((r) => r.invoice_no && String(r.invoice_no).trim())) plan.push('invoice_no');
+  plan.push('payee', 'status');
+  if (any((r) => String(r.remarks || '').trim())) plan.push('remarks');
+  return plan;
+}
+
+/** 成本登记列表：项目编号展示（合并单无顶层编号时从快照汇总） */
+function reimbListProjectCodeDisplay(r) {
+  const pc = String(r?.related_project_code || '').trim();
+  if (pc) return { text: pc, title: pc };
+  const meta = reimbReadDetailMeta(r?.remarks || '');
+  const sources = Array.isArray(meta.merge_sources) ? meta.merge_sources : [];
+  const codes = [...new Set(sources.map((s) => String(s.related_project_code || '').trim()).filter(Boolean))];
+  if (codes.length === 1) return { text: codes[0], title: codes[0] };
+  if (codes.length > 1) return { text: `${codes.length} 个场次`, title: codes.join('\n') };
+  return { text: '—', title: '' };
+}
+
+function reimbPrintPayeeInfoHtml(p) {
+  const name = String(p?.payee_name || '').trim();
+  if (!name || name === '—') return '';
+  const method = String(p?.payment_method || '').trim();
+  const bank = String(p?.payee_bank_name || '').trim();
+  const acct = String(p?.payee_bank_account || '').trim();
+  const parts = [
+    `收款人：${escapeHtml(name)}`,
+    `开户行：${escapeHtml(bank || '—')}`,
+    `银行账号：${escapeHtml(acct || '—')}`,
+  ];
+  if (method && method !== 'bank_transfer') {
+    parts.push(`付款方式：${escapeHtml(reimbPaymentMethodLabel(method))}`);
   }
+  return `<div class="sr-payee-info"><strong>个人收款信息：</strong>${parts.join('　')}</div>`;
+}
+
+/** 打印前：记录未存银行信息时，从个人收款字典补全 */
+async function reimbEnrichPayloadPayeeFromDict(p) {
+  if (!p || !String(p.payee_name || '').trim()) return p;
+  const hasBank = String(p.payee_bank_name || '').trim() || String(p.payee_bank_account || '').trim();
+  if (hasBank) return p;
+  try {
+    const rows = await api('GET', `/dict?category=personal_payee&q=${encodeURIComponent(p.payee_name)}`);
+    const list = Array.isArray(rows) ? rows : [];
+    const matches = list.filter((e) => {
+      const c = e.content || {};
+      return String(c.payee_name || e.name || '').trim() === String(p.payee_name).trim();
+    });
+    const hit =
+      matches.find((m) => {
+        const c = m.content || {};
+        return c.payment_method === 'bank_transfer' && String(c.bank_account || '').trim();
+      }) || matches[0];
+    if (!hit) return p;
+    const c = hit.content || {};
+    return {
+      ...p,
+      payment_method: p.payment_method || c.payment_method || null,
+      payee_bank_name: p.payee_bank_name || c.bank_name || null,
+      payee_bank_account: p.payee_bank_account || c.bank_account || null,
+    };
+  } catch (_) {
+    return p;
+  }
+}
+
+function reimbPrintRenderCellHtml(colId, row, idx, ctx) {
+  if (!row) return '';
   const blockLabel = REIMB_DETAIL_BLOCKS.find((x) => x.value === row.block)?.label || row.block || '';
   const catLabel =
     (REIMB_DETAIL_CATEGORY_OPTIONS[row.block] || []).find(([v]) => v === row.category)?.[1] || row.category || '';
-  const rowBrand = String(row.brand || '').trim();
-  const lineProject =
-    projectBase
-    || (REIMB_DETAIL_BRAND_OPTIONS.includes(rowBrand) ? rowBrand : '')
-    || reimbBrandYearFrameCodeForPdf(brand)
-    || rowBrand
-    || '—';
   const inv = row.invoice === '无' ? '无' : '有';
-  return `<tr>
-    <td class="sr-c">${idx + 1}</td>
-    <td class="sr-wrap">${escapeHtml(lineProject)}</td>
-    <td class="sr-wrap">${escapeHtml(blockLabel)}</td>
-    <td class="sr-wrap">${escapeHtml(catLabel)}</td>
-    <td class="sr-wrap">${escapeHtml(row.description || '')}</td>
-    <td class="sr-m">${fmtMoney(row.subtotal || 0)}</td>
-    <td class="sr-c">${escapeHtml(inv)}</td>
-    <td class="sr-c">${row.invoice_date ? escapeHtml(String(row.invoice_date).slice(0, 10)) : ''}</td>
-    <td class="sr-invoice-no sr-wrap">${escapeHtml(row.invoice_no || '')}</td>
-    <td class="sr-wrap">${escapeHtml(payee)}</td>
-    <td class="sr-c">${escapeHtml(statusLabel)}</td>
-    <td class="sr-remarks">${escapeHtml(row.remarks || '')}</td>
-  </tr>`;
+  switch (colId) {
+    case 'idx':
+      return String(idx + 1);
+    case 'project':
+      return escapeHtml(reimbPrintResolveLineProject(row, ctx));
+    case 'block':
+      return escapeHtml(blockLabel);
+    case 'category':
+      return escapeHtml(catLabel);
+    case 'description':
+      return escapeHtml(row.description || '');
+    case 'amount':
+      return fmtMoney(row.subtotal || 0);
+    case 'cost_month':
+      return escapeHtml(reimbFormatCostMonth(row.cost_month) || '—');
+    case 'invoice':
+      return escapeHtml(inv);
+    case 'invoice_date':
+      return row.invoice_date ? escapeHtml(String(row.invoice_date).slice(0, 10)) : '';
+    case 'invoice_no':
+      return escapeHtml(row.invoice_no || '');
+    case 'payee':
+      return escapeHtml(ctx.payee || '');
+    case 'status':
+      return escapeHtml(ctx.statusLabel || '');
+    case 'remarks':
+      return escapeHtml(row.remarks || '');
+    default:
+      return '';
+  }
+}
+
+function buildReimbursementPrintTableHeadHtml(colPlan) {
+  const cols = colPlan || Object.keys(REIMB_PRINT_COL_META);
+  const heads = cols
+    .map((id) => {
+      const m = REIMB_PRINT_COL_META[id] || { header: id, th: '' };
+      return `<th class="${m.th}">${m.header}</th>`;
+    })
+    .join('');
+  return `<thead><tr>${heads}</tr></thead>`;
+}
+
+function buildReimbursementPrintLineRowHtml(row, idx, ctx, colPlan) {
+  const cols = colPlan || Object.keys(REIMB_PRINT_COL_META);
+  const cells = cols
+    .map((id) => {
+      const m = REIMB_PRINT_COL_META[id] || { td: '' };
+      const inner = row ? reimbPrintRenderCellHtml(id, row, idx, ctx) : '';
+      return `<td class="${m.td}">${inner}</td>`;
+    })
+    .join('');
+  return `<tr>${cells}</tr>`;
 }
 
 /**
@@ -10383,6 +10867,8 @@ function buildReimbursementPrintableHtml(p) {
   const filer = getCurrentUserName() || (detailRows[0] && detailRows[0].applicant) || '—';
   const statusLabel = reimbClaimStatusSheetLabel(p.claim_status);
   const lineCtx = { payee, statusLabel, projectBase, brand: p.brand || '' };
+  const colPlan = reimbPrintBuildColumnPlan(detailRows, lineCtx);
+  const brandsLabel = reimbBrandsLabelFromRows(detailRows, p.brand || '') || p.brand || '按明细行归属';
 
   const pageChunks = [];
   if (rows.length <= REIMB_PRINT_MAX_ROWS_ONE_PAGE) {
@@ -10394,11 +10880,12 @@ function buildReimbursementPrintableHtml(p) {
   }
   if (!pageChunks.length) pageChunks.push([null, null, null]);
 
-  // 备注：footer 放在最后一页内，避免单独占一页
+  const payeeInfoHtml = reimbPrintPayeeInfoHtml(p);
 
   const footerHtml = `<div class="sr-footer">
       <div><strong>合计金额（含税）：</strong>${fmtMoney(totalShow)}</div>
       <div><strong>备用金抵扣：</strong>${advance > 0 ? fmtMoney(advance) : '—'}</div>
+      ${payeeInfoHtml}
       <div class="sr-footer-row">
         <span><strong>抵扣后应付：</strong>${fmtMoney(p.amount || 0)}</span>
         <span><strong>填报人：</strong>${escapeHtml(filer)}</span>
@@ -10414,7 +10901,7 @@ function buildReimbursementPrintableHtml(p) {
         .slice(0, pageIdx)
         .reduce((n, c) => n + c.length, 0);
       const tbody = chunk
-        .map((row, i) => buildReimbursementPrintLineRowHtml(row, startIdx + i, lineCtx))
+        .map((row, i) => buildReimbursementPrintLineRowHtml(row, startIdx + i, lineCtx, colPlan))
         .join('');
       const pageLabel =
         totalPages > 1
@@ -10428,15 +10915,15 @@ function buildReimbursementPrintableHtml(p) {
     <div class="sr-meta">
       <span>提报月份：<strong>${escapeHtml(monthLabel)}</strong></span>
       <span>申请日期：${escapeHtml(dStr || '—')}</span>
-      <span>品牌：${escapeHtml(p.brand || '按明细行归属')}</span>
+      <span>品牌：${escapeHtml(brandsLabel)}</span>
     </div>` : `<div class="sr-meta sr-meta--sub">
       <span>盛融报销单（续）</span>
       <span>提报月份：${escapeHtml(monthLabel)}</span>
       <span>申请日期：${escapeHtml(dStr || '—')}</span>
     </div>`}
     ${pageLabel}
-    <table class="sr-table" aria-label="报销明细">
-      ${buildReimbursementPrintTableHeadHtml()}
+    <table class="sr-table sr-table-adaptive" aria-label="报销明细">
+      ${buildReimbursementPrintTableHeadHtml(colPlan)}
       <tbody>${tbody}</tbody>
     </table>
     ${continueHint}
@@ -10460,29 +10947,70 @@ function buildReimbursementPrintableHtml(p) {
   .sr-meta span { white-space: nowrap; }
   .sr-page-no { margin: 0 0 4px; font-size: 10px; text-align: right; color: #444; }
   .sr-page-continue { margin: 4px 0 0; font-size: 10px; text-align: right; color: #666; }
-  table.sr-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+  table.sr-table { width: 100%; border-collapse: collapse; table-layout: auto; }
+  table.sr-table.sr-table-adaptive { table-layout: auto; }
   table.sr-table th, table.sr-table td {
     border: 1px solid #000;
     padding: 2px 4px;
-    vertical-align: top;
-    word-break: break-word;
+    vertical-align: middle;
+    font-size: 9.5px;
   }
   table.sr-table thead th {
     background: #ececec;
     font-weight: 600;
-    font-size: 9px;
+    font-size: 8.5px;
     text-align: center;
-    line-height: 1.2;
+    line-height: 1.15;
     vertical-align: middle;
+    padding: 3px 4px;
     white-space: nowrap;
   }
   table.sr-table thead { display: table-header-group; }
   table.sr-table tr { page-break-inside: avoid; break-inside: avoid; }
-  .sr-c { text-align: center; white-space: nowrap; vertical-align: middle; }
-  .sr-m { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; vertical-align: middle; }
-  .sr-wrap { white-space: normal; line-height: 1.35; }
-  .sr-remarks { white-space: normal; line-height: 1.35; font-size: 9px; }
-  .sr-invoice-no { font-size: 8.5px; letter-spacing: -0.1px; }
+  /* 紧凑列：width:0.1% + nowrap 使列宽贴合内容，剩余空间留给说明/备注 */
+  .sr-col-shrink { width: 0.1%; white-space: nowrap; }
+  .sr-th-tight, .sr-td-tight { width: 0.1%; white-space: nowrap; }
+  .sr-th-money, .sr-td-money { width: 0.1%; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .sr-th-text, .sr-td-text { width: 0.1%; white-space: nowrap; }
+  .sr-th-project, .sr-project-code {
+    width: 0.1%;
+    text-align: center;
+    white-space: nowrap;
+    word-break: keep-all;
+    font-size: 9px;
+    line-height: 1.3;
+    vertical-align: middle;
+    padding-left: 3px;
+    padding-right: 3px;
+  }
+  .sr-th-project { white-space: nowrap; font-size: 8.5px; }
+  .sr-th-desc, .sr-td-desc { word-break: break-word; white-space: normal; line-height: 1.35; }
+  .sr-th-desc { white-space: nowrap; line-height: 1.15; }
+  .sr-th-invno, .sr-invoice-no {
+    width: 0.1%;
+    white-space: nowrap;
+    text-align: center;
+    padding-left: 3px;
+    padding-right: 3px;
+  }
+  .sr-th-invno { white-space: nowrap; font-size: 8.5px; line-height: 1.15; }
+  .sr-c { text-align: center; vertical-align: middle; }
+  .sr-wrap, .sr-td-text, .sr-td-desc { text-align: center; vertical-align: middle; }
+  .sr-remarks { text-align: center; font-size: 9px; }
+  .sr-invoice-no {
+    font-size: 8.5px;
+    letter-spacing: -0.1px;
+    font-variant-numeric: tabular-nums;
+    vertical-align: middle;
+  }
+  .sr-payee-info {
+    grid-column: 1 / -1;
+    font-size: 10px;
+    line-height: 1.45;
+    padding: 4px 0 2px;
+    border-top: 1px dashed #999;
+    margin-top: 2px;
+  }
   .sr-footer { margin-top: 8px; font-size: 10.5px; display: grid; grid-template-columns: 1fr 1fr; gap: 6px 16px; align-items: center; page-break-inside: avoid; break-inside: avoid; }
   .sr-footer-row { grid-column: 1 / -1; display: flex; flex-wrap: wrap; justify-content: space-between; gap: 12px; border-top: 1px solid #000; padding-top: 6px; margin-top: 4px; }
   .sr-note { margin-top: 6px; font-size: 9.5px; color: #333; }
@@ -10512,8 +11040,9 @@ function reimbursementPreviewCsvFromForm() {
   });
 }
 
-function reimbursementPrintCurrentForm() {
-  const p = reimbExportPayloadFromForm();
+async function reimbursementPrintCurrentForm() {
+  const raw = reimbExportPayloadFromForm();
+  const p = await reimbEnrichPayloadPayeeFromDict(raw);
   const html = buildReimbursementPrintableHtml(p);
   openReimbursementPreviewModal({
     title: '盛融报销单 · 预览',
@@ -10525,7 +11054,8 @@ function reimbursementPrintCurrentForm() {
 async function reimbursementPrintTemplateById(id) {
   try {
     const r = await api('GET', `/reimbursements/${id}`);
-    const p = reimbursementPayloadFromRecord(r);
+    let p = reimbursementPayloadFromRecord(r);
+    p = await reimbEnrichPayloadPayeeFromDict(p);
     const html = buildReimbursementPrintableHtml(p);
     openReimbursementPreviewModal({
       title: `盛融报销单 · #${id}`,
@@ -10596,6 +11126,7 @@ async function reimbursementSaveClaimStatus() {
     reimbursementDetailState.record = r;
     const bodyEl = document.getElementById('modalReimbDetailBody');
     if (bodyEl) bodyEl.innerHTML = buildReimbursementDetailModalHtml(r);
+    detailModalSyncFooter();
     showToast('状态已更新', 'success');
     if (currentPage === 'reimbursement') await renderReimbursements();
   } catch (e) {
@@ -10606,18 +11137,20 @@ async function reimbursementSaveClaimStatus() {
 function buildReimbursementDetailModalHtml(record) {
   const r = record || {};
   const meta = reimbReadDetailMeta(r.remarks || '');
-  const rows = Array.isArray(meta.rows) ? meta.rows : [];
+  const rows = reimbResolveDetailRowsFromRecord(r, meta);
   const advance = roundMoney2(meta.advance_amount);
   const visibleRemarks = reimbVisibleRemarks(r.remarks || '');
   const amount = parseFloat(r.amount) || 0;
   const amountCls = amount > 0 ? 'amount-pos' : amount < 0 ? 'amount-neg' : '';
   const projectCode = String(r.related_project_code || '').trim();
-  const projectDisplay = projectCode || '按明细行归属';
+  const brandsLabel = reimbBrandsLabelFromRows(rows, r.brand || '');
+  const projectDisplay = projectCode || brandsLabel || '按明细行归属';
   const heroRows = [
     ['日期', escapeHtml(fmtDateShort(r.date) || '—')],
     ['申请类型', escapeHtml(reimbPaymentTypeLabel(r.payment_type || ''))],
     ['成本板块', escapeHtml(reimbCostModuleLabel(r.cost_module || ''))],
     ['项目编号', escapeHtml(projectDisplay)],
+    ['品牌', escapeHtml(brandsLabel || r.brand || '—')],
     [
       '金额（含税）',
       `<span class="reimb-detail-value ${amountCls}">${fmtMoney(amount)}</span>`,
@@ -10629,8 +11162,34 @@ function buildReimbursementDetailModalHtml(record) {
       : []),
     ['付款状态', paymentStatusHtml(r.payment_status, r.payment_order_id)],
     ['收款方', escapeHtml(r.payee_name || '—')],
+    ...(r.payment_method
+      ? [['付款方式', escapeHtml(reimbPaymentMethodLabel(r.payment_method))]]
+      : []),
+    ...(r.payment_method === 'bank_transfer' && (r.payee_bank_name || r.payee_bank_account)
+      ? [
+          ['开户行', escapeHtml(r.payee_bank_name || '—')],
+          ['银行账号', escapeHtml(r.payee_bank_account || '—')],
+        ]
+      : []),
     ['合并场次', r.merged_into_activity ? '<span class="badge badge-success">已计入</span>' : '<span class="badge badge-gray">未计入</span>'],
   ];
+  if (Array.isArray(meta.merged_from_ids) && meta.merged_from_ids.length) {
+    heroRows.push([
+      '合并来源',
+      escapeHtml(meta.merged_from_ids.map((x) => `#${x}`).join('、')),
+    ]);
+  }
+  if (reimbCanUnmerge(r)) {
+    heroRows.push([
+      '合并操作',
+      `<span class="badge badge-gray">可撤销合并（${meta.merge_sources.length} 条）</span>`,
+    ]);
+  } else if (/^合并自\s+#/m.test(visibleRemarks)) {
+    heroRows.push([
+      '合并操作',
+      '<span style="font-size:12px;color:var(--text-secondary)">旧版合并记录，无快照不可自动撤销</span>',
+    ]);
+  }
   const heroHtml = heroRows
     .map(([label, value, rawValue]) => {
       const v = rawValue ? value : `<span class="reimb-detail-value">${value}</span>`;
@@ -10645,10 +11204,13 @@ function buildReimbursementDetailModalHtml(record) {
           const blockLabel = REIMB_DETAIL_BLOCKS.find((x) => x.value === row.block)?.label || row.block || '';
           const catLabel = (REIMB_DETAIL_CATEGORY_OPTIONS[row.block] || []).find(([v]) => v === row.category)?.[1] || row.category || '';
           const subtotal = roundMoney2(row.subtotal);
+          const rowPc = String(row.project_code || row.line_project || '').trim();
           const rowBrand =
-            (typeof row.brand === 'string' && row.brand.trim())
+            (typeof row.brand === 'string' && row.brand.trim() && row.brand.trim() !== '内部')
               ? row.brand.trim()
-              : (legacyBrandMappedDetail || (r.brand ? String(r.brand) : '—'));
+              : extractBrandFromProjectCode(rowPc)
+                || legacyBrandMappedDetail
+                || (r.brand ? String(r.brand) : '—');
           return `<tr>
             <td class="reimb-ro-c">${idx + 1}</td>
             <td>${escapeHtml(rowBrand)}</td>
@@ -10658,6 +11220,7 @@ function buildReimbursementDetailModalHtml(record) {
             <td class="reimb-ro-c">${row.quantity != null && row.quantity !== '' ? escapeHtml(row.quantity) : '—'}</td>
             <td class="reimb-ro-amount">${row.unit_price != null && row.unit_price !== '' ? fmtMoney(row.unit_price) : '—'}</td>
             <td class="reimb-ro-amount">${fmtMoney(subtotal)}</td>
+            <td class="reimb-ro-c">${escapeHtml(reimbFormatCostMonth(row.cost_month) || '—')}</td>
             <td class="reimb-ro-c">${row.invoice === '无' ? '无' : '有'}</td>
             <td class="reimb-ro-mono">${escapeHtml(row.invoice_no || '')}</td>
             <td class="reimb-ro-wrap">${escapeHtml(row.remarks || '')}</td>
@@ -10669,7 +11232,7 @@ function buildReimbursementDetailModalHtml(record) {
   const detailTable = rows.length
     ? `<div class="reimb-ro-scroll"><table class="reimb-ro-table">
         <thead>
-          <tr><th>#</th><th>品牌</th><th>板块</th><th>类别</th><th>内容说明</th><th>数量</th><th>单价</th><th>小计</th><th>发票</th><th>发票号码</th><th>备注</th></tr>
+          <tr><th>#</th><th>品牌</th><th>板块</th><th>类别</th><th>内容说明</th><th>数量</th><th>单价</th><th>小计</th><th>费用归属</th><th>发票</th><th>发票号码</th><th>备注</th></tr>
         </thead>
         <tbody>${detailTbody}</tbody>
       </table></div>`
@@ -10691,10 +11254,15 @@ function buildReimbursementDetailModalHtml(record) {
 
 function detailModalSyncFooter() {
   const pdfBtn = document.getElementById('reimbDetailPdfBtn');
-  const excelBtn = document.getElementById('reimbDetailExcelBtn');
+  const unmergeBtn = document.getElementById('reimbDetailUnmergeBtn');
   const showReimb = detailModalContext === 'reimbursement';
   if (pdfBtn) pdfBtn.style.display = showReimb ? 'inline-flex' : 'none';
-  if (excelBtn) excelBtn.style.display = showReimb ? 'inline-flex' : 'none';
+  if (unmergeBtn) {
+    const r = reimbursementDetailState.record;
+    const canUnmerge = showReimb && hasWriteAccess() && reimbCanUnmerge(r);
+    unmergeBtn.style.display = canUnmerge ? 'inline-flex' : 'none';
+    unmergeBtn.disabled = !canUnmerge;
+  }
 }
 
 async function reimbursementOpenDetailModal(id) {
@@ -10716,6 +11284,7 @@ async function reimbursementOpenDetailModal(id) {
     const r = await api('GET', `/reimbursements/${nid}`);
     reimbursementDetailState.record = r;
     bodyEl.innerHTML = buildReimbursementDetailModalHtml(r);
+    detailModalSyncFooter();
   } catch (e) {
     bodyEl.innerHTML = `<div class="empty-state" style="padding:24px"><div class="empty-title">加载失败</div><div class="empty-sub">${escapeHtml(e.message || '')}</div></div>`;
   }
@@ -10829,12 +11398,6 @@ async function reimbursementDetailPdfPreview() {
   await reimbursementPrintTemplateById(id);
 }
 
-function reimbursementDetailExcelDownload() {
-  const id = reimbursementDetailState.id;
-  if (!Number.isFinite(id)) return;
-  reimbursementDownloadExcel(id);
-}
-
 async function reimbursementEditById(id) {
   try {
     const r = await api('GET', `/reimbursements/${id}`);
@@ -10890,20 +11453,25 @@ async function showReimbursementForm(record) {
       : todayDateInputValue();
   const meta = reimbReadDetailMeta(record?.remarks || '');
   const remarksEsc = escapeHtml(reimbVisibleRemarks(record?.remarks || ''));
-  const rawDetailRows = Array.isArray(meta.rows) && meta.rows.length ? meta.rows : [];
+  const enrichedDetailRows = reimbResolveDetailRowsFromRecord(record, meta);
   const useAdvance = !!meta.use_advance;
   const advanceAmount = roundMoney2(meta.advance_amount);
   const paymentDateVal = meta.payment_date || '';
   const legacyBrandMapped = record && record.brand ? reimbDetailBrandFromLegacyBrand(record.brand) : '';
   reimbDetailDefaultBrand = legacyBrandMapped || '内部';
-  const detailRows = rawDetailRows.map((row) => ({
+  const detailRows = enrichedDetailRows.map((row) => ({
     ...row,
     brand:
-      typeof row?.brand === 'string' && row.brand.trim()
+      typeof row?.brand === 'string' && row.brand.trim() && row.brand.trim() !== '内部'
         ? row.brand.trim()
-        : legacyBrandMapped || reimbDetailDefaultBrand,
+        : extractBrandFromProjectCode(row?.project_code || row?.line_project || '')
+          || legacyBrandMapped
+          || reimbDetailDefaultBrand,
   }));
   const payeeVal = record && record.payee_name ? String(record.payee_name) : '';
+  const paymentMethodVal = record && record.payment_method ? String(record.payment_method) : '';
+  const payeeBankNameVal = record && record.payee_bank_name ? String(record.payee_bank_name) : '';
+  const payeeBankAccountVal = record && record.payee_bank_account ? String(record.payee_bank_account) : '';
   const costModuleVal = record && record.cost_module ? String(record.cost_module) : 'activity';
   const claimStatusVal = record && record.claim_status ? String(record.claim_status) : 'draft';
   const paymentTypeVal = record && record.payment_type ? String(record.payment_type) : 'personal_reimbursement';
@@ -10915,7 +11483,9 @@ async function showReimbursementForm(record) {
     .join('');
 
   let pickedMergedLabel = '—';
-  if (merged && actId) {
+  if (merged && Array.isArray(meta.merge_sources) && meta.merge_sources.length > 1) {
+    pickedMergedLabel = '多场次合并 · 项目编号见各行明细';
+  } else if (merged && actId) {
     const ax = reimbursementPageState.activities.find((x) => Number(x.id) === actId);
     pickedMergedLabel = ax ? reimbActivityLine(ax) : `场次 #${actId}`;
   }
@@ -10977,9 +11547,28 @@ async function showReimbursementForm(record) {
             <label class="form-label">申请日期 <span class="required">*</span></label>
             <input type="date" class="form-control" id="reimbDate" value="${dateVal}">
           </div>
-          <div class="form-group reimb-span-2">
+          <div class="form-group reimb-payee-field">
             <label class="form-label">收款方</label>
-            <input type="text" class="form-control" id="reimbPayeeName" placeholder="用于付款合并；生成付款单前必填" value="${escapeHtml(payeeVal)}">
+            <input type="text" class="form-control" id="reimbPayeeName" placeholder="姓名" value="${escapeHtml(payeeVal)}" onchange="reimbTryFillPayeeFromDict()">
+          </div>
+          <div class="form-group reimb-pay-method-field">
+            <label class="form-label">付款方式</label>
+            <select class="form-control" id="reimbPaymentMethod" onchange="reimbPaymentMethodChanged()">
+              <option value="">请选择</option>
+              ${reimbPaymentMethodOptionsHtml(paymentMethodVal)}
+            </select>
+          </div>
+          <div class="form-group reimb-bank-field" id="reimbPayeeBankNameWrap" style="display:none">
+            <label class="form-label">开户行</label>
+            <input type="text" class="form-control" id="reimbPayeeBankName" placeholder="银行汇款时填写" value="${escapeHtml(payeeBankNameVal)}">
+          </div>
+          <div class="form-group reimb-bank-field" id="reimbPayeeBankAccountWrap" style="display:none">
+            <label class="form-label">银行账号</label>
+            <input type="text" class="form-control" id="reimbPayeeBankAccount" placeholder="银行汇款时填写" value="${escapeHtml(payeeBankAccountVal)}">
+          </div>
+          <div class="form-group reimb-span-3" id="reimbPayeeAccountPickerWrap" style="display:none">
+            <label class="form-label">选择收款账号</label>
+            <div id="reimbPayeeAccountPicker" class="reimb-payee-account-picker"></div>
           </div>
           <div class="form-group" id="reimbPaymentDateWrap" style="display:${reimbClaimStatusNeedsPaymentDate(claimStatusVal) ? 'block' : 'none'}">
             <label class="form-label">付款日期</label>
@@ -11003,7 +11592,7 @@ async function showReimbursementForm(record) {
             <table class="data-table reimb-detail-table reimb-detail-table--compact" id="reimbDetailTable">
               <thead>
                 <tr>
-                  <th>编号</th><th class="reimb-col-brand">品牌</th><th>板块</th><th>类别</th><th>内容说明</th><th>数量</th><th>单价</th><th>小计</th>
+                  <th>编号</th><th class="reimb-col-brand">品牌</th><th>板块</th><th>类别</th><th>内容说明</th><th>数量</th><th>单价</th><th>小计</th><th class="reimb-col-cost-month" title="费用归属（1-12月）">费用归属</th>
                   <th>发票</th><th>发票日期</th><th>发票号码</th><th>申请人</th><th>备注</th><th></th>
                 </tr>
               </thead>
@@ -11041,7 +11630,6 @@ async function showReimbursementForm(record) {
         <button type="button" class="btn btn-secondary" onclick="hideReimbursementInline()">取消</button>
         <button type="button" class="btn btn-secondary" onclick="reimbursementPrintCurrentForm()">预览 / 打印</button>
         <button type="button" class="btn btn-secondary" onclick="reimbursementPreviewCsvFromForm()">CSV 预览</button>
-        ${rid ? `<button type="button" class="btn btn-secondary" onclick="reimbursementDownloadExcel(${rid})">导出 Excel</button>` : ''}
         <button type="button" class="btn btn-primary" onclick="saveReimbursementForm()">保存</button>
       </footer>
     </section>
@@ -11050,16 +11638,10 @@ async function showReimbursementForm(record) {
   if (detailRows.length) {
     detailRows.forEach((row) => reimbAppendDetailRow(row));
   } else if (record) {
-    const parsed = reimbParseJsonObject(record.cost_details || {});
-    const restoredRows = Object.entries(parsed)
-      .filter(([key, value]) => key !== 'advance_offset' && roundMoney2(value) > 0)
-      .map(([key, value]) => {
-        const block = Object.keys(REIMB_DETAIL_CATEGORY_OPTIONS).find((b) =>
-          (REIMB_DETAIL_CATEGORY_OPTIONS[b] || []).some(([cat]) => cat === key)
-        ) || 'personnel';
-        return { brand: legacyBrandMapped || '', block, category: key, quantity: 1, unit_price: roundMoney2(value) };
-      });
-    (restoredRows.length ? restoredRows : [null, null, null]).forEach((row) => reimbAppendDetailRow(row));
+    reimbDetailRowsFromCostDetails(record).forEach((row) => reimbAppendDetailRow(row));
+    if (!document.querySelector('#reimbDetailRows tr')) {
+      for (let i = 0; i < 3; i += 1) reimbAppendDetailRow(null);
+    }
   } else {
     for (let i = 0; i < 3; i += 1) reimbAppendDetailRow(null);
   }
@@ -11074,6 +11656,7 @@ async function showReimbursementForm(record) {
   if (!merged) reimbOnCostAttributionChange();
   reimbOnSyncToActivityChange();
   reimbUpdateDetailTotals();
+  reimbPaymentMethodChanged();
   renderLucideIcons();
   try {
     host.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -11096,6 +11679,9 @@ async function saveReimbursementForm() {
   const projectCodeInput = (document.getElementById('reimbProjectCode')?.value || '').replace(/^\uFEFF/, '').trim();
   const date = document.getElementById('reimbDate')?.value;
   const payee_name = document.getElementById('reimbPayeeName')?.value?.trim() || '';
+  const payment_method = document.getElementById('reimbPaymentMethod')?.value || '';
+  const payee_bank_name = document.getElementById('reimbPayeeBankName')?.value?.trim() || '';
+  const payee_bank_account = document.getElementById('reimbPayeeBankAccount')?.value?.trim() || '';
   const remarks = document.getElementById('reimbRemarks')?.value?.trim() || '';
   const payment_type = document.getElementById('reimbPaymentType')?.value || 'personal_reimbursement';
   let cost_module = document.getElementById('reimbCostModule')?.value || 'activity';
@@ -11108,7 +11694,22 @@ async function saveReimbursementForm() {
   const grossTotal = roundMoney2(rows.reduce((s, row) => s + roundMoney2(row.subtotal), 0));
   const total = roundMoney2(calcCostDetailsTotal(cost_details));
   const payment_date = document.getElementById('reimbPaymentDate')?.value || '';
-  const brand = reimbResolveRecordBrand(rows);
+  const syncEl = document.getElementById('reimbSyncToActivity');
+  const sync_to_activity = alreadyMerged ? true : isNonActivity ? false : !!syncEl?.checked;
+  if (isNonActivity) {
+    actId = NaN;
+    cost_module = 'general';
+  }
+  const hasAct = Number.isFinite(actId) && actId > 0;
+  const a = hasAct ? reimbursementPageState.activities.find((x) => Number(x.id) === actId) : null;
+  const brand = reimbResolveRecordBrand(
+    rows,
+    (a && a.brand) || extractBrandFromProjectCode(projectCodeInput) || '',
+  );
+  if (payment_method === 'bank_transfer' && payee_name && (!payee_bank_name || !payee_bank_account)) {
+    showToast('银行汇款请填写开户行和银行账号', 'warning');
+    return;
+  }
   const invoices = rows
     .filter((row) => row.invoice_no && row.invoice_date)
     .map((row) => ({
@@ -11118,13 +11719,6 @@ async function saveReimbursementForm() {
       invoice_kind: '普票',
     }));
   const has_invoice = invoices.length > 0;
-  const syncEl = document.getElementById('reimbSyncToActivity');
-  const sync_to_activity = alreadyMerged ? true : isNonActivity ? false : !!syncEl?.checked;
-  if (isNonActivity) {
-    actId = NaN;
-    cost_module = 'general';
-  }
-  const hasAct = Number.isFinite(actId) && actId > 0;
 
   if (!currentYearFrameId) {
     showToast('年框未就绪', 'warning');
@@ -11183,6 +11777,9 @@ async function saveReimbursementForm() {
     brand,
     date,
     payee_name,
+    payment_method: payment_method || null,
+    payee_bank_name: payment_method === 'bank_transfer' ? payee_bank_name : null,
+    payee_bank_account: payment_method === 'bank_transfer' ? payee_bank_account : null,
     payment_status,
     remarks: reimbRemarksWithMeta(remarks, { rows, use_advance, advance_amount, gross_total: grossTotal, payment_date }),
     payment_type,
@@ -11193,7 +11790,6 @@ async function saveReimbursementForm() {
     cost_details,
     sync_to_activity,
   };
-  const a = hasAct ? reimbursementPageState.activities.find((x) => Number(x.id) === actId) : null;
   if (a) {
     body.city = a.city || null;
     body.related_project_code = a.project_code || null;
@@ -11208,6 +11804,7 @@ async function saveReimbursementForm() {
       await api('POST', '/reimbursements', body);
       showToast('付款申请已保存', 'success');
     }
+    await reimbUpsertPersonalPayeeDict(payee_name, payment_method, payee_bank_name, payee_bank_account);
     hideReimbursementInline();
     if (currentPage === 'reimbursement') await renderReimbursements();
     if (currentPage === 'material') await renderMaterialPurchases();
@@ -11234,6 +11831,59 @@ async function deleteReimbursementRecord(id) {
   } catch (e) {
     showToast(e.message || '删除失败', 'error');
   }
+}
+
+async function reimbursementUnmergeRecord(id) {
+  if (!hasWriteAccess()) {
+    showToast('仅管理员可撤销合并', 'warning');
+    return;
+  }
+  const nid = Number(id);
+  if (!Number.isFinite(nid)) return;
+  let r = reimbursementDetailState.record;
+  if (!r || Number(r.id) !== nid) {
+    try {
+      r = await api('GET', `/reimbursements/${nid}`);
+    } catch (e) {
+      showToast(e.message || '加载失败', 'error');
+      return;
+    }
+  }
+  if (!reimbCanUnmerge(r)) {
+    showToast('该记录不可撤销合并（可能已支付、已计入场次，或为旧版合并无快照）', 'warning');
+    return;
+  }
+  const meta = reimbReadDetailMeta(r.remarks || '');
+  const count = meta.merge_sources.length;
+  const fromIds = (meta.merged_from_ids || meta.merge_sources.map((s) => s.source_id).filter(Boolean))
+    .map((x) => `#${x}`)
+    .join('、');
+  if (
+    !confirm(
+      `确认撤销合并 #${nid}？\n将恢复为 ${count} 条独立记录（原 ${fromIds || '合并前'}），并删除本条合并记录。`,
+    )
+  ) {
+    return;
+  }
+  try {
+    const res = await api('POST', `/reimbursements/${nid}/unmerge`);
+    closeModal();
+    const restored = Array.isArray(res?.restored) ? res.restored : [];
+    const idsText = restored.map((x) => `#${x.new_id}`).join('、');
+    showToast(res?.message || `已恢复 ${restored.length} 条（${idsText}）`, 'success');
+    if (currentPage === 'reimbursement') await renderReimbursements();
+    if (currentPage === 'material') await renderMaterialPurchases();
+    if (currentPage === 'cost') await renderCost();
+    void updateBadges();
+  } catch (e) {
+    showToast(e.message || '撤销合并失败', 'error');
+  }
+}
+
+async function reimbursementDetailUnmerge() {
+  const id = reimbursementDetailState.id;
+  if (!Number.isFinite(id)) return;
+  await reimbursementUnmergeRecord(id);
 }
 
 let _reimbListFilterT;
@@ -11364,7 +12014,7 @@ async function reimbursementMergeSelected() {
     .sort((a, b) => Number(a.id) - Number(b.id))
     .map((r) => `#${r.id}`)
     .join('、');
-  if (!confirm(`确认合并 ${listRows.length} 条记录（${summary}）为一条新成本登记？\n原记录将被删除，且不可撤销。`)) return;
+  if (!confirm(`确认合并 ${listRows.length} 条记录（${summary}）为一条新成本登记？\n合并后可在详情中「撤销合并」恢复为多条原记录。`)) return;
 
   let merged;
   try {
@@ -11398,8 +12048,17 @@ async function reimbursementMergeRecordsByIds(ids) {
   const visibleRemarks = [];
   fullRecords.forEach((r) => {
     const meta = reimbReadDetailMeta(r.remarks || '');
+    const pc = String(r.related_project_code || '').trim();
+    const pcBrand = extractBrandFromProjectCode(pc);
     if (Array.isArray(meta.rows)) {
-      meta.rows.forEach((row) => row && allRows.push({ ...row }));
+      meta.rows.forEach((row) => {
+        if (!row) return;
+        allRows.push({
+          ...row,
+          project_code: row.project_code || pc || '',
+          brand: (!row.brand || row.brand === '内部') && pcBrand ? pcBrand : row.brand,
+        });
+      });
     }
     const adv = roundMoney2(meta.advance_amount);
     if (adv > 0) {
@@ -11422,7 +12081,7 @@ async function reimbursementMergeRecordsByIds(ids) {
   const dates = fullRecords.map((r) => String(r.date || '').slice(0, 10)).filter(Boolean).sort();
   const mergedDate = dates[dates.length - 1] || todayDateInputValue();
   const first = fullRecords[0] || {};
-  const brand = reimbResolveRecordBrand(allRows) || first.brand || '';
+  const brand = reimbBrandsLabelFromRows(allRows, first.brand) || first.brand || '内部';
   const payment_type = first.payment_type || 'personal_reimbursement';
   const cost_module = first.cost_module || 'activity';
   const payee_name = String(first.payee_name || '').trim();
@@ -11446,12 +12105,16 @@ async function reimbursementMergeRecordsByIds(ids) {
   const userRemarksJoined = visibleRemarks.length
     ? `合并自 ${ids.map((x) => `#${x}`).join(' + ')}\n${visibleRemarks.join('\n')}`
     : `合并自 ${ids.map((x) => `#${x}`).join(' + ')}`;
+  const mergeSources = fullRecords.map(reimbBuildMergeSourceSnapshot).filter(Boolean);
   const remarksWithMeta = reimbRemarksWithMeta(userRemarksJoined, {
     rows: allRows,
     use_advance: useAdvance,
     advance_amount: advanceTotal,
     gross_total: grossTotal,
     payment_date: '',
+    merge_sources: mergeSources,
+    merged_from_ids: [...ids].sort((a, b) => Number(a) - Number(b)),
+    merged_at: new Date().toISOString(),
   });
 
   const body = {
@@ -11555,6 +12218,7 @@ function reimbursementRenderListDom() {
         const costModule = r.cost_module || 'activity';
         const claimStatus = r.claim_status || 'draft';
         const visibleRemarks = reimbVisibleRemarks(r.remarks || '');
+        const projectDisp = reimbListProjectCodeDisplay(r);
         const amt = parseFloat(r.amount) || 0;
         const amtStyle =
           amt > 0 ? 'color:var(--accent);font-weight:600' : amt < 0 ? 'color:var(--danger);font-weight:600' : '';
@@ -11571,7 +12235,7 @@ function reimbursementRenderListDom() {
                     <td>${escapeHtml(fmtDateShort(r.date))}</td>
                     <td>${escapeHtml(reimbPaymentTypeLabel(paymentType))}</td>
                     <td>${escapeHtml(reimbCostModuleLabel(costModule))}</td>
-                    <td class="project-code reimbursement-list-code" title="${escapeHtml(r.related_project_code || '')}">${escapeHtml(r.related_project_code || '—')}</td>
+                    <td class="reimbursement-list-code" title="${escapeHtml(projectDisp.title)}">${escapeHtml(projectDisp.text)}</td>
                     <td>${m ? '<span class="badge badge-success">已计入</span>' : '—'}</td>
                     <td class="amount" style="text-align:left;${amtStyle}">${fmtMoney(r.amount)}</td>
                     <td><span class="badge ${reimbClaimStatusBadgeClass(claimStatus)}">${escapeHtml(reimbClaimStatusLabel(claimStatus))}</span></td>
@@ -11581,7 +12245,7 @@ function reimbursementRenderListDom() {
                     <td onclick="event.stopPropagation()">
                       <div class="reimbursement-row-actions">
                       <button type="button" class="btn btn-secondary btn-sm" title="盛融报销单预览/打印" onclick="event.stopPropagation();reimbursementPrintTemplateById(${r.id})">打印</button>
-                      <button type="button" class="btn btn-secondary btn-sm" title="导出盛融报销单 Excel" onclick="event.stopPropagation();reimbursementDownloadExcel(${r.id})">Excel</button>
+                      ${reimbCanUnmerge(r) ? `<button type="button" class="btn btn-secondary btn-sm" title="恢复为合并前的多条记录" onclick="event.stopPropagation();reimbursementUnmergeRecord(${r.id})">撤销合并</button>` : ''}
                       <button type="button" class="btn btn-secondary btn-sm" onclick="reimbursementEditById(${r.id})">编辑</button>
                       <button type="button" class="btn btn-danger btn-sm" onclick="deleteReimbursementRecord(${r.id})">删除</button>
                       </div>
@@ -11616,7 +12280,7 @@ function reimbursementRenderListDom() {
           </button>
           ${
             view === 'registrations'
-              ? `<button type="button" class="btn reimb-tool-btn reimb-tool-btn--action" onclick="reimbursementMergeSelected()" ${canMerge ? '' : 'disabled'} title="${escapeHtml(canMerge ? '将选中的成本登记合并为一条新记录（原记录删除，付款仍走付款申请）' : '请至少勾选 2 条同收款方、同板块的未支付记录')}">
+              ? `<button type="button" class="btn reimb-tool-btn reimb-tool-btn--action" onclick="reimbursementMergeSelected()" ${canMerge ? '' : 'disabled'} title="${escapeHtml(canMerge ? '将选中的成本登记合并为一条新记录（可在详情中撤销合并）' : '请至少勾选 2 条同收款方、同板块的未支付记录')}">
                   <i data-lucide="git-merge" class="reimb-tool-btn-icon" aria-hidden="true"></i>合并选中${selectedCount > 0 ? `（${selectedCount}）` : ''}
                 </button>`
               : ''
@@ -17815,6 +18479,13 @@ async function invOpenReturn(orderId) {
     return;
   }
   const rd = inventoryPageState.returnDetail;
+  let warehouses = [];
+  try {
+    warehouses = await api('GET', '/inventory/warehouses');
+  } catch (e) {
+    showToast(e.message || '加载仓库失败', 'error');
+    return;
+  }
   const lines = Array.isArray(rd?.lines) ? rd.lines : [];
   const doneByLine = new Map();
   (rd?.batches || []).forEach((b) => {
@@ -17850,13 +18521,21 @@ async function invOpenReturn(orderId) {
     })
     .join('');
   const order = rd?.order || {};
+  const defaultInboundWarehouseId = Number(order.inv_warehouse_id || 0);
+  const warehouseOptions = (Array.isArray(warehouses) ? warehouses : [])
+    .map((w) => {
+      const selected = Number(w.id) === defaultInboundWarehouseId ? 'selected' : '';
+      const text = `${invWarehouseFullLabel(w)}${w.label && w.label !== `${w.region}仓库` ? ` · ${w.label}` : ''}`;
+      return `<option value="${w.id}" ${selected}>${escapeHtml(text)}</option>`;
+    })
+    .join('');
   const projLine =
     order.link_mode === 'standalone'
       ? escapeHtml(order.purpose || '—')
       : escapeHtml(order.project_code || '—');
   body.innerHTML = `
     <div class="modal-activity-form">
-      <p class="modal-activity-lead">请填写归还、丢失、损坏、空瓶回收、留给客户数量，五项合计不能超过该物料出库数量。仅「空瓶回收」会增加空瓶库存，其它项均按消耗记录。</p>
+      <p class="modal-activity-lead">默认归还到原出库仓库，也可改为其他仓库。若目标仓库不存在该物料，系统会自动建档后入库。请填写归还、丢失、损坏、空瓶回收、留给客户数量，五项合计不能超过该物料出库数量。</p>
       <div class="form-grid">
         <div class="form-group">
           <label class="form-label">出库单</label>
@@ -17865,6 +18544,12 @@ async function invOpenReturn(orderId) {
         <div class="form-group">
           <label class="form-label">项目/用途</label>
           <input class="form-control" value="${projLine}" readonly>
+        </div>
+        <div class="form-group">
+          <label class="form-label">入库仓库</label>
+          <select class="form-control" id="invReturnInboundWarehouse">
+            ${warehouseOptions || `<option value="${defaultInboundWarehouseId || ''}">原出库仓库</option>`}
+          </select>
         </div>
         <div class="form-group">
           <label class="form-label">归还日期</label>
@@ -17921,6 +18606,7 @@ async function invSubmitReturn() {
     };
   });
   const body = {
+    inbound_warehouse_id: parseInt(document.getElementById('invReturnInboundWarehouse')?.value, 10) || null,
     return_date: document.getElementById('invReturnDate')?.value || todayDateInputValue(),
     remarks: document.getElementById('invReturnRemarks')?.value || null,
     lines,

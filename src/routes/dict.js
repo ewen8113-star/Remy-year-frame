@@ -24,7 +24,7 @@ router.use(async (req, res, next) => {
 });
 
 /** 已知通讯录类别（前端 UI 内置，后端不强制校验，允许管理员自定义 category） */
-const KNOWN_CATEGORIES = ['recipient', 'sender', 'supplier', 'payee', 'reimburser'];
+const KNOWN_CATEGORIES = ['recipient', 'sender', 'supplier', 'payee', 'reimburser', 'personal_payee'];
 
 /**
  * 安全解析 JSON：mysql2 在 JSON 列上通常返回对象，但若是字符串（驱动版本差异）也兜底解析。
