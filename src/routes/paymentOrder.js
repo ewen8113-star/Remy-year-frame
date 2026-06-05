@@ -16,7 +16,7 @@ const COST_MODULE_LABELS = {
   warehouse: '仓储成本',
   logistics: '物流成本',
   prop_repair: '道具维修成本',
-  material_purchase: '额外成本',
+  material_purchase: '统筹成本',
   general: '内部成本',
 };
 

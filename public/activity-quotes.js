@@ -46,9 +46,10 @@ function aqFormatActivityTypeSource(act) {
 
 const AQ_REGIONS = ['东区', '南区', '北区', '东南区', '西南区'];
 
-/** 多场报价：每场一行，5 项手填费用 + 行内自动合计 */
+/** 多场报价：每场一行，6 项手填费用 + 行内自动合计 */
 const AQ_MULTI_FEE_COLS = [
-  { key: 'fee_comm', label: '人员沟通费' },
+  { key: 'fee_comm', label: '沟通调度' },
+  { key: 'fee_executor', label: '执行人员' },
   { key: 'fee_design', label: '设计费' },
   { key: 'fee_freight', label: '往返运费' },
   { key: 'fee_print', label: '印刷品' },
@@ -63,28 +64,85 @@ const AQ_SUMMARY_TOTAL_COLS = [
   { key: 'row_total', label: '合计', quoteKey: 'total_amount' },
 ];
 
+/** Summary 列名归并（与 src/quotation/summarySectionMerge.js 一致） */
+const AQ_SUMMARY_SECTION_ALIASES = {
+  人员沟通费: '前期沟通',
+  沟通调度: '前期沟通',
+  物料运输费用: '物流运输费用',
+  物料运输: '物流运输费用',
+  运输费用: '物流运输费用',
+  往返运费: '物流运输费用',
+  '摄影师&相册': '摄影及直播相册',
+  摄影师相册: '摄影及直播相册',
+  人员费用: '摄影及直播相册',
+  摄影摄像: '摄影及直播相册',
+};
+
+const AQ_SUMMARY_SECTION_SORT_ORDER = {
+  前期沟通: 10,
+  执行人员: 15,
+  设计费: 20,
+  物料制作费用: 30,
+  物流运输费用: 40,
+  摄影及直播相册: 50,
+};
+
+function aqNormalizeSummarySectionName(raw) {
+  const name = String(raw || '').trim();
+  if (!name) return '';
+  if (AQ_SUMMARY_SECTION_ALIASES[name]) return AQ_SUMMARY_SECTION_ALIASES[name];
+  if (/物料.*运输|运输.*物料/.test(name)) return '物流运输费用';
+  if (name.includes('物流运输')) return '物流运输费用';
+  return name;
+}
+
+function aqSummarySectionSortOrder(canonicalName, sectionCode) {
+  if (AQ_SUMMARY_SECTION_SORT_ORDER[canonicalName] != null) {
+    return AQ_SUMMARY_SECTION_SORT_ORDER[canonicalName];
+  }
+  const c = String(sectionCode || '').trim().toUpperCase();
+  if (/^[A-Z]$/.test(c)) return (c.charCodeAt(0) - 64) * 100;
+  const n = parseFloat(c);
+  return Number.isFinite(n) ? n * 100 : 9999;
+}
+
 /** 多场手填费用 → 大板块名（与后端 SESSION_FEE_SECTION_MAP 一致） */
 const AQ_SESSION_FEE_SECTION_MAP = [
-  { section_code: 'A', section_name: '前期沟通', feeKey: 'fee_comm' },
+  { section_code: 'A', section_name: '沟通调度', feeKey: 'fee_comm' },
+  { section_code: 'F', section_name: '执行人员', feeKey: 'fee_executor' },
   { section_code: 'B', section_name: '设计费', feeKey: 'fee_design' },
   { section_code: 'C', section_name: '物料制作费用', feeKey: 'fee_print' },
   { section_code: 'D', section_name: '物流运输费用', feeKey: 'fee_freight' },
-  { section_code: 'E', section_name: '人员费用', feeKey: 'fee_photo' },
+  { section_code: 'E', section_name: '摄影及直播相册', feeKey: 'fee_photo' },
 ];
 
 function aqSectionTotalsFromItems(items) {
   const map = new Map();
   (items || []).forEach((it) => {
     const code = String(it.section_code || '').trim();
-    const name = String(it.section_name || '').trim();
-    const key = `${code}|${name}`;
-    if (!map.has(key)) map.set(key, { section_code: code, section_name: name, amount: 0 });
+    const rawName = String(it.section_name || '').trim();
+    const canonical = aqNormalizeSummarySectionName(rawName) || rawName;
+    if (!canonical) return;
+    const key = canonical;
+    if (!map.has(key)) {
+      map.set(key, {
+        section_code: code,
+        section_name: canonical,
+        amount: 0,
+        sort_order: aqSummarySectionSortOrder(canonical, code),
+      });
+    } else {
+      const row = map.get(key);
+      row.sort_order = Math.min(row.sort_order, aqSummarySectionSortOrder(canonical, code));
+    }
     map.get(key).amount += aqItemSubtotal(it);
   });
-  return [...map.values()].map((r) => ({
-    ...r,
-    amount: Math.round(r.amount * 100) / 100,
-  }));
+  return [...map.values()]
+    .map((r) => ({ ...r, amount: Math.round(r.amount * 100) / 100 }))
+    .sort((a, b) => {
+      if (a.sort_order !== b.sort_order) return a.sort_order - b.sort_order;
+      return String(a.section_name).localeCompare(b.section_name, 'zh');
+    });
 }
 
 function aqSectionTotalsFromSession(s) {
@@ -109,11 +167,15 @@ function aqCollectVisibleSummarySectionColumns(rowSectionsList) {
   const footerByKey = new Map();
   (rowSectionsList || []).forEach((sections) => {
     (sections || []).forEach((sec) => {
-      const key = `${sec.section_code}|${sec.section_name}`;
+      const canonical = aqNormalizeSummarySectionName(sec.section_name);
+      if (!canonical) return;
+      const key = canonical;
       if (!defs.has(key)) {
         defs.set(key, {
-          section_code: sec.section_code,
-          section_name: sec.section_name,
+          section_code: String(sec.section_code || '').trim(),
+          section_name: canonical,
+          canonical_name: canonical,
+          sort_order: aqSummarySectionSortOrder(canonical, sec.section_code),
           rowHasAmount: false,
         });
       }
@@ -122,14 +184,23 @@ function aqCollectVisibleSummarySectionColumns(rowSectionsList) {
     });
   });
   return [...defs.values()]
-    .filter((def) => {
-      const key = `${def.section_code}|${def.section_name}`;
-      return def.rowHasAmount || aqAmountPositive(footerByKey.get(key));
-    })
-    .sort((a, b) => aqCompareQuotationCodes(a.section_code, b.section_code));
+    .filter((def) => def.rowHasAmount || aqAmountPositive(footerByKey.get(def.canonical_name)))
+    .sort((a, b) => {
+      if (a.sort_order !== b.sort_order) return a.sort_order - b.sort_order;
+      return String(a.section_name).localeCompare(b.section_name, 'zh');
+    });
 }
 
 function aqSectionAmount(sections, sectionCode, sectionName) {
+  const canonical = aqNormalizeSummarySectionName(sectionName);
+  if (canonical) {
+    const merged = (sections || []).filter(
+      (s) => aqNormalizeSummarySectionName(s.section_name) === canonical
+    );
+    if (merged.length) {
+      return Math.round(merged.reduce((sum, s) => sum + (Number(s.amount) || 0), 0) * 100) / 100;
+    }
+  }
   const hit = (sections || []).find(
     (s) => s.section_code === sectionCode && s.section_name === sectionName
   );
@@ -141,14 +212,19 @@ function aqAmountPositive(n) {
   return Number.isFinite(x) && x > 0;
 }
 
-/** 合并报价 Summary：大板块列（有金额才显示）+ 合计列 */
+/** 合并报价 Summary：多场固定 6 项费用列；合并单场报价仍按有金额显示板块 */
 function aqBuildSummaryPreviewLayout(opts = {}) {
   const sessions = opts.sessions || [];
   const quotes = opts.quotes || [];
   const rowSectionsList = quotes.length
     ? quotes.map((q) => aqSectionTotalsFromQuote(q))
     : sessions.map((s) => aqSectionTotalsFromSession(s));
-  const sectionCols = aqCollectVisibleSummarySectionColumns(rowSectionsList);
+  const sectionCols = quotes.length
+    ? aqCollectVisibleSummarySectionColumns(rowSectionsList)
+    : AQ_SESSION_FEE_SECTION_MAP.map((m) => ({
+        section_code: m.section_code,
+        section_name: m.section_name,
+      }));
   if (quotes.length) {
     let footSub = 0;
     let footSvc = 0;
@@ -189,6 +265,7 @@ function aqBuildSummaryPreviewLayout(opts = {}) {
 const activityQuotesState = {
   view: 'list',
   list: [],
+  listSummary: null,
   filterQ: '',
   editing: null,
   templateSections: [],
@@ -216,12 +293,19 @@ const activityQuotesState = {
   exportMergeProjectName: '',
   previewBundleQuotes: [],
   previewBundleActive: 'summary',
+  /** 合并报价编辑：父级多场 + 各单场 tab */
+  mergedEditParent: null,
+  mergedEditQuotes: [],
+  mergedEditActiveId: null,
   /** 单场报价编辑：撤销删除行（Ctrl/Cmd+Z） */
   editUndoStack: [],
   editUndoKeyBound: false,
 };
 
 const AQ_EDIT_UNDO_MAX = 30;
+
+/** 编辑表行拖拽排序（document 级监听，避免 innerHTML 重建后失效） */
+let aqEditRowDragSession = null;
 
 function aqDefaultServiceRate() {
   return 0.1;
@@ -300,14 +384,151 @@ async function aqLoadPreviewBundleQuotes(multiId) {
   return [];
 }
 
+function aqCoerceMoney(raw) {
+  if (raw == null || raw === '') return 0;
+  const v =
+    typeof raw === 'number' && Number.isFinite(raw)
+      ? raw
+      : parseFloat(String(raw).trim().replace(/,/g, ''));
+  return Number.isFinite(v) && v >= 0 ? Math.round(v * 100) / 100 : 0;
+}
+
 function aqParseFee(s, key) {
-  const n = parseFloat(s && s[key]);
-  return Number.isFinite(n) && n >= 0 ? Math.round(n * 100) / 100 : 0;
+  if (!s) return 0;
+  const direct = aqCoerceMoney(s[key]);
+  if (direct > 0) return direct;
+  const col = AQ_MULTI_FEE_COLS.find((c) => c.key === key);
+  if (col && s.fees && typeof s.fees === 'object') {
+    const alt = aqCoerceMoney(s.fees[col.label]);
+    if (alt > 0) return alt;
+    if (key === 'fee_comm') {
+      const legacy = aqCoerceMoney(s.fees['人员沟通费']);
+      if (legacy > 0) return legacy;
+    }
+  }
+  return 0;
+}
+
+const AQ_FEE_DESC_TO_KEY = new Map(AQ_MULTI_FEE_COLS.map((c) => [c.label, c.key]));
+AQ_FEE_DESC_TO_KEY.set('人员沟通费', 'fee_comm');
+
+function aqCollectMultiFeeLineItems(items) {
+  return (items || [])
+    .filter((it) => AQ_FEE_DESC_TO_KEY.has(String(it.description || '').trim()))
+    .sort((a, b) => (Number(a.sort_order) || 0) - (Number(b.sort_order) || 0));
+}
+
+function aqSessionItemsForLinkedRow(items, sess, sessionIndex, sessionCount) {
+  const code = String(sess.project_code || '').trim();
+  const all = items || [];
+  const lineCount = AQ_MULTI_FEE_COLS.length;
+  const feeLines = aqCollectMultiFeeLineItems(all);
+
+  if (feeLines.length >= lineCount * sessionCount) {
+    return feeLines.slice(sessionIndex * lineCount, sessionIndex * lineCount + lineCount);
+  }
+
+  if (code) {
+    const exact = all.filter((it) => String(it.section_name || '').trim() === `场次 ${code}`);
+    if (exact.length) return exact;
+    const fuzzy = all.filter((it) => {
+      const sn = String(it.section_name || '').trim();
+      return sn.includes(code) || code.includes(sn.replace(/^场次\s*/, ''));
+    });
+    if (fuzzy.length) return fuzzy;
+  }
+
+  const summaryRows = all.filter((it) => {
+    const sn = String(it.section_name || '').trim();
+    return sn === '汇总报价';
+  });
+  if (summaryRows.length >= lineCount) {
+    const start = sessionIndex * lineCount;
+    return summaryRows.slice(start, start + lineCount);
+  }
+  if (sessionCount === 1 && feeLines.length) return feeLines;
+  if (sessionCount === 1) return all;
+  return [];
+}
+
+function aqFeesFromQuotationItems(items, sess, sessionIndex, sessionCount) {
+  const fees = {};
+  AQ_MULTI_FEE_COLS.forEach((col) => {
+    fees[col.key] = 0;
+  });
+  aqSessionItemsForLinkedRow(items, sess, sessionIndex, sessionCount).forEach((it) => {
+    const desc = String(it.description || '').trim();
+    const key = AQ_FEE_DESC_TO_KEY.get(desc);
+    if (!key) return;
+    const amt =
+      Math.round((parseFloat(it.unit_price) || parseFloat(it.subtotal) || 0) * 100) / 100;
+    fees[key] = Math.round(((fees[key] || 0) + amt) * 100) / 100;
+  });
+  return fees;
+}
+
+function aqFeeSumFromSession(sess) {
+  return AQ_MULTI_FEE_COLS.reduce((sum, col) => sum + aqParseFee(sess, col.key), 0);
+}
+
+function aqApplySessionFeesFromItems(sess, items, sessionIndex, sessionCount) {
+  if (!sess) return;
+  const cur = {};
+  AQ_MULTI_FEE_COLS.forEach((col) => {
+    cur[col.key] = aqParseFee(sess, col.key);
+  });
+  const curSum = aqFeeSumFromSession(sess);
+  const fromItems = aqFeesFromQuotationItems(items, sess, sessionIndex, sessionCount);
+  const itemsSum = AQ_MULTI_FEE_COLS.reduce((s, col) => s + (fromItems[col.key] || 0), 0);
+
+  if (curSum > 0.001) {
+    AQ_MULTI_FEE_COLS.forEach((col) => {
+      const k = col.key;
+      sess[k] = cur[k] > 0 ? cur[k] : fromItems[k] || 0;
+    });
+    return;
+  }
+  if (itemsSum > 0) {
+    AQ_MULTI_FEE_COLS.forEach((col) => {
+      sess[col.key] = fromItems[col.key] || 0;
+    });
+    return;
+  }
+  aqHydrateSessionFromStoredTotals(sess);
+}
+
+function aqHydrateSessionFromStoredTotals(sess) {
+  if (!sess) return;
+  if (aqFeeSumFromSession(sess) > 0.001) return;
+  const sub = aqCoerceMoney(sess.subtotal_ex_tax);
+  if (sub > 0) sess.fee_comm = sub;
+}
+
+function aqHydrateMultiSessionFeesFromItems(q) {
+  if (!q || !aqIsMultiQuote(q)) return;
+  const sessions = q.linked_sessions || [];
+  const items = q.items || [];
+  if (!sessions.length) return;
+  sessions.forEach((sess, i) => {
+    aqApplySessionFeesFromItems(sess, items, i, sessions.length);
+  });
+}
+
+/** 加载/进入编辑前：从 items 与行内合计还原六项费用 */
+function aqNormalizeMultiQuoteAfterLoad(q) {
+  if (!q || !aqIsMultiQuote(q)) return;
+  aqHydrateMultiSessionFeesFromItems(q);
+  (q.linked_sessions || []).forEach((s) => aqNormalizeSessionFees(s));
 }
 
 function aqCalcSessionRow(s) {
-  const subtotalExTax = AQ_MULTI_FEE_COLS.reduce((sum, col) => sum + aqParseFee(s, col.key), 0);
-  const sub = Math.round(subtotalExTax * 100) / 100;
+  let subtotalExTax = AQ_MULTI_FEE_COLS.reduce((sum, col) => sum + aqParseFee(s, col.key), 0);
+  subtotalExTax = Math.round(subtotalExTax * 100) / 100;
+  if (subtotalExTax <= 0) {
+    const stored = aqCoerceMoney(s && s.subtotal_ex_tax);
+    if (stored > 0) subtotalExTax = stored;
+  }
+  const sub = subtotalExTax;
   const serviceCharge = Math.round(sub * 0.1 * 100) / 100;
   const taxAmount = Math.round((sub + serviceCharge) * 0.06 * 100) / 100;
   const rowTotal = Math.round((sub + serviceCharge + taxAmount) * 100) / 100;
@@ -366,6 +587,9 @@ function aqListProjectCodes(row) {
 function aqRenderListProjectCodeCell(row) {
   const codes = aqListProjectCodes(row);
   if (!codes.length) return '—';
+  if (codes.length === 1) {
+    return `<code class="aq-pc-single">${escapeHtml(codes[0])}</code>`;
+  }
   let lines;
   if (codes.length <= 3) lines = codes;
   else lines = [codes[0], '︙', codes[codes.length - 1]];
@@ -511,6 +735,61 @@ function aqNumInpParse(el) {
   return Number.isFinite(n) && n >= 0 ? Math.round(n * 100) / 100 : 0;
 }
 
+function aqMultiFeeInputValue(n) {
+  const v = aqCoerceMoney(n);
+  return v === 0 ? '' : String(v);
+}
+
+function aqMultiFeeInpFocus(el) {
+  if (!el) return;
+  if (String(el.value).trim() === '' || parseFloat(el.value) === 0) {
+    el.value = '';
+  }
+  el.select?.();
+}
+
+function aqMultiFeeInpBlur(el) {
+  if (!el) return;
+  if (String(el.value).trim() === '') el.value = '';
+}
+
+function aqMultiFeeInputAttrs(extra) {
+  let rest = extra || '';
+  let cls = 'form-control form-control-sm aq-multi-fee-inp';
+  const m = rest.match(/\bclass="([^"]+)"/);
+  if (m) {
+    cls += ` ${m[1]}`;
+    rest = rest.replace(/\bclass="[^"]+"\s*/, '');
+  }
+  return `class="${cls}" data-no-num-hint="1" data-num-kind="money" min="0" step="0.01" placeholder="0" onfocus="aqMultiFeeInpFocus(this)" onblur="aqMultiFeeInpBlur(this)"${rest ? ` ${rest.trim()}` : ''}`;
+}
+
+/** 渲染后把 state 中的费用写回输入框（避免 num-hint 脚本把 0 清空后显示异常） */
+function aqSyncMultiFeeInputsFromState() {
+  const q = activityQuotesState.editing;
+  if (!q || !aqIsMultiQuote(q)) return;
+  (q.linked_sessions || []).forEach((s, si) => {
+    AQ_MULTI_FEE_COLS.forEach((col) => {
+      const inp = document.querySelector(
+        `tr[data-session-idx="${si}"] input.aq-multi-fee-inp[data-fee-key="${col.key}"]`
+      );
+      if (inp) inp.value = aqMultiFeeInputValue(aqParseFee(s, col.key));
+    });
+  });
+}
+
+function aqParseLinkedSessions(raw) {
+  if (raw == null || raw === '') return [];
+  if (Array.isArray(raw)) return raw;
+  if (typeof raw === 'object') return [raw];
+  try {
+    const parsed = JSON.parse(String(raw));
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
 function aqNumInputAttrs(extra) {
   let cls = 'form-control form-control-sm aq-num-inp';
   let rest = extra || '';
@@ -526,7 +805,8 @@ function aqNumInputAttrs(extra) {
 function aqUnitPriceInputValue(n) {
   if (n == null || n === '') return '';
   const v = typeof n === 'number' && Number.isFinite(n) ? n : parseFloat(String(n).trim().replace(/,/g, ''));
-  return Number.isFinite(v) ? String(v) : '';
+  if (!Number.isFinite(v) || v === 0) return '';
+  return String(v);
 }
 
 function aqUnitPriceInputAttrs(extra) {
@@ -537,7 +817,7 @@ function aqUnitPriceInputAttrs(extra) {
     cls += ` ${m[1]}`;
     rest = rest.replace(/\bclass="[^"]+"\s*/, '');
   }
-  return `class="${cls}" placeholder="单价" min="0" step="0.01"${rest ? ` ${rest.trim()}` : ''}`;
+  return `class="${cls}" placeholder="0.00" min="0" step="0.01" onfocus="aqNumInpFocus(this)" onblur="aqNumInpBlur(this)"${rest ? ` ${rest.trim()}` : ''}`;
 }
 
 function aqTemplateItemKey(subsectionCode, description) {
@@ -1088,6 +1368,23 @@ function aqSortQuotesByEventDateAsc(quotes) {
   });
 }
 
+/** 多场 linked_sessions：预览/导出按活动日期升序 */
+function aqSortLinkedSessionsByEventDateAsc(sessions) {
+  return (sessions || []).slice().sort((a, b) => {
+    const da = aqNormalizeEventDate(a?.event_date) || '';
+    const db = aqNormalizeEventDate(b?.event_date) || '';
+    if (da !== db) {
+      if (!da) return 1;
+      if (!db) return -1;
+      return da.localeCompare(db);
+    }
+    const sa = Number(a?.sort_order);
+    const sb = Number(b?.sort_order);
+    if (Number.isFinite(sa) && Number.isFinite(sb) && sa !== sb) return sa - sb;
+    return String(a?.project_code || '').localeCompare(String(b?.project_code || ''), 'zh');
+  });
+}
+
 /** 已保存的合并报价：Summary 表行顺序与场次 Sheet 一致（按活动日） */
 function aqAlignMultiLinkedSessionsToSortedSingles(multiQ, singles) {
   if (!multiQ || !Array.isArray(multiQ.linked_sessions) || !singles?.length) return;
@@ -1289,7 +1586,7 @@ function aqEnsureMultiSessions(q) {
   if (!q.linked_sessions.length) {
     q.linked_sessions.push(aqEmptyMultiSession());
   }
-  q.linked_sessions.forEach((s) => aqNormalizeSessionFees(s));
+  aqNormalizeMultiQuoteAfterLoad(q);
 }
 
 function aqFilterProjectPickerOptionsFromActs(acts, keyword) {
@@ -1572,6 +1869,7 @@ function aqApplyProjectCodeToSession(sessionIdx, code, refresh) {
     remarks: act.remarks != null ? String(act.remarks).trim() : prev.remarks || '',
     sort_order: sessionIdx,
     fee_comm: prev.fee_comm || 0,
+    fee_executor: prev.fee_executor || 0,
     fee_design: prev.fee_design || 0,
     fee_freight: prev.fee_freight || 0,
     fee_print: prev.fee_print || 0,
@@ -1607,8 +1905,6 @@ function aqRefreshMultiSessionRow(sessionIdx) {
     aqRefreshEditView();
     return;
   }
-  const input = document.getElementById(`aqPcInput-${sessionIdx}`);
-  if (input) input.value = s.project_code || '';
   const date = aqNormalizeEventDate(s.event_date) || '—';
   const setAuto = (field, text) => {
     const el = row.querySelector(`[data-aq-auto="${field}"]`);
@@ -1645,22 +1941,13 @@ function aqRenderMultiGridRows(q) {
       const calc = aqCalcSessionRow(s);
       const feeInputs = AQ_MULTI_FEE_COLS.map(
         (col) =>
-          `<td><input type="number" ${aqNumInputAttrs(`class="aq-multi-fee-inp" step="0.01" oninput="aqOnMultiFeeInput(${si}, '${col.key}', this)" onchange="aqOnMultiFeeChange(${si}, '${col.key}', aqNumInpParse(this))`)} value="${aqNumInputValue(aqParseFee(s, col.key))}"></td>`
+          `<td class="aq-fee-cell"><input type="number" ${aqMultiFeeInputAttrs(`data-fee-key="${col.key}" oninput="aqOnMultiFeeInput(${si}, '${col.key}', this)" onchange="aqOnMultiFeeChange(${si}, '${col.key}', aqNumInpParse(this))"`)} value="${aqMultiFeeInputValue(aqParseFee(s, col.key))}"></td>`
       ).join('');
       const removeBtn =
         (q.linked_sessions || []).length > 1
           ? `<button type="button" class="btn btn-xs btn-ghost" onclick="aqRemoveMultiSession(${si})" title="移除">×</button>`
           : '';
-      return `<tr data-session-idx="${si}" class="aq-multi-grid-row">
-        <td class="aq-pc-cell">
-          <input type="text" class="form-control form-control-sm aq-pc-datalist-inp" id="aqPcInput-${si}"
-            list="aqMultiProjectList"
-            value="${escapeHtml(s.project_code || '')}"
-            autocomplete="off"
-            placeholder="输入关键字并从下拉选择项目编号"
-            oninput="aqOnMultiProjectCodeInput(${si}, this.value)"
-            onchange="aqOnMultiProjectCodeChange(${si}, this.value)">
-        </td>
+      return `<tr data-session-idx="${si}" class="aq-multi-grid-row" data-project-code="${escapeHtml(s.project_code || '')}">
         <td class="aq-auto-val" data-aq-auto="event_date">${escapeHtml(date) || '—'}</td>
         <td class="aq-auto-val" data-aq-auto="city">${escapeHtml(s.city || '') || '—'}</td>
         <td class="aq-auto-val" data-aq-auto="customer_name">${escapeHtml(s.customer_name || '') || '—'}</td>
@@ -1681,12 +1968,9 @@ function aqRenderMultiSessionRows(q) {
 }
 
 function aqAddMultiSession() {
-  const q = activityQuotesState.editing;
-  if (!q) return;
-  if (!Array.isArray(q.linked_sessions)) q.linked_sessions = [];
-  q.linked_sessions.push(aqEmptyMultiSession());
-  aqMarkMultiDirty();
-  aqRefreshEditView();
+  const panel = document.getElementById('aqMultiAddPanelBody');
+  if (panel) panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  showToast('请在上方面板勾选场次，再点击「添加所选到场次表」', 'info');
 }
 
 function aqRemoveMultiSession(idx) {
@@ -1700,9 +1984,9 @@ function aqRemoveMultiSession(idx) {
 function aqMultiGridHeadHtml() {
   const feeTh = AQ_MULTI_FEE_COLS.map((c) => `<th class="aq-fee-th">${escapeHtml(c.label)}</th>`).join('');
   return `<tr>
-    <th>项目编号</th><th>日期</th><th>城市</th><th>客户名称</th><th>类型</th>
+    <th>日期</th><th>城市</th><th>客户名称</th><th>类型</th>
     ${feeTh}
-    <th class="numeric">小计</th><th class="numeric">服务费10%</th><th class="numeric">税费6%</th><th class="numeric">合计</th>
+    <th class="numeric aq-fee-th">小计</th><th class="numeric">服务费10%</th><th class="numeric">税费6%</th><th class="numeric">合计</th>
     <th></th>
   </tr>`;
 }
@@ -1729,8 +2013,54 @@ function aqMultiPreviewHeadHtml(layout) {
   </tr>`;
 }
 
+/** 合并单场报价：Summary 按 bundle 中各场 items 汇总（与导出 Excel 一致） */
+function aqRenderBundleSummaryPreviewTable(quotes, layout) {
+  const rows = quotes || [];
+  const colLayout = layout || aqBuildSummaryPreviewLayout({ quotes: rows });
+  const spanBeforeTotals = aqMultiPreviewColsBeforeTotals(colLayout.sectionCols.length);
+  let body = '';
+  const sum = { subtotal_ex_tax: 0, service_charge: 0, tax_amount: 0, row_total: 0 };
+  rows.forEach((q, i) => {
+    sum.subtotal_ex_tax += Number(q.subtotal_ex_tax) || 0;
+    sum.service_charge += Number(q.service_charge) || 0;
+    sum.tax_amount += Number(q.tax_amount) || 0;
+    sum.row_total += Number(q.total_amount) || 0;
+    const secs = aqSectionTotalsFromQuote(q);
+    const sectionTd = colLayout.sectionCols
+      .map(
+        (col) =>
+          `<td class="numeric">${aqFmtNum(aqSectionAmount(secs, col.section_code, col.section_name))}</td>`
+      )
+      .join('');
+    const totalTd = colLayout.totalCols
+      .map((col) => {
+        const v = Number(q[col.quoteKey]) || 0;
+        return `<td class="numeric formula-field${col.key === 'row_total' ? ' aq-row-total' : ''}">${aqFmtNum(v)}</td>`;
+      })
+      .join('');
+    body += `<tr class="${i % 2 ? 'qt-alt-row' : ''}">
+      <td>${escapeHtml(aqNormalizeEventDate(q.event_date) || '—')}</td>
+      <td>${escapeHtml(q.city || '—')}</td>
+      <td>${escapeHtml(q.customer_name || '—')}</td>
+      <td>${escapeHtml(q.event_type || '—')}</td>
+      ${sectionTd}
+      ${totalTd}
+      <td class="remark left aq-remarks-cell">—</td>
+    </tr>`;
+  });
+  const footTds = colLayout.totalCols
+    .map((col) => `<td class="numeric formula-field">${aqFmtNum(sum[col.key])}</td>`)
+    .join('');
+  body += `<tr class="qt-footer-row qt-total-row">
+    <td colspan="${spanBeforeTotals}" style="text-align:right">多场含税总计</td>
+    ${footTds}
+    <td class="aq-remarks-cell"></td>
+  </tr>`;
+  return body;
+}
+
 function aqRenderMultiPreviewTable(q, layout) {
-  const sessions = q.linked_sessions || [];
+  const sessions = aqSortLinkedSessionsByEventDateAsc(q.linked_sessions || []);
   const colLayout = layout || aqBuildSummaryPreviewLayout({ sessions });
   const spanBeforeTotals = aqMultiPreviewColsBeforeTotals(colLayout.sectionCols.length);
   let rows = '';
@@ -1794,6 +2124,7 @@ async function aqLoadList() {
     ...r,
     event_date: aqResolveQuoteEventDate(r) || r.event_date,
   }));
+  activityQuotesState.listSummary = res.summary || null;
   const visible = new Set(activityQuotesState.list.map((r) => Number(r.id)));
   activityQuotesState.listSelectedIds = (activityQuotesState.listSelectedIds || [])
     .map(Number)
@@ -1808,9 +2139,168 @@ async function aqLoadTemplateSections() {
 async function aqLoadQuotation(id) {
   const res = await api('GET', `/quotations/${id}`);
   const q = res.data || null;
-  if (q) q.event_date = aqResolveQuoteEventDate(q);
+  if (q) {
+    q.event_date = aqResolveQuoteEventDate(q);
+    if (q.linked_sessions != null && !Array.isArray(q.linked_sessions)) {
+      q.linked_sessions = aqParseLinkedSessions(q.linked_sessions);
+    }
+    aqNormalizeMultiQuoteAfterLoad(q);
+  }
   activityQuotesState.editing = q;
   return activityQuotesState.editing;
+}
+
+function aqReenterMultiEdit() {
+  const q = activityQuotesState.editing;
+  if (q && aqIsMergedExportQuote(q)) {
+    let activeId = null;
+    const active = activityQuotesState.previewBundleActive || 'summary';
+    if (active !== 'summary') {
+      activeId = parseInt(String(active).replace(/^q-/, ''), 10);
+    }
+    aqOpenMergedBundleEdit(q, activeId);
+    return;
+  }
+  if (q) aqNormalizeMultiQuoteAfterLoad(q);
+  activityQuotesState.view = 'edit';
+  renderActivityQuotes();
+}
+
+function aqCloneQuoteForEdit(q) {
+  if (!q) return null;
+  return JSON.parse(JSON.stringify(q));
+}
+
+async function aqLoadMergedBundleForEdit(multiId) {
+  try {
+    const res = await api('GET', `/quotations/${multiId}/bundle-edit`);
+    const data = res.data || null;
+    if (data && Array.isArray(data.singles) && data.singles.length) return data;
+  } catch (_) {
+    /* 回退 bundle-preview */
+  }
+  const singles = aqSortQuotesByEventDateAsc(await aqLoadPreviewBundleQuotes(multiId));
+  if (!singles.length) return null;
+  const parent = activityQuotesState.editing;
+  return {
+    parent: parent
+      ? { id: parent.id, quotation_no: parent.quotation_no, project_name: parent.project_name }
+      : { id: multiId },
+    singles,
+  };
+}
+
+function aqPersistMergedEditActiveToCache() {
+  const activeId = activityQuotesState.mergedEditActiveId;
+  const q = activityQuotesState.editing;
+  if (!activeId || !q || aqIsMultiQuote(q)) return;
+  aqReadQtHeaderFromDom();
+  const idx = (activityQuotesState.mergedEditQuotes || []).findIndex(
+    (x) => Number(x.id) === Number(activeId)
+  );
+  if (idx >= 0) activityQuotesState.mergedEditQuotes[idx] = aqCloneQuoteForEdit(q);
+}
+
+function aqSetMergedEditActive(quoteId) {
+  aqPersistMergedEditActiveToCache();
+  const id = Number(quoteId);
+  const hit = (activityQuotesState.mergedEditQuotes || []).find((x) => Number(x.id) === id);
+  if (!hit) return;
+  activityQuotesState.mergedEditActiveId = id;
+  activityQuotesState.editing = aqCloneQuoteForEdit(hit);
+  aqClearEditUndo();
+  aqPrepareEditingItems({ skipRenumber: true });
+  activityQuotesState.view = 'mergedEdit';
+  renderActivityQuotes();
+}
+
+async function aqOpenMergedBundleEdit(multiQ, preferredActiveId) {
+  if (!multiQ || !multiQ.id) return;
+  try {
+    await aqLoadTemplateSections();
+    const bundle = await aqLoadMergedBundleForEdit(multiQ.id);
+    if (!bundle || !bundle.singles.length) {
+      showToast('无法加载合并来源的单场报价，请确认 merged_from_quote_ids 或场次备注', 'error');
+      return;
+    }
+    activityQuotesState.mergedEditParent = bundle.parent || {
+      id: multiQ.id,
+      project_name: multiQ.project_name,
+      quotation_no: multiQ.quotation_no,
+    };
+    activityQuotesState.mergedEditQuotes = bundle.singles.map((s) => aqCloneQuoteForEdit(s));
+    const prefer = Number(preferredActiveId);
+    const first = activityQuotesState.mergedEditQuotes[0];
+    const active =
+      Number.isFinite(prefer) &&
+      activityQuotesState.mergedEditQuotes.some((x) => Number(x.id) === prefer)
+        ? prefer
+        : Number(first && first.id);
+    activityQuotesState.mergedEditActiveId = active;
+    activityQuotesState.editing = aqCloneQuoteForEdit(
+      activityQuotesState.mergedEditQuotes.find((x) => Number(x.id) === active) || first
+    );
+    aqClearEditUndo();
+    aqPrepareEditingItems({ skipRenumber: true });
+    activityQuotesState.view = 'mergedEdit';
+    await renderActivityQuotes();
+  } catch (e) {
+    showToast(e.message || '加载合并编辑失败', 'error');
+  }
+}
+
+function aqClearMergedEditState() {
+  activityQuotesState.mergedEditParent = null;
+  activityQuotesState.mergedEditQuotes = [];
+  activityQuotesState.mergedEditActiveId = null;
+}
+
+function aqRenderMergedEditTabsHtml() {
+  const quotes = activityQuotesState.mergedEditQuotes || [];
+  const active = Number(activityQuotesState.mergedEditActiveId);
+  return quotes
+    .map((q, i) => {
+      const on = Number(q.id) === active;
+      return `<button type="button" class="btn btn-xs ${on ? 'btn-primary' : 'btn-secondary'}" onclick="aqSetMergedEditActive(${q.id})" title="${escapeHtml(q.project_code || '')}">${escapeHtml(aqSheetLabelForQuote(q, i))}</button>`;
+    })
+    .join('');
+}
+
+function aqRenderMergedEditHtml() {
+  const q = activityQuotesState.editing;
+  const parent = activityQuotesState.mergedEditParent;
+  if (!q || !parent) return '';
+  const pct = Math.round((parseFloat(q.service_rate) || aqDefaultServiceRate()) * 100);
+  return `
+    <div class="aq-edit-head">
+      <button type="button" class="btn btn-secondary btn-sm" onclick="aqBackToList()">← 返回列表</button>
+      <div class="aq-edit-head-meta">
+        <span class="aq-badge-multi">合并报价</span>
+        <span class="form-hint">${escapeHtml(parent.project_name || '—')}</span>
+        <code class="aq-linked-pc">${escapeHtml(q.project_code || q.activity_project_code || '—')}</code>
+      </div>
+      <div class="aq-edit-head-actions">
+        <button type="button" class="btn btn-secondary btn-sm" onclick="aqOpenPreview(${parent.id})">预览合并版式</button>
+        <button type="button" class="btn btn-primary btn-sm" onclick="aqSaveEditing()">保存当前场次</button>
+      </div>
+    </div>
+    <div class="aq-export-tabs aq-merged-edit-tabs" id="aqMergedEditTabs">${aqRenderMergedEditTabsHtml()}</div>
+    <p class="form-hint aq-merged-edit-hint">合并报价由多场<strong>单场报价</strong>组成；请切换上方 Tab 分别编辑各场次明细（非 Summary 手填表）。</p>
+    <div class="qt-sheet-wrap">
+      ${aqRenderQtHeaderHtml(q, false, { editable: true })}
+      <div class="info-row form-hint qt-header-extra">服务费率 ${pct}% · 活动类型 ${escapeHtml(q.event_type || '—')}</div>
+      <div class="table-wrapper qt-table-scroll aq-edit-table-scroll">
+        <table class="qt-detail-table aq-edit-table-sticky-head">
+          <thead><tr>
+            <th>Item</th><th>分类</th><th>说明</th><th>数量</th><th>单位</th><th>单价</th><th>单项小计</th><th>备注</th>
+            <th class="aq-col-drag" title="拖动排序"></th><th class="aq-col-actions"></th>
+          </tr></thead>
+          <tbody id="aqEditTableBody">${aqRenderEditTableRows(q)}</tbody>
+        </table>
+      </div>
+      <div id="aqEditTotals" class="aq-totals-bar"></div>
+      <p class="form-hint aq-edit-undo-hint">删除明细行后可用 <kbd>Ctrl</kbd>+<kbd>Z</kbd>（Mac：<kbd>⌘</kbd>+<kbd>Z</kbd>）撤销；行尾可拖动排序。</p>
+    </div>`;
 }
 
 function aqGroupTemplateSections(rows) {
@@ -1865,6 +2355,100 @@ function aqFormatSectionHeaderLabel(sectionCode, sectionName) {
   if (!code) return name || '—';
   if (!name) return code;
   return `${code}-${name}`;
+}
+
+function aqSectionHeaderMatchesItem(it, sectionCode, sectionName) {
+  return (
+    String(it.section_code || '').trim() === String(sectionCode || '').trim() &&
+    String(it.section_name || '').trim() === String(sectionName || '').trim()
+  );
+}
+
+/** 更新大板块编号/名称，并同步该板块下所有明细行 */
+function aqApplySectionHeaderUpdate(q, oldCode, oldName, newCode, newName) {
+  const prevCode = String(oldCode || '').trim();
+  const prevName = String(oldName || '').trim();
+  const nextCode = String(newCode || '').trim().toUpperCase();
+  const nextName = String(newName || '').trim();
+  const codeChanged = prevCode.toUpperCase() !== nextCode;
+  const subRe = codeChanged
+    ? new RegExp(`^${prevCode.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}-(\\d+)$`, 'i')
+    : null;
+  (q.items || []).forEach((it) => {
+    if (!aqSectionHeaderMatchesItem(it, prevCode, prevName)) return;
+    it.section_code = nextCode;
+    it.section_name = nextName;
+    if (codeChanged && subRe) {
+      const sub = String(it.subsection_code || '').trim();
+      const m = sub.match(subRe);
+      if (m) {
+        it.subsection_code = `${nextCode}-${m[1]}`;
+        const sortOrder = aqSortOrderFromSubsectionCode(it.subsection_code);
+        if (sortOrder != null) it.sort_order = sortOrder;
+      }
+    }
+  });
+}
+
+function aqOnSectionHeaderFieldChange(el, field) {
+  const tr = el?.closest?.('tr.qt-section-header');
+  const q = activityQuotesState.editing;
+  if (!tr || !q || aqIsMultiQuote(q)) return;
+  const oldCode = String(tr.dataset.sectionCode || '').trim();
+  const oldName = String(tr.dataset.sectionName || '').trim();
+  const codeInp = tr.querySelector('.aq-sec-code');
+  const nameInp = tr.querySelector('.aq-sec-name');
+  let newCode = String(codeInp?.value || '').trim().toUpperCase();
+  let newName = String(nameInp?.value || '').trim();
+  if (field === 'code' && codeInp) codeInp.value = newCode;
+  if (!newCode || !newName) {
+    showToast('板块编号和名称不能为空', 'warning');
+    if (codeInp) codeInp.value = oldCode;
+    if (nameInp) nameInp.value = oldName;
+    return;
+  }
+  if (newCode === oldCode && newName === oldName) return;
+  const duplicate = (q.items || []).some((it) => {
+    if (aqSectionHeaderMatchesItem(it, oldCode, oldName)) return false;
+    return (
+      String(it.section_code || '').trim().toUpperCase() === newCode &&
+      String(it.section_name || '').trim() === newName
+    );
+  });
+  if (duplicate) {
+    showToast('已存在相同编号与名称的板块', 'warning');
+    if (codeInp) codeInp.value = oldCode;
+    if (nameInp) nameInp.value = oldName;
+    return;
+  }
+  aqApplySectionHeaderUpdate(q, oldCode, oldName, newCode, newName);
+  tr.dataset.sectionCode = newCode;
+  tr.dataset.sectionName = newName;
+  if (newCode !== oldCode) {
+    aqPrepareEditingItems({ skipRenumber: true });
+    aqRefreshEditView();
+    return;
+  }
+  aqRefreshSectionSubtotals();
+}
+
+function aqRenderSectionHeaderEditRow(sec) {
+  const code = String(sec.section_code || '').trim();
+  const name = String(sec.section_name || '').trim();
+  return `<tr class="qt-section-header" data-section-code="${escapeHtml(code)}" data-section-name="${escapeHtml(name)}">
+      <td colspan="7" class="left aq-sec-header-cell">
+        <div class="aq-sec-header-edit">
+          <input type="text" class="form-control form-control-sm aq-sec-code" maxlength="8" value="${escapeHtml(code)}"
+            title="板块编号（如 A、B）" onchange="aqOnSectionHeaderFieldChange(this, 'code')" />
+          <span class="aq-sec-sep" aria-hidden="true">-</span>
+          <input type="text" class="form-control form-control-sm aq-sec-name" maxlength="120" value="${escapeHtml(name)}"
+            title="板块名称" onchange="aqOnSectionHeaderFieldChange(this, 'name')" />
+        </div>
+      </td>
+      <td class="right aq-sec-subtotal">${aqFmtNum(sec.sectionSubtotal)}</td>
+      <td class="aq-col-drag"></td>
+      <td class="aq-col-actions"></td>
+    </tr>`;
 }
 
 function aqNextSubsectionCodeInSection(q, sectionCode) {
@@ -1979,8 +2563,124 @@ function aqSortOrderForNewItem(q, ref) {
 
 function aqAutoResizeDescTextarea(el) {
   if (!el) return;
+  if (el.closest('.aq-page-edit .qt-detail-table')) {
+    el.style.height = '24px';
+    return;
+  }
   el.style.height = 'auto';
   el.style.height = `${Math.max(28, el.scrollHeight)}px`;
+}
+
+function aqRenderRowDragHandleCell() {
+  return `<td class="aq-col-drag"><button type="button" class="aq-row-drag-handle" title="按住拖动调整行顺序" aria-label="拖动排序"><span class="aq-row-drag-grip" aria-hidden="true"></span></button></td>`;
+}
+
+function aqInitEditRowDragListeners() {
+  if (activityQuotesState.editRowDragBound) return;
+  activityQuotesState.editRowDragBound = true;
+  document.addEventListener('mousedown', aqEditRowDragMouseDown);
+  document.addEventListener('mousemove', aqEditRowDragMouseMove);
+  document.addEventListener('mouseup', aqEditRowDragMouseUp);
+}
+
+function aqClearEditRowDragMarkers(tbody) {
+  if (!tbody) return;
+  tbody.querySelectorAll('tr[data-item-idx]').forEach((tr) => {
+    tr.classList.remove('aq-row-dragging', 'aq-row-drop-before', 'aq-row-drop-after');
+  });
+}
+
+function aqEditRowDragTargetFromY(tbody, clientY) {
+  const rows = [...tbody.querySelectorAll('tr[data-item-idx]')];
+  if (!rows.length) return { row: null, insertAfter: false };
+  for (const tr of rows) {
+    const rect = tr.getBoundingClientRect();
+    const mid = rect.top + rect.height / 2;
+    if (clientY < mid) return { row: tr, insertAfter: false };
+  }
+  const last = rows[rows.length - 1];
+  return { row: last, insertAfter: true };
+}
+
+/** 拖拽后按 items 顺序在各板块内重编 Item 编号（A-1、A-2…），避免 rowspan 错位 */
+function aqRenumberSubsectionsAfterReorder(q) {
+  const counters = new Map();
+  (q.items || []).forEach((it) => {
+    const sk = `${String(it.section_code || '').trim()}|${String(it.section_name || '').trim()}`;
+    const letter = String(it.section_code || '').trim().toUpperCase();
+    const n = (counters.get(sk) || 0) + 1;
+    counters.set(sk, n);
+    it.subsection_code = `${letter}-${n}`;
+    const sortOrder = aqSortOrderFromSubsectionCode(it.subsection_code);
+    if (sortOrder != null) it.sort_order = sortOrder;
+  });
+}
+
+function aqReorderItemsByDrag(dragIdx, targetIdx, insertAfter) {
+  const q = activityQuotesState.editing;
+  if (!q || !Array.isArray(q.items) || aqIsMultiQuote(q)) return;
+  const from = q.items.findIndex((it) => it._idx === dragIdx);
+  let to = q.items.findIndex((it) => it._idx === targetIdx);
+  if (from < 0 || to < 0 || from === to) return;
+  const target = q.items[to];
+  const [moved] = q.items.splice(from, 1);
+  if (from < to) to -= 1;
+  const insertAt = insertAfter ? to + 1 : to;
+  q.items.splice(insertAt, 0, moved);
+  moved.section_code = target.section_code;
+  moved.section_name = target.section_name;
+  aqRenumberSubsectionsAfterReorder(q);
+  aqPrepareEditingItems({ skipRenumber: true });
+  aqRefreshEditView();
+}
+
+function aqEditRowDragMouseDown(ev) {
+  if (ev.button !== 0) return;
+  const handle = ev.target.closest('.aq-row-drag-handle');
+  if (!handle) return;
+  const tbody = document.getElementById('aqEditTableBody');
+  if (!tbody || !tbody.contains(handle)) return;
+  const row = handle.closest('tr[data-item-idx]');
+  if (!row) return;
+  const dragIdx = parseInt(row.dataset.itemIdx, 10);
+  if (!Number.isFinite(dragIdx)) return;
+  ev.preventDefault();
+  aqEditRowDragSession = {
+    dragIdx,
+    row,
+    tbody,
+    insertAfter: false,
+    dropTargetIdx: dragIdx,
+  };
+  row.classList.add('aq-row-dragging');
+  document.body.classList.add('aq-row-drag-active');
+}
+
+function aqEditRowDragMouseMove(ev) {
+  const sess = aqEditRowDragSession;
+  if (!sess?.tbody) return;
+  ev.preventDefault();
+  aqClearEditRowDragMarkers(sess.tbody);
+  const hit = aqEditRowDragTargetFromY(sess.tbody, ev.clientY);
+  if (!hit.row) return;
+  const targetIdx = parseInt(hit.row.dataset.itemIdx, 10);
+  if (!Number.isFinite(targetIdx)) return;
+  sess.dropTargetIdx = targetIdx;
+  sess.insertAfter = hit.insertAfter;
+  hit.row.classList.add(hit.insertAfter ? 'aq-row-drop-after' : 'aq-row-drop-before');
+}
+
+function aqEditRowDragMouseUp() {
+  const sess = aqEditRowDragSession;
+  if (!sess) return;
+  document.body.classList.remove('aq-row-drag-active');
+  aqClearEditRowDragMarkers(sess.tbody);
+  sess.row.classList.remove('aq-row-dragging');
+  const { dragIdx, dropTargetIdx, insertAfter } = sess;
+  aqEditRowDragSession = null;
+  if (Number.isFinite(dragIdx) && Number.isFinite(dropTargetIdx) && dragIdx !== dropTargetIdx) {
+    aqReorderItemsByDrag(dragIdx, dropTargetIdx, insertAfter);
+  }
 }
 
 function aqAutoResizeAllDescTextareas(root) {
@@ -2086,18 +2786,10 @@ function aqRenderEditTableRows(q) {
   let alt = false;
   const rows = [];
   groups.forEach((sec) => {
-    rows.push(`<tr class="qt-section-header">
-      <td colspan="7" class="left">${escapeHtml(aqFormatSectionHeaderLabel(sec.section_code, sec.section_name))}</td>
-      <td class="right">${aqFmtNum(sec.sectionSubtotal)}</td>
-      <td></td>
-    </tr>`);
+    rows.push(aqRenderSectionHeaderEditRow(sec));
     sec.subsections.forEach((sub) => {
-      const n = sub.items.length;
-      sub.items.forEach((it, idx) => {
-        const subCodeCell =
-          idx === 0
-            ? `<td rowspan="${n}">${escapeHtml(sub.subsection_code)}</td>`
-            : '';
+      sub.items.forEach((it) => {
+        const subCodeCell = `<td class="aq-col-item">${escapeHtml(String(it.subsection_code || sub.subsection_code || ''))}</td>`;
         const catCell = aqRenderCategorySelect(it);
         const descCell = aqRenderDescriptionInput(it);
         const qtyDisp = aqNumInputValue(parseFloat(it.quantity) || 0);
@@ -2113,16 +2805,17 @@ function aqRenderEditTableRows(q) {
           <td class="right aq-line-sub">${aqFmtNum(aqItemSubtotal(it))}</td>
           <td><input type="text" class="form-control form-control-sm"
             value="${escapeHtml(it.remarks || '')}" onchange="aqOnItemFieldChange(${it._idx}, &quot;remarks&quot;, event.target.value)"></td>
-          <td><button type="button" class="btn btn-xs btn-ghost" onclick="aqRemoveItem(${it._idx})" title="删除行">×</button></td>
+          ${aqRenderRowDragHandleCell()}
+          <td class="aq-col-actions"><button type="button" class="btn btn-xs btn-ghost aq-row-del-btn" onclick="aqRemoveItem(${it._idx})" title="删除行">×</button></td>
         </tr>`);
         alt = !alt;
       });
     });
-    rows.push(`<tr class="aq-add-row-tr"><td colspan="9" class="left">
+    rows.push(`<tr class="aq-add-row-tr"><td colspan="10" class="left">
       <button type="button" class="btn btn-xs btn-secondary" onclick='aqAddSectionLine(${JSON.stringify(String(sec.section_code || ''))})'>+ 本板块添加行</button>
     </td></tr>`);
   });
-  rows.push(`<tr class="aq-add-row-tr"><td colspan="9" class="left">
+  rows.push(`<tr class="aq-add-row-tr"><td colspan="10" class="left">
     <button type="button" class="btn btn-xs btn-primary" onclick="aqAddCustomSection()">+ 添加大板块</button>
   </td></tr>`);
   return rows.join('');
@@ -2426,8 +3119,24 @@ function aqResetExportLayoutForActiveSheet() {
   aqRefreshPreviewLayoutPanes();
 }
 
-function aqSetExportActiveSheet(id) {
+async function aqSetExportActiveSheet(id) {
   activityQuotesState.exportPreviewActiveSheetId = id;
+  if (id === 'summary') {
+    const ids = (activityQuotesState.exportPreviewQuotes || [])
+      .map((q) => Number(q.id))
+      .filter(Number.isFinite);
+    if (ids.length >= 2) {
+      try {
+        const res = await api('POST', '/quotations/bundle/preview', { ids });
+        const fresh = Array.isArray(res.data) ? res.data : [];
+        if (fresh.length) {
+          activityQuotesState.exportPreviewQuotes = aqSortQuotesByEventDateAsc(fresh);
+        }
+      } catch (_) {
+        /* 保留当前预览数据 */
+      }
+    }
+  }
   const tabs = document.getElementById('aqExportTabs');
   if (tabs) tabs.innerHTML = aqRenderExportTabsHtml();
   aqRefreshPreviewLayoutPanes();
@@ -2788,6 +3497,7 @@ async function aqGenerateMergedQuoteFromPreview() {
       remarks: '',
       sort_order: i,
       fee_comm: Number(q.subtotal_ex_tax) || 0,
+      fee_executor: 0,
       fee_design: 0,
       fee_freight: 0,
       fee_print: 0,
@@ -2933,7 +3643,7 @@ function aqRefreshSectionSubtotals() {
   groups.forEach((sec, i) => {
     const tr = headers[i];
     if (!tr) return;
-    const cell = tr.querySelector('td.right');
+    const cell = tr.querySelector('td.aq-sec-subtotal') || tr.querySelector('td.right');
     if (cell) cell.textContent = aqFmtNum(sec.sectionSubtotal);
   });
 }
@@ -3072,11 +3782,15 @@ function aqRefreshEditView() {
   const q = activityQuotesState.editing;
   if (!q) return;
   if (aqIsMultiQuote(q)) {
-    if (multiHost) multiHost.innerHTML = aqRenderMultiGridRows(q);
+    if (multiHost) {
+      multiHost.innerHTML = aqRenderMultiGridRows(q);
+      requestAnimationFrame(() => aqSyncMultiFeeInputsFromState());
+    }
   } else if (host) {
     host.innerHTML = aqRenderEditTableRows(q);
     aqRefreshSectionSubtotals();
     aqAutoResizeAllDescTextareas(host);
+    aqInitEditRowDragListeners();
   }
   if (foot) {
     const t = aqCalcTotalsForQuote(q);
@@ -3550,6 +4264,18 @@ async function aqSaveEditing() {
   const q = activityQuotesState.editing;
   if (!q || !q.id) return;
   aqReadQtHeaderFromDom();
+  if (activityQuotesState.view === 'mergedEdit') {
+    try {
+      await api('PUT', `/quotations/${q.id}`, aqBuildSavePayload(q));
+      aqPersistMergedEditActiveToCache();
+      showToast(`已保存：${q.project_name || q.project_code || q.quotation_no}`, 'success');
+      aqClearEditUndo();
+      return;
+    } catch (e) {
+      showToast(e.message || '保存失败', 'error');
+      return;
+    }
+  }
   if (aqIsMultiQuote(q)) {
     if (!String(q.project_name || '').trim()) {
       showToast('请填写报价名称', 'warning');
@@ -3715,14 +4441,20 @@ function aqPrintPreview() {
 async function aqOpenEdit(id) {
   try {
     aqClearEditUndo();
+    aqClearMergedEditState();
     await aqLoadQuotation(id);
-    if (!aqIsMultiQuote(activityQuotesState.editing)) {
+    const q = activityQuotesState.editing;
+    if (aqIsMergedExportQuote(q)) {
+      await aqOpenMergedBundleEdit(q);
+      return;
+    }
+    if (!aqIsMultiQuote(q)) {
       await aqLoadTemplateSections();
     }
     activityQuotesState.multiDraftPristine = false;
-    if (aqIsMultiQuote(activityQuotesState.editing)) {
+    if (aqIsMultiQuote(q)) {
       await aqLoadActivitiesForPicker();
-      activityQuotesState.multiProjectName = String(activityQuotesState.editing.project_name || '').trim();
+      activityQuotesState.multiProjectName = String(q.project_name || '').trim();
     }
     aqPrepareEditingItems();
     activityQuotesState.view = 'edit';
@@ -3761,8 +4493,20 @@ async function aqOpenPreview(id) {
   }
 }
 
-function aqSetPreviewBundleActive(key) {
+async function aqSetPreviewBundleActive(key) {
   activityQuotesState.previewBundleActive = key;
+  const multiId = activityQuotesState.editing && activityQuotesState.editing.id;
+  if (key === 'summary' && multiId && aqIsMergedExportQuote(activityQuotesState.editing)) {
+    try {
+      const fresh = aqSortQuotesByEventDateAsc(await aqLoadPreviewBundleQuotes(multiId));
+      if (fresh.length) {
+        activityQuotesState.previewBundleQuotes = fresh;
+        aqAlignMultiLinkedSessionsToSortedSingles(activityQuotesState.editing, fresh);
+      }
+    } catch (_) {
+      /* 保留已有 bundle */
+    }
+  }
   aqRefreshPreviewLayoutPanes();
 }
 
@@ -3771,12 +4515,18 @@ function aqRenderMultiBundlePreviewBody() {
   if (!q) return '';
   const list = activityQuotesState.previewBundleQuotes || [];
   const active = activityQuotesState.previewBundleActive || 'summary';
-  const summaryLayout = aqBuildSummaryPreviewLayout({ sessions: q.linked_sessions || [] });
+  const useBundleSummary = list.length > 0 && aqIsMergedExportQuote(q);
+  const summaryLayout = useBundleSummary
+    ? aqBuildSummaryPreviewLayout({ quotes: list })
+    : aqBuildSummaryPreviewLayout({ sessions: q.linked_sessions || [] });
+  const summaryTbody = useBundleSummary
+    ? aqRenderBundleSummaryPreviewTable(list, summaryLayout)
+    : aqRenderMultiPreviewTable(q, summaryLayout);
   if (!list.length) {
     return `<div class="table-wrapper qt-table-scroll aq-multi-preview-scroll">
       <table class="qt-detail-table aq-multi-preview-table">
         <thead>${aqMultiPreviewHeadHtml(summaryLayout)}</thead>
-        <tbody>${aqRenderMultiPreviewTable(q, summaryLayout)}</tbody>
+        <tbody>${summaryTbody}</tbody>
       </table>
     </div>`;
   }
@@ -3795,7 +4545,7 @@ function aqRenderMultiBundlePreviewBody() {
       <div class="table-wrapper qt-table-scroll aq-multi-preview-scroll">
         <table class="qt-detail-table aq-multi-preview-table">
           <thead>${aqMultiPreviewHeadHtml(summaryLayout)}</thead>
-          <tbody>${aqRenderMultiPreviewTable(q, summaryLayout)}</tbody>
+          <tbody>${summaryTbody}</tbody>
         </table>
       </div>
     </div>`;
@@ -3865,26 +4615,33 @@ async function aqBackToList() {
   activityQuotesState.view = 'list';
   activityQuotesState.editing = null;
   activityQuotesState.multiDraftPristine = false;
+  aqClearMergedEditState();
   await renderActivityQuotes();
+}
+
+function aqRenderListSummaryHtml() {
+  const s = activityQuotesState.listSummary;
+  if (!s) return '';
+  const quoted = Number(s.quotedActivityCount) || 0;
+  const total = Number(s.activityCount) || 0;
+  return `
+    <div class="aq-list-summary">
+      <div class="aq-list-summary-main">
+        <span class="aq-list-summary-label">当前年框有效报价合计（去重）</span>
+        <span class="aq-list-summary-value amount amount-revenue">${fmtMoney(s.effectiveTotal)}</span>
+      </div>
+      <div class="aq-list-summary-sub">按场次统计，已排除被合并报价取代的单场单据 · ${quoted} 场有报价 / ${total} 场</div>
+    </div>`;
 }
 
 function aqRenderListHtml() {
   const rows = activityQuotesState.list;
   const canWrite = currentUserRole === 'admin';
-  const selected = new Set((activityQuotesState.listSelectedIds || []).map(Number));
-  const allChecked = rows.length > 0 && rows.every((r) => selected.has(Number(r.id)));
-  const exportHint =
-    selected.size > 1
-      ? `<span class="form-hint">已选 ${selected.size} 场；点任一「导出Excel」将导出汇总（Sheet1=Summary）</span>
-         <button type="button" class="btn btn-xs btn-ghost" onclick="aqClearListSelection()">清空选择</button>`
-      : '';
   const tbody = rows.length
     ? rows
         .map((r) => {
           const date = aqResolveQuoteEventDate(r) || '—';
-          const checked = selected.has(Number(r.id)) ? ' checked' : '';
           return `<tr>
-            <td><input type="checkbox"${checked} onchange="aqToggleListSelect(${r.id}, this.checked)"></td>
             <td class="aq-list-pc-cell">${aqRenderListProjectCodeCell(r)}</td>
             <td>${escapeHtml(r.project_name || '—')}</td>
             <td>${escapeHtml(r.city || '—')}</td>
@@ -3894,15 +4651,13 @@ function aqRenderListHtml() {
             <td class="numeric">${fmtMoney(r.total_amount)}</td>
             <td class="aq-list-actions">
               <button type="button" class="btn btn-xs btn-secondary" onclick="aqOpenPreview(${r.id})">预览</button>
-              <button type="button" class="btn btn-xs btn-secondary" onclick="aqExportPdf(${r.id})">导出PDF</button>
-              <button type="button" class="btn btn-xs btn-secondary" onclick="aqExportExcel(${r.id})">导出Excel</button>
               <button type="button" class="btn btn-xs btn-primary" onclick="aqOpenEdit(${r.id})">编辑</button>
               ${canWrite ? `<button type="button" class="btn btn-xs btn-ghost" style="color:var(--danger)" onclick="aqDelete(${r.id})">删除</button>` : ''}
             </td>
           </tr>`;
         })
         .join('')
-    : '<tr><td colspan="9" style="color:var(--text-muted);text-align:center">暂无报价，点击「新建单场报价」或「新建多场报价」开始</td></tr>';
+    : '<tr><td colspan="8" style="color:var(--text-muted);text-align:center">暂无报价，点击「新建单场报价」或「新建多场报价」开始</td></tr>';
 
   return `
     <div class="page-toolbar aq-toolbar">
@@ -3910,20 +4665,19 @@ function aqRenderListHtml() {
         <input type="search" class="form-control form-control-sm" placeholder="搜索项目/客户/城市"
           value="${escapeHtml(activityQuotesState.filterQ)}"
           oninput="aqOnFilterQ(this.value)" style="max-width:280px">
-        ${exportHint}
       </div>
       ${canWrite ? `<div class="aq-toolbar-actions"><button type="button" class="btn btn-primary btn-sm" onclick="aqOpenCreate()">+ 新建单场报价</button><button type="button" class="btn btn-secondary btn-sm" onclick="aqOpenMultiCreate()">+ 新建多场报价</button><button type="button" class="btn btn-secondary btn-sm" onclick="aqOpenExportQuote()">合并导出报价</button></div>` : ''}
     </div>
     <div class="table-wrapper">
-      <table class="data-table">
+      <table class="data-table aq-list-table">
         <thead><tr>
-          <th style="width:42px"><input type="checkbox" id="aqListSelectAll"${allChecked ? ' checked' : ''} onchange="aqToggleListSelectAll(this.checked)" title="全选当前列表"></th>
-          <th>项目编号</th><th>报价单名称</th><th>城市</th><th>客户</th><th>活动日期</th>
-          <th>类型</th><th class="numeric">含税总计</th><th>操作</th>
+          <th class="aq-list-pc-col">项目编号</th><th>报价单名称</th><th>城市</th><th>客户</th><th>活动日期</th>
+          <th>类型</th><th class="numeric">含税总计</th><th class="aq-list-actions-col">操作</th>
         </tr></thead>
         <tbody>${tbody}</tbody>
       </table>
-    </div>`;
+    </div>
+    ${aqRenderListSummaryHtml()}`;
 }
 
 function aqRenderEditHtml() {
@@ -3939,7 +4693,7 @@ function aqRenderEditHtml() {
             <h3 class="aq-multi-title">Summary 多场报价（一行一场）</h3>
             ${aqRenderMultiFilterSelectsHtml()}
           </div>
-          <button type="button" class="btn btn-xs btn-secondary" onclick="aqAddMultiSession()">+ 添加场次</button>
+          <button type="button" class="btn btn-xs btn-secondary" onclick="aqAddMultiSession()">从筛选添加场次</button>
         </div>
         <div class="aq-multi-add-panel">
           <div class="aq-multi-add-panel-head">
@@ -3957,13 +4711,14 @@ function aqRenderEditHtml() {
             <tbody id="aqMultiGridBody">${aqRenderMultiGridRows(q)}</tbody>
           </table>
         </div>
-        <p class="form-hint aq-multi-hint">在表格中填写各行费用；筛选后可在上方勾选批量添加（「全选」/「取消全选」可循环切换），或使用「+ 添加场次」逐行选择。</p>
+        <p class="form-hint aq-multi-hint">在表格中填写各行费用；项目编号请在上方「从筛选结果批量添加」中勾选场次。筛选后「全选」/「取消全选」可循环切换。</p>
       </div>`
     : '';
   const feeTableHead = isMulti
     ? ''
     : `<thead><tr>
-            <th>Item</th><th>分类</th><th>说明</th><th>数量</th><th>单位</th><th>单价</th><th>单项小计</th><th>备注</th><th></th>
+            <th>Item</th><th>分类</th><th>说明</th><th>数量</th><th>单位</th><th>单价</th><th>单项小计</th><th>备注</th>
+            <th class="aq-col-drag" title="拖动排序"></th><th class="aq-col-actions"></th>
           </tr></thead>`;
   const feeTableClass = isMulti ? '' : 'qt-detail-table aq-edit-table-sticky-head';
   const linkedLabel = isMulti
@@ -4007,7 +4762,7 @@ function aqRenderEditHtml() {
       ${multiGridBlock}
       ${singleTableBlock}
       <div id="aqEditTotals" class="aq-totals-bar"></div>
-      <p class="form-hint aq-edit-undo-hint">删除明细行后可用 <kbd>Ctrl</kbd>+<kbd>Z</kbd>（Mac：<kbd>⌘</kbd>+<kbd>Z</kbd>）撤销；在输入框内仍为文本撤销。可使用各板块「+ 本板块添加行」或底部「+ 添加大板块」扩展明细（均可编辑）。</p>
+      <p class="form-hint aq-edit-undo-hint">删除明细行后可用 <kbd>Ctrl</kbd>+<kbd>Z</kbd>（Mac：<kbd>⌘</kbd>+<kbd>Z</kbd>）撤销；行尾 <span class="aq-hint-grip" aria-hidden="true"></span> 可按住拖动排序。米色表头行可编辑板块编号与名称。</p>
     </div>`;
 }
 
@@ -4045,7 +4800,7 @@ function aqRenderPreviewHtml() {
   return `
     <div class="aq-edit-head">
       <button type="button" class="btn btn-secondary btn-sm" onclick="aqBackToList()">← 返回列表</button>
-      <button type="button" class="btn btn-secondary btn-sm" onclick="activityQuotesState.view='edit';renderActivityQuotes()">编辑</button>
+      <button type="button" class="btn btn-secondary btn-sm" onclick="aqReenterMultiEdit()">编辑</button>
       ${exportBtns}
       <button type="button" class="btn btn-secondary btn-sm" onclick="aqPrintPreview()">打印</button>
     </div>
@@ -4079,6 +4834,9 @@ async function renderActivityQuotes() {
       container.innerHTML = `<div class="aq-page aq-page-multi-pick"><h2 class="page-title">活动报价</h2>${aqRenderExportPickHtml()}</div>`;
     } else if (activityQuotesState.view === 'exportPreview') {
       container.innerHTML = `<div class="aq-page aq-page-preview"><h2 class="page-title">活动报价</h2>${aqRenderExportPreviewHtml()}</div>`;
+    } else if (activityQuotesState.view === 'mergedEdit') {
+      container.innerHTML = `<div class="aq-page aq-page-edit aq-page-merged-edit">${aqRenderMergedEditHtml()}</div>`;
+      aqRefreshEditView();
     } else if (activityQuotesState.view === 'edit') {
       if (activityQuotesState.editing && aqIsMultiQuote(activityQuotesState.editing)) {
         await Promise.all([aqLoadActivitiesForPicker(), aqEnsureBelongingFilterOptions()]);

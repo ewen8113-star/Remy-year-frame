@@ -1,9 +1,10 @@
 /**
- * 合并报价 Summary：固定信息列 + 有金额的大板块列 + 合计列
+ * 合并报价 Summary：固定信息列 + 费用大板块列 + 合计列（多场固定 6 列）
  */
 const { mergeSessionWithTotals, calcMultiGrandTotals } = require('./multiSummaryItems');
 const {
   collectVisibleSectionColumns,
+  collectAllSessionFeeSectionColumns,
   sectionTotalsFromSession,
   sectionTotalsFromQuote,
   getSectionAmountForRow,
@@ -55,7 +56,9 @@ function buildSummaryColumnModel({ sessions, quotes }) {
     ? (quotes || []).map((q) => sectionTotalsFromQuote(q))
     : (sessions || []).map((s) => sectionTotalsFromSession(s));
 
-  const sectionColumns = collectVisibleSectionColumns(rowSectionsList);
+  const sectionColumns = useQuotes
+    ? collectVisibleSectionColumns(rowSectionsList)
+    : collectAllSessionFeeSectionColumns();
   const totalColumns = useQuotes
     ? getVisibleTotalColumnsFromQuotes(quotes)
     : getVisibleTotalColumnsFromSessions(sessions || []);

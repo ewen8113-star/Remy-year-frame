@@ -1,8 +1,9 @@
 /**
- * 多场报价（Summary 模版）— 每场一行，含 5 项费用 + 行内合计
+ * 多场报价（Summary 模版）— 每场一行，含 6 项费用 + 行内合计
  */
 const MULTI_SUMMARY_FEE_LINES = [
-  { key: 'fee_comm', description: '人员沟通费', unit: '项', default_unit_price: 0, sort_order: 10 },
+  { key: 'fee_comm', description: '沟通调度', unit: '项', default_unit_price: 0, sort_order: 10 },
+  { key: 'fee_executor', description: '执行人员', unit: '项', default_unit_price: 0, sort_order: 15 },
   { key: 'fee_design', description: '设计费', unit: '项', default_unit_price: 0, sort_order: 20 },
   { key: 'fee_freight', description: '往返运费', unit: '项', default_unit_price: 0, sort_order: 30 },
   { key: 'fee_print', description: '印刷品', unit: '项', default_unit_price: 0, sort_order: 40 },
@@ -32,6 +33,10 @@ function parseFeeAmount(raw, key) {
   if (line && raw.fees && typeof raw.fees === 'object') {
     const alt = parseFloat(raw.fees[line.description]);
     if (Number.isFinite(alt) && alt >= 0) return roundMoney(alt);
+    if (key === 'fee_comm') {
+      const legacy = parseFloat(raw.fees['人员沟通费']);
+      if (Number.isFinite(legacy) && legacy >= 0) return roundMoney(legacy);
+    }
   }
   return 0;
 }
@@ -42,6 +47,108 @@ function extractSessionFees(raw) {
     fees[k] = parseFeeAmount(raw || {}, k);
   });
   return fees;
+}
+
+const FEE_DESC_TO_KEY = new Map(
+  MULTI_SUMMARY_FEE_LINES.map((line) => [line.description, line.key])
+);
+FEE_DESC_TO_KEY.set('人员沟通费', 'fee_comm');
+
+function collectMultiFeeLineItems(items) {
+  return (items || [])
+    .filter((it) => FEE_DESC_TO_KEY.has(String(it.description || '').trim()))
+    .sort((a, b) => (Number(a.sort_order) || 0) - (Number(b.sort_order) || 0));
+}
+
+function sessionItemsForLinkedRow(items, sess, sessionIndex, sessionCount) {
+  const code = String(sess.project_code || '').trim();
+  const all = items || [];
+  const lineCount = MULTI_SUMMARY_FEE_LINES.length;
+  const feeLines = collectMultiFeeLineItems(all);
+
+  if (feeLines.length >= lineCount * sessionCount) {
+    return feeLines.slice(sessionIndex * lineCount, sessionIndex * lineCount + lineCount);
+  }
+
+  if (code) {
+    const exact = all.filter((it) => String(it.section_name || '').trim() === `场次 ${code}`);
+    if (exact.length) return exact;
+    const fuzzy = all.filter((it) => {
+      const sn = String(it.section_name || '').trim();
+      return sn.includes(code) || code.includes(sn.replace(/^场次\s*/, ''));
+    });
+    if (fuzzy.length) return fuzzy;
+  }
+
+  const summaryName = MULTI_SECTION.section_name;
+  const summaryRows = all.filter((it) => {
+    const sn = String(it.section_name || '').trim();
+    return sn === summaryName || sn === '汇总报价';
+  });
+  if (summaryRows.length >= lineCount) {
+    const start = sessionIndex * lineCount;
+    return summaryRows.slice(start, start + lineCount);
+  }
+  if (sessionCount === 1 && feeLines.length) return feeLines;
+  if (sessionCount === 1) return all;
+  return [];
+}
+
+function feeSumFromKeys(fees) {
+  return MULTI_FEE_KEYS.reduce((s, k) => s + (Number(fees[k]) || 0), 0);
+}
+
+/** linked_sessions 仅有行合计、fee_* 为空时，回填到沟通调度便于继续编辑 */
+function hydrateSessionFromStoredTotals(sess) {
+  const current = extractSessionFees(sess);
+  if (feeSumFromKeys(current) > 0.001) return { ...sess, ...current };
+  const sub = parseFloat(sess.subtotal_ex_tax);
+  if (!Number.isFinite(sub) || sub <= 0) return { ...sess, ...current };
+  return {
+    ...sess,
+    ...current,
+    fee_comm: roundMoney(sub),
+  };
+}
+
+function feesFromQuotationItems(items, sess, sessionIndex, sessionCount) {
+  const fees = {};
+  MULTI_FEE_KEYS.forEach((k) => {
+    fees[k] = 0;
+  });
+  sessionItemsForLinkedRow(items, sess, sessionIndex, sessionCount).forEach((it) => {
+    const desc = String(it.description || '').trim();
+    const key = FEE_DESC_TO_KEY.get(desc);
+    if (!key) return;
+    const amt = roundMoney(parseFloat(it.unit_price) || parseFloat(it.subtotal) || 0);
+    fees[key] = roundMoney((fees[key] || 0) + amt);
+  });
+  return fees;
+}
+
+/** 从 quotation_items 还原 linked_sessions 六项费用（兼容仅写入 items 的历史数据） */
+function hydrateLinkedSessionsFeesFromItems(sessions, items) {
+  const list = Array.isArray(sessions) ? sessions : [];
+  const rows = Array.isArray(items) ? items : [];
+  if (!list.length) return list;
+  return list.map((sess, i) => {
+    let next = { ...sess };
+    const cur = extractSessionFees(next);
+    const curSum = feeSumFromKeys(cur);
+    if (rows.length) {
+      const fromItems = feesFromQuotationItems(rows, sess, i, list.length);
+      const itemsSum = feeSumFromKeys(fromItems);
+      if (curSum > 0.001) {
+        MULTI_FEE_KEYS.forEach((k) => {
+          next[k] = cur[k] > 0 ? cur[k] : fromItems[k] || 0;
+        });
+      } else if (itemsSum > 0) {
+        next = { ...next, ...fromItems };
+      }
+    }
+    next = hydrateSessionFromStoredTotals(next);
+    return mergeSessionWithTotals(next);
+  });
 }
 
 function calcSessionRowTotals(fees, serviceRate = 0.1, taxRate = 0.06) {
@@ -159,4 +266,8 @@ module.exports = {
   calcMultiGrandTotals,
   buildMultiSummaryItems,
   buildQuotationItemsFromMultiSessions,
+  hydrateLinkedSessionsFeesFromItems,
+  hydrateSessionFromStoredTotals,
+  feesFromQuotationItems,
+  collectMultiFeeLineItems,
 };

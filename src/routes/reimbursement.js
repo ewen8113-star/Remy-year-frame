@@ -269,6 +269,9 @@ router.post('/', async (req, res) => {
     if (!brandVal) {
       return res.status(400).json({ error: '请选择品牌' });
     }
+    if (brandVal.length > 30) {
+      return res.status(400).json({ error: '品牌字段过长，请刷新页面后重新保存' });
+    }
 
     const cost_details = normalizeCostDetailsInput(req.body);
     const amount = sumCostDetails(cost_details);
@@ -479,6 +482,9 @@ router.put('/:id', async (req, res) => {
     const payeeName = payee_name != null ? String(payee_name).trim() : String(ex.payee_name || '').trim();
     if (!brandVal) {
       return res.status(400).json({ error: '请选择品牌' });
+    }
+    if (brandVal.length > 30) {
+      return res.status(400).json({ error: '品牌字段过长，请刷新页面后重新保存' });
     }
     const rpc = related_project_code != null && String(related_project_code).trim()
       ? String(related_project_code).trim()

@@ -4,6 +4,10 @@ const router = express.Router();
 const db = require('../config/database');
 const { importActivitiesFromExcelBuffer } = require('../activity/importActivitiesFromExcel');
 const { todayYmd, formatDateTimeMinute } = require('../lib/businessTime');
+const {
+  projectCodeHasDateSuffix,
+  repairProjectCodeDate,
+} = require('../lib/projectCode');
 const { ensureActivityQuotedPriceFromQuotations } = require('../quotation/syncQuotationToActivities');
 
 const activityImportUpload = multer({
@@ -41,8 +45,11 @@ function canonicalStatusFromInput(s) {
 function maybeAutoCompleteStatusByDate(status, dateStr) {
   const st = String(status || '').trim() || 'pending';
   const dt = String(dateStr || '').slice(0, 10);
-  if (st !== 'pending' || !/^\d{4}-\d{2}-\d{2}$/.test(dt)) return st;
-  return dt < todayYmd() ? 'completed' : st;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dt)) return st;
+  const today = todayYmd();
+  if (st === 'completed' && dt >= today) return 'pending';
+  if (st !== 'pending') return st;
+  return dt < today ? 'completed' : st;
 }
 
 /**
@@ -342,18 +349,47 @@ router.delete('/:id', async (req, res) => {
   }
 });
 
-// 自动将过期未完成场次置为已完成（仅 pending -> completed）
+/** 活动日期 >= 今天（北京时间）却标为已完成的场次改回待执行 */
+router.post('/revert-future-completed', async (req, res) => {
+  try {
+    const { yearFrameId } = req.body || {};
+    const today = todayYmd();
+    const params = [today];
+    let sql = `
+      UPDATE activities
+      SET status = 'pending'
+      WHERE status = 'completed'
+        AND COALESCE(is_virtual, 0) = 0
+        AND date IS NOT NULL
+        AND date >= ?
+    `;
+    if (yearFrameId) {
+      sql += ' AND year_frame_id = ?';
+      params.push(parseInt(yearFrameId, 10));
+    }
+    const [r] = await db.query(sql, params);
+    res.json({
+      updated: Number(r?.affectedRows || 0),
+      message: `已将 ${Number(r?.affectedRows || 0)} 条未到期场次改回待执行`,
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// 自动将过期未完成场次置为已完成（仅 pending -> completed，按北京时间「今天」）
 router.post('/auto-complete-overdue', async (req, res) => {
   try {
     const { yearFrameId } = req.body || {};
-    const params = [];
+    const today = todayYmd();
+    const params = [today];
     let sql = `
       UPDATE activities
       SET status = 'completed'
       WHERE status = 'pending'
         AND COALESCE(is_virtual, 0) = 0
         AND date IS NOT NULL
-        AND date < CURDATE()
+        AND date < ?
     `;
     if (yearFrameId) {
       sql += ' AND year_frame_id = ?';
@@ -363,6 +399,41 @@ router.post('/auto-complete-overdue', async (req, res) => {
     res.json({
       updated: Number(r?.affectedRows || 0),
       message: `已自动完成 ${Number(r?.affectedRows || 0)} 条过期场次`,
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/** 为缺少年框后 YYMMDD 的项目编号补全活动日期 */
+router.post('/repair-project-codes', async (req, res) => {
+  try {
+    const { yearFrameId } = req.body || {};
+    const params = [];
+    let sql = `
+      SELECT id, project_code, date
+      FROM activities
+      WHERE COALESCE(is_virtual, 0) = 0
+        AND date IS NOT NULL
+        AND TRIM(COALESCE(project_code, '')) <> ''
+        AND project_code NOT REGEXP '^[^ ]+ [0-9]{6}'
+    `;
+    if (yearFrameId) {
+      sql += ' AND year_frame_id = ?';
+      params.push(parseInt(yearFrameId, 10));
+    }
+    const [rows] = await db.query(sql, params);
+    let updated = 0;
+    for (const row of rows) {
+      const next = repairProjectCodeDate(row.project_code, row.date);
+      if (!next || next === row.project_code || !projectCodeHasDateSuffix(next)) continue;
+      await db.query('UPDATE activities SET project_code = ? WHERE id = ?', [next, row.id]);
+      updated += 1;
+    }
+    res.json({
+      updated,
+      scanned: rows.length,
+      message: `已修复 ${updated} 条项目编号（共检出 ${rows.length} 条缺日期）`,
     });
   } catch (error) {
     res.status(500).json({ error: error.message });

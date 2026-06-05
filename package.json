@@ -48,11 +48,14 @@
     "migrate:users-auth": "node src/scripts/addUsersAuthTable.js",
     "migrate:quotations": "node src/scripts/addQuotationTables.js",
     "migrate:quotation-multi": "node src/scripts/addQuotationMultiSession.js",
+    "sync:activity-quoted-prices": "node src/scripts/syncActivityQuotedPricesFromQuotations.js",
     "verify:warehouse-db": "node src/scripts/verifyWarehouseDb.js",
     "script:set-all-activities-completed": "node src/scripts/setAllActivitiesStatusCompleted.js",
     "script:sync-activity-region-belonging-excel": "node src/scripts/syncActivityRegionBelongingFromExcel.js",
     "script:sync-inv-item-catalog": "node src/scripts/syncInvItemCatalogFromWarehouses.js",
-    "export:inv-phd-east": "node src/scripts/exportInvPhdEastItems.js"
+    "export:inv-phd-east": "node src/scripts/exportInvPhdEastItems.js",
+    "repair:activity-project-code-dates": "node src/scripts/repairActivityProjectCodeDates.js",
+    "repair:outbound-project-codes": "node src/scripts/repairOutboundProjectCodes.js"
   },
   "dependencies": {
     "bcryptjs": "^3.0.2",

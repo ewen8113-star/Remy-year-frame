@@ -3224,6 +3224,11 @@ body.modal-open {
 .stat-card.blue .stat-icon { background: var(--blue-soft); }
 .stat-card.danger .stat-icon { background: var(--danger-soft); }
 
+.stat-icon .mp-brand-bottle-icon {
+  display: block;
+  flex-shrink: 0;
+}
+
 .stat-label {
   font-size: 12px;
   color: var(--text-secondary);
@@ -5377,6 +5382,37 @@ body.auth-page-body::before {
   box-shadow: none;
 }
 
+.page-dashboard .stat-card {
+  padding: 20px 22px;
+}
+
+.page-dashboard .dash-card {
+  padding: 20px 24px;
+  box-sizing: border-box;
+}
+
+.page-dashboard .dash-card .card-header {
+  margin-bottom: 14px;
+}
+
+.page-dashboard .dash-tabs {
+  margin-bottom: 16px;
+}
+
+.page-dashboard .dash-cost-panel {
+  padding-top: 2px;
+}
+
+.page-dashboard .dash-table th,
+.page-dashboard .dash-table td {
+  padding: 12px 16px;
+}
+
+.page-dashboard .table-wrapper {
+  border-radius: 8px;
+  overflow: hidden;
+}
+
 .page-dashboard .stat-card:hover,
 .page-dashboard .chart-card:hover {
   transform: none;
@@ -5752,13 +5788,13 @@ body.auth-page-body::before {
 .dash-cost-overview-grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr) auto minmax(0, 1fr);
-  gap: 10px;
+  gap: 12px;
   align-items: center;
-  padding: 12px 14px;
+  padding: 16px 18px;
   border: 1px solid #e5e7eb;
   border-radius: 10px;
   background: #f9fafb;
-  margin: 12px 0;
+  margin: 12px 0 14px;
 }
 
 .dash-cost-kpi {
@@ -5804,14 +5840,14 @@ body.auth-page-body::before {
 }
 
 .dash-cost-chart-slot {
-  padding: 12px;
+  padding: 16px;
   border: 1px solid #e5e7eb;
   border-radius: 10px;
   background: #fff;
 }
 
 .dash-cost-single {
-  padding: 14px;
+  padding: 18px 20px;
   border: 1px solid #e5e7eb;
   border-radius: 10px;
   background: #fff;
@@ -7531,6 +7567,39 @@ tbody td {
 .aq-list-table .aq-list-pc-col { width: 28%; min-width: 220px; }
 .aq-list-table .aq-list-actions-col { width: 168px; }
 .aq-list-pc-cell { min-width: 200px; max-width: none; vertical-align: middle; }
+.aq-list-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px 16px;
+  margin-top: 12px;
+  padding: 12px 16px;
+  border: 1px solid var(--border-subtle, var(--border));
+  border-radius: var(--radius-md, 8px);
+  background: var(--surface-secondary, var(--bg-secondary));
+}
+.aq-list-summary-main {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 10px 16px;
+}
+.aq-list-summary-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.aq-list-summary-value {
+  font-size: 18px;
+  font-weight: 700;
+}
+.aq-list-summary-sub {
+  flex: 1 1 100%;
+  font-size: 12px;
+  color: var(--text-muted);
+  line-height: 1.45;
+}
 .aq-pc-single {
   font-size: 12px;
   white-space: nowrap;
@@ -7555,32 +7624,88 @@ tbody td {
   border: 1px solid rgba(var(--accent-rgb, 59, 130, 246), 0.25);
 }
 .aq-multi-sessions-wrap,
-.aq-multi-grid-wrap { margin: 16px 0 20px; }
+.aq-multi-grid-wrap { margin: 12px 0 14px; }
 .aq-multi-grid-scroll {
   overflow-x: auto;
   overflow-y: visible;
 }
 .aq-multi-grid-table {
-  min-width: 1280px;
-  font-size: 12px;
+  min-width: 920px;
+  font-size: 11px;
+  border-collapse: collapse;
 }
 .aq-multi-grid-table th,
 .aq-multi-grid-table td {
   white-space: nowrap;
   vertical-align: middle;
+  padding: 3px 5px;
+  line-height: 1.25;
 }
-.aq-multi-grid-table .aq-fee-th { min-width: 88px; }
-.aq-multi-fee-inp { width: 88px; min-width: 72px; }
+.aq-multi-grid-table thead th {
+  padding: 6px 5px;
+  font-size: 11px;
+  font-weight: 700;
+}
+.aq-multi-grid-table .aq-fee-th,
+.aq-multi-grid-table th.numeric.aq-fee-th {
+  min-width: 88px;
+  text-align: left !important;
+}
+.aq-multi-grid-table td.aq-fee-cell {
+  text-align: left !important;
+}
+.aq-multi-grid-table td.numeric.aq-calc-cell,
+.aq-multi-grid-table th.numeric:not(.aq-fee-th) {
+  text-align: right !important;
+}
+.aq-multi-fee-inp {
+  width: 11ch;
+  min-width: 88px;
+  max-width: 120px;
+  min-height: 24px;
+  height: 24px;
+  padding: 1px 6px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  text-align: left !important;
+  border-radius: 0;
+  margin-left: 0;
+  margin-right: 0;
+  display: inline-block;
+}
+input[type="number"].aq-multi-fee-inp:placeholder-shown {
+  color: var(--text-muted);
+}
+input[type="number"].aq-multi-fee-inp:not(:placeholder-shown),
+input[type="number"].aq-multi-fee-inp:focus {
+  color: var(--text-primary);
+}
+.aq-merged-edit-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 10px 0 6px;
+}
+.aq-merged-edit-hint {
+  margin: 0 0 12px;
+}
+.aq-multi-grid-table .aq-calc-cell {
+  text-align: right !important;
+}
 .aq-multi-grid-table .aq-pc-cell {
-  min-width: 280px;
-  max-width: 360px;
+  min-width: 200px;
+  max-width: 260px;
   white-space: normal;
 }
 .aq-pc-datalist-inp {
-  min-width: 260px;
+  min-width: 180px;
   width: 100%;
-  max-width: 340px;
-  padding-right: 12px !important;
+  max-width: 250px;
+  min-height: 24px;
+  height: 24px;
+  padding: 1px 6px !important;
+  font-size: 11px;
+  border-radius: 0;
 }
 .aq-pc-datalist-inp::-webkit-calendar-picker-indicator {
   display: none !important;
@@ -7590,9 +7715,31 @@ tbody td {
 }
 .aq-multi-grid-table .aq-auto-val {
   color: var(--text-secondary);
-  font-size: 12px;
-  padding: 6px 8px;
+  font-size: 11px;
+  padding: 3px 5px;
   white-space: nowrap;
+  text-align: left;
+}
+.aq-multi-grid-table thead th:not(.numeric) {
+  text-align: left;
+}
+.aq-multi-grid-table th:nth-child(1),
+.aq-multi-grid-table td:nth-child(1) { min-width: 88px; }
+.aq-multi-grid-table th:nth-child(2),
+.aq-multi-grid-table td:nth-child(2),
+.aq-multi-grid-table th:nth-child(3),
+.aq-multi-grid-table td:nth-child(3) { min-width: 72px; }
+.aq-multi-grid-table th:nth-child(4),
+.aq-multi-grid-table td:nth-child(4) { min-width: 64px; }
+.aq-multi-grid-table .numeric {
+  padding: 3px 6px;
+  font-size: 11px;
+}
+.aq-multi-grid-table .btn-xs {
+  padding: 0 4px;
+  min-height: 22px;
+  height: 22px;
+  font-size: 12px;
 }
 .aq-calc-cell { font-variant-numeric: tabular-nums; }
 .aq-row-total { font-weight: 600; }
@@ -8045,26 +8192,34 @@ tbody td {
 .qt-header-info .info-label { color: #666; white-space: nowrap; flex-shrink: 0; }
 .qt-table-scroll { overflow-x: auto; }
 
-/* 活动报价编辑：表格区域纵向滚动，表头固定 */
+/* 活动报价编辑：仅横向溢出滚动，纵向随整页滚动 */
 .aq-page-edit .aq-edit-table-scroll {
-  max-height: min(68vh, calc(100vh - 300px));
-  overflow: auto;
+  max-height: none;
+  overflow-x: auto;
+  overflow-y: visible;
   position: relative;
   -webkit-overflow-scrolling: touch;
 }
 
 .aq-edit-table-sticky-head {
-  border-collapse: separate;
+  border-collapse: collapse;
   border-spacing: 0;
 }
 
-.aq-edit-table-sticky-head thead th {
+.aq-page-edit .aq-edit-table-sticky-head thead th {
   position: sticky;
   top: 0;
   z-index: 6;
   background: #948a54;
   color: #fff;
   box-shadow: 0 1px 0 #7a7150;
+  padding: 10px 6px;
+  font-size: 13px;
+  line-height: 1.35;
+  font-weight: 700;
+  white-space: nowrap;
+  min-height: 44px;
+  vertical-align: middle;
 }
 
 .qt-detail-table {
@@ -8079,24 +8234,160 @@ tbody td {
   text-align: center;
   vertical-align: middle;
 }
-/* 活动报价编辑表：紧凑行高 */
+/* 活动报价编辑表：紧凑行高、直角、统一 28px 行高 */
+.aq-page-edit .qt-sheet-wrap {
+  border-radius: 0;
+}
+.aq-page-edit .qt-detail-table {
+  border-collapse: collapse;
+  border-spacing: 0;
+}
 .aq-page-edit .qt-detail-table th,
 .aq-page-edit .qt-detail-table td {
-  padding: 2px 4px;
+  padding: 1px 4px;
   line-height: 1.2;
+  border-radius: 0 !important;
+}
+.aq-page-edit .qt-detail-table thead th {
+  padding: 10px 6px;
+  font-size: 13px;
+  line-height: 1.35;
+  min-height: 44px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.aq-page-edit .qt-detail-table tr[data-item-idx] td {
+  height: 28px;
+  max-height: 28px;
+  vertical-align: middle;
+}
+.aq-page-edit .qt-detail-table .form-control,
+.aq-page-edit .qt-detail-table .form-control-sm,
+.aq-page-edit .qt-detail-table select,
+.aq-page-edit .qt-detail-table input,
+.aq-page-edit .qt-detail-table textarea,
+.aq-page-edit .qt-detail-table .btn,
+.aq-page-edit .qt-detail-table .aq-sec-header-edit .form-control {
+  border-radius: 0 !important;
+  box-shadow: none;
+}
+.aq-page-edit .qt-detail-table .form-control:active,
+.aq-page-edit .qt-detail-table .form-control-sm:active {
+  transform: none;
 }
 .aq-page-edit .qt-detail-table .form-control-sm,
 .aq-page-edit .qt-detail-table .aq-inp-qty,
 .aq-page-edit .qt-detail-table .aq-inp-price,
-.aq-page-edit .qt-detail-table .aq-inp-desc {
-  min-height: 26px;
-  padding: 2px 6px;
+.aq-page-edit .qt-detail-table .aq-inp-category {
+  min-height: 24px;
+  height: 24px;
+  padding: 1px 4px;
   font-size: 11px;
   line-height: 1.2;
 }
-.aq-page-edit .qt-detail-table .btn-xs {
-  padding: 1px 6px;
+.aq-page-edit .qt-detail-table .aq-inp-desc {
+  min-height: 24px;
+  height: 24px;
+  max-height: 24px;
+  padding: 1px 4px;
   font-size: 11px;
+  line-height: 1.2;
+  overflow-y: auto;
+}
+.aq-page-edit .qt-detail-table .btn-xs,
+.aq-page-edit .qt-detail-table .aq-row-del-btn {
+  padding: 0 4px;
+  font-size: 12px;
+  line-height: 1;
+  min-height: 22px;
+  height: 22px;
+  border-radius: 0 !important;
+}
+.aq-page-edit .qt-detail-table .aq-col-item {
+  width: 52px;
+  min-width: 52px;
+  max-width: 52px;
+  padding: 1px 4px;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+  text-align: center;
+  vertical-align: middle;
+}
+.aq-page-edit .qt-detail-table .aq-col-drag,
+.aq-page-edit .qt-detail-table .aq-col-actions {
+  width: 30px;
+  min-width: 30px;
+  max-width: 30px;
+  padding: 0 2px;
+  text-align: center;
+}
+.aq-page-edit .qt-detail-table thead th.aq-col-drag,
+.aq-page-edit .qt-detail-table thead th.aq-col-actions {
+  padding: 2px;
+  font-size: 10px;
+  font-weight: 600;
+}
+.aq-page-edit .aq-row-drag-handle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+  cursor: grab;
+  color: #5c5640;
+  border-radius: 0;
+}
+.aq-page-edit .aq-row-drag-handle:hover {
+  background: rgba(0, 0, 0, 0.06);
+}
+.aq-page-edit .aq-row-drag-handle:active {
+  cursor: grabbing;
+}
+.aq-page-edit .aq-row-drag-grip,
+.aq-hint-grip {
+  display: inline-block;
+  width: 2px;
+  height: 2px;
+  background: currentColor;
+  border-radius: 0;
+  box-shadow: 0 4px 0 currentColor, 0 8px 0 currentColor;
+  opacity: 0.7;
+  vertical-align: middle;
+}
+.aq-page-edit .qt-detail-table tr[data-item-idx].aq-row-dragging td {
+  opacity: 0.55;
+  background: #ebe6d4 !important;
+}
+.aq-page-edit .qt-detail-table tr[data-item-idx].aq-row-drop-before td {
+  box-shadow: inset 0 2px 0 #7a7150;
+}
+.aq-page-edit .qt-detail-table tr[data-item-idx].aq-row-drop-after td {
+  box-shadow: inset 0 -2px 0 #7a7150;
+}
+body.aq-row-drag-active {
+  user-select: none;
+  cursor: grabbing;
+}
+body.aq-row-drag-active .aq-row-drag-handle {
+  cursor: grabbing;
+}
+.aq-page-edit .aq-add-row-tr td {
+  padding: 4px 6px;
+  height: auto;
+  max-height: none;
+}
+.aq-page-edit .qt-section-header td {
+  height: auto;
+  max-height: none;
+  padding: 3px 4px;
+}
+.aq-page-edit .aq-totals-grid {
+  border-radius: 0;
 }
 .qt-detail-table thead th {
   background: #948a54;
@@ -8113,6 +8404,32 @@ tbody td {
   font-weight: 700;
   text-align: left;
 }
+.aq-sec-header-edit {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  max-width: 100%;
+}
+.aq-sec-header-edit .aq-sec-code {
+  width: 3.25rem;
+  min-width: 3.25rem;
+  text-align: center;
+  font-weight: 700;
+  padding-left: 4px;
+  padding-right: 4px;
+}
+.aq-sec-header-edit .aq-sec-name {
+  flex: 1 1 12rem;
+  min-width: 8rem;
+  max-width: 100%;
+  font-weight: 700;
+}
+.aq-sec-header-edit .aq-sec-sep {
+  font-weight: 700;
+  flex-shrink: 0;
+  user-select: none;
+}
 .qt-detail-table textarea.aq-inp-desc {
   min-width: 0;
   width: 100%;
@@ -8122,6 +8439,13 @@ tbody td {
   font-size: 12px;
   min-height: 28px;
   box-sizing: border-box;
+}
+/* 预览/导出表保持原说明框自适应高度 */
+.aq-page-preview .qt-detail-table textarea.aq-inp-desc,
+.aq-export-preview-table textarea.aq-inp-desc {
+  min-height: 28px;
+  height: auto;
+  max-height: none;
 }
 .qt-alt-row td { background: #f9f9f9; }
 .qt-footer-row td {

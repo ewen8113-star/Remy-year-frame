@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../config/database');
+const { syncYearFrameQuotedPricesFromQuotations } = require('../quotation/syncQuotationToActivities');
 
 const ALLOWED_TYPES = ['晚宴', '品鉴', '培训', '纯设计'];
 const FISCAL_MONTH_LABELS = ['4月', '5月', '6月', '7月', '8月', '9月', '10月', '11月', '12月', '1月', '2月', '3月'];
@@ -397,6 +398,9 @@ async function queryFullCostBreakdown(query, activityCost, activityCount) {
   const rbBase = buildPoolBaseFilters('r', query);
   const rbWhere = [...rbBase.where];
   const rbParams = [...rbBase.params];
+  // 报销/付款申请按年框归属统计，不按看板日期区间过滤（申请日期可能跨财年边界）
+  const rbCoordWhere = [...rbWhere, "COALESCE(r.cost_module, 'activity') <> 'activity'"];
+  const rbActivityWhere = [...rbWhere, "COALESCE(r.cost_module, 'activity') = 'activity'"];
 
   const [
     [whRows],
@@ -404,6 +408,8 @@ async function queryFullCostBreakdown(query, activityCost, activityCount) {
     [mpRows],
     [prRows],
     [rbRows],
+    [rbCoordRows],
+    [rbActivityRows],
     [rbModuleRows],
     [whMonthRows],
     [logMonthRows],
@@ -434,6 +440,16 @@ async function queryFullCostBreakdown(query, activityCost, activityCount) {
     db.query(
       `SELECT COALESCE(SUM(r.amount), 0) AS amount, COUNT(*) AS cnt
        FROM reimbursements r WHERE ${rbWhere.join(' AND ')}`,
+      rbParams
+    ),
+    db.query(
+      `SELECT COALESCE(SUM(r.amount), 0) AS amount, COUNT(*) AS cnt
+       FROM reimbursements r WHERE ${rbCoordWhere.join(' AND ')}`,
+      rbParams
+    ),
+    db.query(
+      `SELECT COALESCE(SUM(r.amount), 0) AS amount, COUNT(*) AS cnt
+       FROM reimbursements r WHERE ${rbActivityWhere.join(' AND ')}`,
       rbParams
     ),
     db.query(
@@ -476,7 +492,7 @@ async function queryFullCostBreakdown(query, activityCost, activityCount) {
     ),
     db.query(
       `SELECT DATE_FORMAT(r.date, '%Y-%m') AS ym, COALESCE(SUM(r.amount), 0) AS amount
-       FROM reimbursements r WHERE ${rbWhere.join(' AND ')} AND r.date IS NOT NULL
+       FROM reimbursements r WHERE ${rbCoordWhere.join(' AND ')} AND r.date IS NOT NULL
        GROUP BY DATE_FORMAT(r.date, '%Y-%m')`,
       rbParams
     ),
@@ -486,17 +502,33 @@ async function queryFullCostBreakdown(query, activityCost, activityCount) {
   const logAmount = round2(logRows[0]?.amount);
   const mpAmount = round2(mpRows[0]?.amount);
   const prAmount = round2(prRows[0]?.amount);
-  const rbAmount = round2(rbRows[0]?.amount);
+  const rbCoordAmount = round2(rbCoordRows[0]?.amount);
+  const rbActivityAmount = round2(rbActivityRows[0]?.amount);
+  const coordinatedAmount = round2(mpAmount + rbCoordAmount);
+  const coordinatedCount = Number(mpRows[0]?.cnt || 0) + Number(rbCoordRows[0]?.cnt || 0);
   const actAmount = round2(activityCost);
 
   const buckets = [
     { key: 'activity', label: '场次成本', amount: actAmount, count: activityCount || 0, hint: '当前筛选场次合计' },
     { key: 'warehouse', label: '仓储成本', amount: whAmount, count: Number(whRows[0]?.cnt || 0), hint: '仓储登记，未重复计入场次' },
     { key: 'logistics', label: '物流成本', amount: logAmount, count: Number(logRows[0]?.cnt || 0), hint: '物流登记（含月结月份）' },
-    { key: 'material_purchase', label: '物料/额外成本', amount: mpAmount, count: Number(mpRows[0]?.cnt || 0), hint: '物料采购登记' },
+    {
+      key: 'material_purchase',
+      label: '统筹成本',
+      amount: coordinatedAmount,
+      count: coordinatedCount,
+      hint: '直接登记 + 不计入活动的报销（统筹/内部/物料等）',
+    },
     { key: 'prop_repair', label: '道具维修', amount: prAmount, count: Number(prRows[0]?.cnt || 0), hint: '道具维修登记' },
-    { key: 'reimbursement', label: '报销成本池', amount: rbAmount, count: Number(rbRows[0]?.cnt || 0), hint: '付款申请/报销，按年框汇总' },
+    {
+      key: 'reimbursement',
+      label: '报销成本池',
+      amount: rbActivityAmount,
+      count: Number(rbActivityRows[0]?.cnt || 0),
+      hint: '付款申请/报销中计入活动成本的部分',
+    },
   ];
+  const rbAmount = round2(rbRows[0]?.amount);
   const totalPoolCost = round2(whAmount + logAmount + mpAmount + prAmount + rbAmount);
   const totalFullCost = round2(actAmount + totalPoolCost);
 
@@ -505,8 +537,8 @@ async function queryFullCostBreakdown(query, activityCost, activityCount) {
     warehouse: '报销·仓储',
     logistics: '报销·物流',
     prop_repair: '报销·道具维修',
-    material_purchase: '报销·物料',
-    general: '报销·内部/统筹',
+    material_purchase: '报销·统筹物料',
+    general: '报销·统筹/内部',
   };
   const reimbByModule = (rbModuleRows || []).map((row) => ({
     module: row.cost_module || 'general',
@@ -579,6 +611,9 @@ router.get('/options', async (req, res) => {
 // 获取数据看板（多维筛选联动）
 router.get('/', async (req, res) => {
   try {
+    if (req.query.yearFrameId) {
+      await syncYearFrameQuotedPricesFromQuotations(db, parseInt(req.query.yearFrameId, 10));
+    }
     const actFilter = buildActivityFilters(req.query);
     const pgCountFilter = buildActivityFilters(queryWithoutPgFlags(req.query));
     const [pgSessionRows] = await db.query(
@@ -914,8 +949,8 @@ router.get('/', async (req, res) => {
         sessionOnlyGrossMarginRate: ratio(grossProfit, detailRevenue),
       },
       metricDefinition: {
-        revenue: '当前筛选场次的报价合计',
-        cost: '场次成本 + 仓储 + 物流 + 物料 + 维修 + 报销（未重复计入场次的部分）',
+        revenue: '当前筛选场次的报价合计（来自活动报价模块同步至场次 quoted_price）',
+        cost: '场次成本 + 仓储 + 物流 + 统筹 + 维修 + 报销（未重复计入场次的部分）',
         grossMarginRate: '毛利 = 收入 − 总成本；毛利率 = 毛利 ÷ 收入',
         activityCostDetail: '场次内按物流、人员、采购等分项汇总',
       },

@@ -278,7 +278,7 @@ async function buildMultiQuoteWorkbook(q) {
         if (ci === layout.remarksCol) cell.value = '';
         else cell.value = val === '—' ? '' : val;
       }
-      applyDataCellStyle(cell, { alignRight: isFee || isComputed, alt });
+      applyDataCellStyle(cell, { alignRight: isSectionMoney || isComputed, alt });
     });
     cols.totalColumns.forEach((colDef, ti) => {
       const ci = cols.spanBeforeTotals + ti;

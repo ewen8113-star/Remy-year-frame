@@ -40,8 +40,27 @@ function colsBeforeTotals(feeColCount = MULTI_SUMMARY_FEE_LINES.length) {
   return 4 + feeColCount;
 }
 
+/** 多场 linked_sessions：按活动日期升序（无日期排最后） */
+function sortLinkedSessionsByEventDateAsc(sessions) {
+  return (sessions || []).slice().sort((a, b) => {
+    const da = normalizeEventDate(a?.event_date) || '';
+    const db = normalizeEventDate(b?.event_date) || '';
+    if (da !== db) {
+      if (!da) return 1;
+      if (!db) return -1;
+      return da.localeCompare(db);
+    }
+    const sa = Number(a?.sort_order);
+    const sb = Number(b?.sort_order);
+    if (Number.isFinite(sa) && Number.isFinite(sb) && sa !== sb) return sa - sb;
+    return String(a?.project_code || '').localeCompare(String(b?.project_code || ''), 'zh');
+  });
+}
+
 function getMultiTableHeaders(q) {
-  const sessions = (q?.linked_sessions || []).map((s) => mergeSessionWithTotals(s));
+  const sessions = sortLinkedSessionsByEventDateAsc(q?.linked_sessions || []).map((s) =>
+    mergeSessionWithTotals(s)
+  );
   return buildSummaryColumnModel({ sessions }).headers;
 }
 
@@ -84,15 +103,16 @@ function buildRowCellsFromQuote(q, columns) {
 }
 
 function buildMultiPreviewTableData(q) {
-  const sessions = (q.linked_sessions || []).map((s) => mergeSessionWithTotals(s));
+  const orderedSessions = sortLinkedSessionsByEventDateAsc(q.linked_sessions || []);
+  const sessions = orderedSessions.map((s) => mergeSessionWithTotals(s));
   const columns = buildSummaryColumnModel({ sessions });
   const headers = columns.headers;
-  const dataRows = (q.linked_sessions || []).map((s) => ({
+  const dataRows = orderedSessions.map((s) => ({
     session: mergeSessionWithTotals(s),
     cells: buildRowCellsFromSession(s, columns),
   }));
 
-  const totals = calcMultiGrandTotals(q.linked_sessions || []);
+  const totals = calcMultiGrandTotals(orderedSessions);
   const footerCells = new Array(headers.length).fill('');
   footerCells[0] = '多场含税总计';
   columns.totalColumns.forEach((col, i) => {
@@ -166,6 +186,7 @@ module.exports = {
   getMultiTableHeaders,
   buildMultiPreviewTableData,
   buildBundleSummaryTableData,
+  sortLinkedSessionsByEventDateAsc,
   sanitizeSessionRemarks,
   isMultiQuote,
   buildSummaryColumnModel,

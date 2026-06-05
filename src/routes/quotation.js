@@ -15,9 +15,10 @@ const {
   mergeSessionWithTotals,
   calcMultiGrandTotals,
   buildQuotationItemsFromMultiSessions,
+  hydrateLinkedSessionsFeesFromItems,
 } = require('../quotation/multiSummaryItems');
 const { formatDateTimeMinute } = require('../lib/businessTime');
-const { syncQuotationToActivities } = require('../quotation/syncQuotationToActivities');
+const { syncQuotationToActivities, sumYearFrameEffectiveQuotedPrices } = require('../quotation/syncQuotationToActivities');
 
 const STATUSES = ['draft', 'submitted', 'approved', 'rejected'];
 
@@ -297,7 +298,10 @@ async function loadQuotation(id) {
     [id]
   );
   const head = heads[0];
-  const linked_sessions = parseLinkedSessions(head.linked_sessions);
+  let linked_sessions = parseLinkedSessions(head.linked_sessions);
+  if (String(head.quote_mode || '').toLowerCase() === 'multi') {
+    linked_sessions = hydrateLinkedSessionsFeesFromItems(linked_sessions, items);
+  }
   const syncedItems = applyEventTemplateItemDefaults(items);
   const enrichedItems = await enrichItemsWithTemplateDefaults(syncedItems);
   const eventDate = resolveQuotationDisplayEventDate(head);
@@ -485,7 +489,11 @@ router.get('/', async (req, res) => {
       if (!Number.isFinite(aid)) return true;
       return !mergedActivityIds.has(aid);
     });
-    res.json({ data });
+    let summary = null;
+    if (yearFrameId) {
+      summary = await sumYearFrameEffectiveQuotedPrices(db, parseInt(yearFrameId, 10));
+    }
+    res.json({ data, summary });
   } catch (e) {
     res.status(500).json({ error: e.message || '列表加载失败' });
   }
@@ -589,6 +597,37 @@ router.get('/:id/excel', async (req, res) => {
   }
 });
 
+router.get('/:id/bundle-edit', async (req, res) => {
+  try {
+    const id = parseInt(req.params.id, 10);
+    if (!Number.isFinite(id)) return res.status(400).json({ error: '无效 ID' });
+    const row = await loadQuotation(id);
+    if (!row) return res.status(404).json({ error: '报价不存在' });
+    if (String(row.quote_mode || 'single') !== 'multi') {
+      return res.status(400).json({ error: '仅合并多场报价支持 bundle 编辑' });
+    }
+    const mergedFromIds = parseJsonArray(row.merged_from_quote_ids);
+    const singles = await loadSingleQuotesForMultiQuote(row);
+    if (!shouldTreatAsMergedBundle(row, mergedFromIds, singles)) {
+      return res.status(400).json({ error: '该报价不是由单场报价合并生成，请使用多场编辑' });
+    }
+    res.json({
+      data: {
+        parent: {
+          id: row.id,
+          quotation_no: row.quotation_no,
+          project_name: row.project_name,
+          quote_mode: row.quote_mode,
+          merged_from_quote_ids: mergedFromIds,
+        },
+        singles: singles || [],
+      },
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message || '加载合并编辑数据失败' });
+  }
+});
+
 router.get('/:id/bundle-preview', async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
@@ -686,6 +725,7 @@ function buildPreviewBundleMultiStub(quotes, projectName) {
       remarks: '',
       sort_order: i,
       fee_comm: Number(q.subtotal_ex_tax) || 0,
+      fee_executor: 0,
       fee_design: 0,
       fee_freight: 0,
       fee_print: 0,
@@ -809,6 +849,7 @@ router.post('/bundle/create-merged', async (req, res) => {
         remarks: '',
         sort_order: i,
         fee_comm: Number(q.subtotal_ex_tax) || 0,
+        fee_executor: 0,
         fee_design: 0,
         fee_freight: 0,
         fee_print: 0,
