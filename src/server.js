@@ -63,6 +63,14 @@ const publicDir = path.join(__dirname, '../public');
 // 先注册 /api，再挂静态资源：避免旧版 express.static 行为干扰，且新增路由后必须重启 node 才会生效
 console.log('注册 auth 路由');
 app.use('/api/auth', authRoutes);
+// API 禁用 ETag/强缓存，避免筛选类 GET 返回 304 时浏览器复用旧的空列表
+app.use('/api', (req, res, next) => {
+  res.set('ETag', false);
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
+  next();
+});
 app.use('/api', (req, res, next) => {
   if (req.path === '/health') return next();
   return requireAuth(req, res, next);

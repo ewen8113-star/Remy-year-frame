@@ -9,7 +9,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="style.css?v=20260605-aq-list-summary">
+  <link rel="stylesheet" href="style.css?v=20260609-reimb-cost-stats3">
   <!-- Chart.js -->
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
   <script src="https://unpkg.com/lucide@latest"></script>
@@ -155,7 +155,7 @@
     <!-- 底部：版本号 + 明暗主题图标 -->
     <div class="sidebar-footer">
       <div class="sidebar-footer-bar">
-        <span class="app-version" id="appVersion" title="应用版本">ver.2026.04.22.1</span>
+        <span class="app-version" id="appVersion" title="应用版本">ver.2026.06.05.1</span>
         <button type="button" class="theme-toggle-icon" id="themeToggleBtn" onclick="toggleTheme()" title="切换到亮色模式" aria-label="切换明暗主题"><svg xmlns="http://www.w3.org/2000/svg" width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg></button>
       </div>
     </div>
@@ -460,12 +460,33 @@
           <input type="date" class="form-control" id="logDate" required>
         </div>
         <div class="form-group">
-          <label class="form-label">费用 (¥)</label>
-          <input type="number" class="form-control" id="logFee" placeholder="0.00（可留空）" step="0.01" min="0">
+          <label class="form-label">运费 (¥)</label>
+          <input type="number" class="form-control" id="logShippingFee" placeholder="0.00（可留空）" step="0.01" min="0" oninput="logisticsFeePartsChanged()">
         </div>
         <div class="form-group">
+          <label class="form-label">操作费 (¥)</label>
+          <input type="number" class="form-control" id="logHandlingFee" placeholder="0.00（可留空）" step="0.01" min="0" oninput="logisticsFeePartsChanged()">
+        </div>
+        <div class="form-group">
+          <label class="form-label">回收日期</label>
+          <input type="date" class="form-control" id="logReturnDate" placeholder="选填">
+        </div>
+        <div class="form-group">
+          <label class="form-label">回收运费 (¥)</label>
+          <input type="number" class="form-control" id="logReturnShippingFee" placeholder="0.00（可留空）" step="0.01" min="0" oninput="logisticsFeePartsChanged()">
+        </div>
+        <div class="form-group">
+          <label class="form-label">回收操作费 (¥)</label>
+          <input type="number" class="form-control" id="logReturnHandlingFee" placeholder="0.00（可留空）" step="0.01" min="0" oninput="logisticsFeePartsChanged()">
+        </div>
+        <div class="form-group form-full" id="logFeeTotalHint" style="font-size:12px;color:var(--text-secondary);margin-top:-6px;display:none">
+          费用合计：<span class="amount amount-cost" id="logFeeTotalValue">¥0.00</span>（出货运费 + 出货操作费 + 回收运费 + 回收操作费）
+        </div>
+        <div class="form-group form-full">
           <label class="form-label">收款方 <span class="required">*</span></label>
-          <input type="text" class="form-control" id="logPayeeName" placeholder="物流公司 / 承运方" required>
+          <select class="form-control" id="logPayeeSelect" required onchange="logPayeeSelectChanged()">
+            <option value="">请选择供应商</option>
+          </select>
         </div>
         <div class="form-group form-full">
           <label class="form-label">用途</label>
@@ -606,7 +627,9 @@
         </div>
         <div class="form-group">
           <label class="form-label">收款方</label>
-          <input type="text" class="form-control" id="warPayeeName" placeholder="用于付款合并">
+          <select class="form-control" id="warPayeeName" onchange="supplierPayeeSelectChanged('warPayeeName')">
+            <option value="">请选择供应商</option>
+          </select>
         </div>
         <div class="form-group form-full">
           <label class="form-label">备注</label>
@@ -822,7 +845,7 @@
       <span class="modal-title" id="invOutboundGroupTitle">出库清单</span>
       <button type="button" class="modal-close" onclick="closeModal()">✕</button>
     </div>
-    <div class="modal-body" id="invOutboundGroupBody" style="max-height:70vh"></div>
+    <div class="modal-body" id="invOutboundGroupBody"></div>
   </div>
 
   <!-- 物品出库：PDF 预览（iframe inline）+ 下载 -->
@@ -962,7 +985,7 @@
   <div class="toast-container" id="toastContainer"></div>
 
   <script src="disable-number-input-wheel.js?v=2"></script>
-  <script src="app.js?v=20260605-dashboard-coord-fix"></script>
+  <script src="app.js?v=20260609-reimb-cost-stats3"></script>
   <script src="activity-quotes.js?v=20260605-aq-list-summary"></script>
 </body>
 </html>

@@ -1317,7 +1317,16 @@ body.modal-open {
 }
 
 .inv-ob-modal-form .inv-ob-modal-row:first-of-type {
-  grid-template-columns: minmax(92px, max-content) minmax(180px, 1.7fr) minmax(92px, max-content) minmax(150px, 1fr);
+  grid-template-columns: minmax(80px, max-content) minmax(150px, 1.4fr) minmax(148px, 1.25fr) minmax(80px, max-content) minmax(120px, 1fr);
+}
+
+.inv-ob-modal-form .inv-ob-field-supplier {
+  min-width: 0;
+}
+
+.inv-ob-modal-form .inv-ob-field-supplier select {
+  width: 100%;
+  min-width: 140px;
 }
 
 .inv-ob-layout {
@@ -1709,6 +1718,21 @@ body.modal-open {
 }
 
 /* 出库单详情：固定头 + 滚动体双表布局 */
+#modalInvOutboundGroup .modal-body {
+  max-height: min(78vh, calc(100vh - 96px));
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  padding-top: 10px;
+  padding-bottom: 10px;
+}
+
+#modalInvOutboundGroup .modal-body > .inv-ob-shell {
+  flex: 1;
+  min-height: 0;
+  max-height: none;
+}
+
 .inv-ob-shell {
   display: flex;
   flex-direction: column;
@@ -1718,6 +1742,8 @@ body.modal-open {
 .inv-ob-head-fixed {
   flex-shrink: 0;
   padding-bottom: 0;
+  max-height: 42vh;
+  overflow-y: auto;
 }
 
 .inv-ob-items-header {
@@ -1753,9 +1779,9 @@ body.modal-open {
 }
 
 .inv-ob-body-scroll {
-  flex: 1;
+  flex: 1 1 auto;
   overflow-y: auto;
-  min-height: 0;
+  min-height: 120px;
 }
 
 .inv-ob-body-scroll table {
@@ -4505,6 +4531,98 @@ button.btn-secondary.btn-sm.btn-cloud-album-muted:disabled {
   box-shadow: 0 1px 0 var(--border);
 }
 
+.log-table-sticky-head tbody tr.log-table-row:hover {
+  background: color-mix(in srgb, var(--accent-soft) 38%, transparent);
+}
+
+.logistics-ship-detail-grid .logistics-cost-detail-card,
+.inv-ob-head-fixed .activity-detail-grid .logistics-cost-detail-card {
+  grid-column: 1 / -1;
+}
+
+.logistics-ship-detail-grid .activity-detail-card,
+.inv-ob-head-fixed .logistics-ship-detail-grid .activity-detail-card {
+  padding: 10px 12px;
+}
+
+.logistics-ship-detail-grid .activity-detail-card h4,
+.logistics-cost-compact h4 {
+  margin-bottom: 6px;
+  padding-bottom: 6px;
+}
+
+.logistics-ship-detail-grid .activity-detail-row {
+  padding: 4px 0;
+  grid-template-columns: 68px minmax(0, 1fr);
+  gap: 4px 10px;
+}
+
+.logistics-cost-compact-table {
+  font-size: 12px;
+}
+
+.logistics-cost-compact-head,
+.logistics-cost-compact-row {
+  display: grid;
+  grid-template-columns: 44px minmax(56px, 0.9fr) minmax(72px, 1fr) minmax(72px, 1fr);
+  gap: 6px 10px;
+  align-items: center;
+  padding: 4px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.logistics-cost-compact-head {
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 600;
+  padding-top: 0;
+}
+
+.logistics-cost-compact-row:last-of-type {
+  border-bottom: none;
+}
+
+.logistics-cost-compact-label {
+  font-weight: 650;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.logistics-cost-compact-summary {
+  display: grid;
+  grid-template-columns: 44px auto minmax(0, 1fr);
+  gap: 6px 10px;
+  align-items: center;
+  padding: 6px 0 2px;
+  margin-top: 2px;
+  border-top: 1px solid var(--border);
+}
+
+.logistics-cost-compact-total {
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.logistics-cost-compact-payee {
+  font-size: 12px;
+  color: var(--text-primary);
+  text-align: right;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.logistics-ship-detail-footer,
+.inv-ob-detail-footer.logistics-ship-detail-footer {
+  flex-shrink: 0;
+  margin-top: 8px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
 /* 仓储成本：紧凑运营布局 */
 .warehouse-page {
   display: flex;
@@ -4662,38 +4780,51 @@ button.btn-secondary.btn-sm.btn-cloud-album-muted:disabled {
 }
 
 .payment-order-table {
-  min-width: 1020px;
+  width: 100%;
+  min-width: 860px;
   table-layout: fixed;
 }
 
 .payment-order-table th,
 .payment-order-table td {
-  padding: 6px 8px;
+  padding: 8px 10px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  vertical-align: middle;
 }
 
-/* 列宽：复选 / 日期 / 板块 / 收款方 / 品牌 / 项目编号 / 说明(弹性) / 金额 */
+/* 列宽：复选 / 日期 / 板块 / 收款方 / 品牌 / 项目编号 / 金额 */
 .payment-order-table th:nth-child(1),
 .payment-order-table td:nth-child(1) {
-  width: 36px;
+  width: 40px;
   text-align: center;
-  padding: 6px 4px;
+  padding: 8px 6px;
 }
 
 .payment-order-table th:nth-child(2),
-.payment-order-table td:nth-child(2) { width: 64px; }
+.payment-order-table td:nth-child(2) { width: 72px; }
 .payment-order-table th:nth-child(3),
-.payment-order-table td:nth-child(3) { width: 84px; }
+.payment-order-table td:nth-child(3) { width: 88px; }
 .payment-order-table th:nth-child(4),
-.payment-order-table td:nth-child(4) { width: 130px; }
+.payment-order-table td:nth-child(4) { width: 22%; min-width: 168px; }
 .payment-order-table th:nth-child(5),
-.payment-order-table td:nth-child(5) { width: 170px; }
-.payment-order-table th:nth-child(6),
-.payment-order-table td:nth-child(6) { width: 170px; }
-.payment-order-table th:nth-child(8),
-.payment-order-table td:nth-child(8) { width: 112px; }
+.payment-order-table td:nth-child(5) { width: 72px; }
+.payment-order-table th:nth-child(7),
+.payment-order-table td:nth-child(7) { width: 108px; text-align: right; }
+
+.payment-order-pc-cell {
+  font-size: 12px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+}
+
+.payment-order-brand-cell {
+  text-align: center;
+}
+
+.payment-order-amount-cell {
+  font-variant-numeric: tabular-nums;
+}
 
 .payment-order-check {
   width: 16px;
@@ -4701,13 +4832,6 @@ button.btn-secondary.btn-sm.btn-cloud-album-muted:disabled {
   accent-color: var(--accent);
   cursor: pointer;
   margin: 0;
-}
-
-.payment-order-desc-cell {
-  min-width: 240px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 .inv-row-actions {
@@ -4997,7 +5121,7 @@ button.btn-secondary.btn-sm.btn-cloud-album-muted:disabled {
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
   padding: 12px 14px;
-  background: var(--bg-card);
+  background: color-mix(in srgb, var(--bg-input) 35%, var(--bg-card) 65%);
 }
 
 .reimb-detail-table {
@@ -6256,6 +6380,200 @@ tbody td {
   color: currentColor;
 }
 
+/* 付款申请 · 费用统计 */
+.reimbursement-list-panel--stats {
+  padding: 0;
+}
+
+.reimb-stats-body-wrap {
+  padding: 16px 20px 20px;
+  background: var(--bg-card, var(--bg-secondary));
+  border-radius: var(--radius);
+}
+
+.reimb-stats-scope {
+  margin: 0 0 14px;
+  padding: 0 2px;
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+.reimb-stats-summary {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 18px;
+}
+
+.reimb-stats-card {
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg-primary);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  transition:
+    border-color var(--motion-base) var(--ease-out),
+    background-color var(--motion-base) var(--ease-out),
+    box-shadow var(--motion-base) var(--ease-out);
+}
+
+.reimb-stats-card:hover {
+  border-color: color-mix(in srgb, var(--accent) 22%, var(--border));
+  background: color-mix(in srgb, var(--accent-soft) 28%, var(--bg-primary));
+}
+
+.reimb-stats-card:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.reimb-stats-card--active {
+  border-color: color-mix(in srgb, var(--accent) 32%, var(--border));
+  background: color-mix(in srgb, var(--accent-soft) 48%, var(--bg-primary));
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.reimb-stats-card-label {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.reimb-stats-card-value {
+  font-size: 17px;
+  font-weight: 700;
+  line-height: 1.35;
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+.reimb-stats-detail {
+  margin-bottom: 18px;
+  padding: 14px 16px 12px;
+  border: 1px solid color-mix(in srgb, var(--accent) 20%, var(--border));
+  border-radius: 12px;
+  background: var(--bg-primary);
+}
+
+.reimb-stats-detail-title {
+  margin: 0 0 10px;
+  padding: 0 2px;
+  font-size: 14px;
+  font-weight: 650;
+  color: var(--text-primary);
+}
+
+.reimb-stats-detail-meta {
+  margin-left: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+
+.reimb-stats-detail-wrap {
+  max-height: min(52vh, 480px);
+  overflow: auto;
+}
+
+.reimb-stats-detail-table .reimb-stats-key {
+  max-width: 200px;
+}
+
+.reimb-stats-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.reimb-stats-block {
+  padding: 14px 16px 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg-primary);
+  min-width: 0;
+}
+
+.reimb-stats-block-title {
+  margin: 0 0 10px;
+  padding: 0 2px;
+  font-size: 14px;
+  font-weight: 650;
+  color: var(--text-primary);
+}
+
+.reimb-stats-block .table-wrapper {
+  margin: 0;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.reimb-stats-table th,
+.reimb-stats-table td {
+  padding: 10px 14px;
+}
+
+.reimb-stats-table thead th {
+  background: var(--bg-input);
+  font-size: 12px;
+}
+
+.reimb-stats-table .reimb-stats-key {
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.reimb-stats-table tfoot td {
+  font-weight: 700;
+  border-top: 2px solid var(--border);
+  background: color-mix(in srgb, var(--bg-input) 55%, transparent);
+}
+
+.reimb-stats-total {
+  color: var(--accent);
+  font-weight: 800;
+}
+
+.reimb-stats-empty {
+  padding: 20px 16px;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 13px;
+  border: 1px dashed var(--border);
+  border-radius: 10px;
+}
+
+.reimb-stats-empty-page {
+  padding: 40px 24px;
+}
+
+@media (max-width: 1200px) {
+  .reimb-stats-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .reimb-stats-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 720px) {
+  .reimb-stats-body-wrap {
+    padding-left: 14px;
+    padding-right: 14px;
+  }
+  .reimb-stats-summary {
+    grid-template-columns: 1fr;
+  }
+}
+
 /* 紧凑表单：6 列网格 + span 修饰 */
 .reimb-top-grid--dense {
   grid-template-columns: repeat(6, minmax(0, 1fr));
@@ -6297,8 +6615,9 @@ tbody td {
 
 .reimb-span-2 { grid-column: span 2; }
 .reimb-span-3 { grid-column: span 3; }
-.reimb-payee-field { grid-column: span 1; min-width: 0; max-width: 140px; }
-.reimb-pay-method-field { grid-column: span 1; min-width: 0; max-width: 148px; }
+.reimb-payee-field { grid-column: span 1; min-width: 0; }
+.reimb-payee-info-field { grid-column: span 2; min-width: 0; }
+.reimb-pay-method-field { grid-column: span 1; min-width: 0; }
 .reimb-bank-field { grid-column: span 1; min-width: 0; }
 .reimb-payee-account-picker {
   display: flex;
@@ -6397,6 +6716,7 @@ tbody td {
   }
   .reimb-span-3 { grid-column: span 4; }
   .reimb-span-2 { grid-column: span 2; }
+  .reimb-payee-info-field { grid-column: span 2; }
 }
 
 @media (max-width: 760px) {
@@ -6405,6 +6725,7 @@ tbody td {
   }
   .reimb-span-2,
   .reimb-span-3 { grid-column: span 2; }
+  .reimb-payee-info-field { grid-column: span 2; }
 }
 
 /* ============ 付款申请：内联展开面板 ============ */
@@ -6461,10 +6782,44 @@ tbody td {
 }
 
 .reimb-form-body {
-  padding: 14px 16px 6px;
+  padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 0;
+}
+
+.reimb-form-basic-zone,
+.reimb-form-detail-zone {
+  padding: 14px 16px 12px;
+}
+
+.reimb-form-basic-zone {
+  background: color-mix(in srgb, var(--bg-input) 62%, var(--bg-card) 38%);
+  border-bottom: 1px solid var(--border);
+}
+
+.reimb-form-detail-zone {
+  background: var(--bg-card);
+}
+
+.reimb-form-zone-label {
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  color: var(--text-secondary);
+  margin-bottom: 10px;
+}
+
+.reimb-form-detail-zone .reimb-form-zone-label {
+  margin-bottom: 0;
+}
+
+.reimb-form-detail-zone > .reimb-detail-section {
+  margin-top: 0;
+}
+
+.reimb-form-basic-zone .reimb-top-grid--dense {
+  margin-top: 2px;
 }
 
 .reimb-inline-footer {

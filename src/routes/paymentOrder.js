@@ -46,7 +46,11 @@ function dateOnly(v) {
 
 function candidateMatches(row, q) {
   const keyword = normText(q.keyword).toLowerCase();
-  if (q.payee && normText(row.payee_name) !== normText(q.payee)) return false;
+  if (q.payee) {
+    const needle = normText(q.payee).toLowerCase();
+    const hay = normText(row.payee_name).toLowerCase();
+    if (!needle || !hay.includes(needle)) return false;
+  }
   if (q.brand && normText(row.brand) !== normText(q.brand)) return false;
   if (q.sourceType && row.source_type !== q.sourceType) return false;
   if (q.projectCode && !normText(row.project_code).includes(normText(q.projectCode))) return false;
@@ -75,9 +79,12 @@ function sortCandidates(rows) {
 
 async function fetchCandidates(query, conn = db) {
   const yearFrameId = parseInt(query.yearFrameId, 10);
-  const params = [];
+  const payeeNeedle = normText(query.payee);
+  const payeeLike = payeeNeedle ? `%${payeeNeedle}%` : null;
+  const baseParams = [];
   const yearWhere = Number.isFinite(yearFrameId) ? ' AND {alias}.year_frame_id = ?' : '';
-  if (Number.isFinite(yearFrameId)) params.push(yearFrameId);
+  if (Number.isFinite(yearFrameId)) baseParams.push(yearFrameId);
+  const payeeWhere = payeeLike ? ' AND {alias}.payee_name LIKE ?' : '';
 
   const queries = [
     {
@@ -91,7 +98,7 @@ async function fetchCandidates(query, conn = db) {
         FROM warehouse w
         LEFT JOIN activities act ON act.id = w.activity_id
         WHERE COALESCE(w.payment_status, 'unpaid') <> 'paid' AND COALESCE(w.actual_cost, 0) > 0
-        ${yearWhere.replaceAll('{alias}', 'w')}
+        ${yearWhere.replaceAll('{alias}', 'w')}${payeeWhere.replaceAll('{alias}', 'w')}
       `,
     },
     {
@@ -106,7 +113,7 @@ async function fetchCandidates(query, conn = db) {
         FROM logistics l
         LEFT JOIN activities act ON act.id = l.activity_id
         WHERE COALESCE(l.payment_status, 'unpaid') <> 'paid' AND COALESCE(l.fee, 0) > 0
-        ${yearWhere.replaceAll('{alias}', 'l')}
+        ${yearWhere.replaceAll('{alias}', 'l')}${payeeWhere.replaceAll('{alias}', 'l')}
       `,
     },
     {
@@ -121,7 +128,7 @@ async function fetchCandidates(query, conn = db) {
         LEFT JOIN brand_inventory bi ON bi.id = mp.brand_id
         LEFT JOIN activities act ON act.id = mp.activity_id
         WHERE COALESCE(mp.payment_status, 'unpaid') <> 'paid' AND COALESCE(mp.total_amount, 0) > 0
-        ${yearWhere.replaceAll('{alias}', 'mp')}
+        ${yearWhere.replaceAll('{alias}', 'mp')}${payeeWhere.replaceAll('{alias}', 'mp')}
       `,
     },
     {
@@ -136,7 +143,7 @@ async function fetchCandidates(query, conn = db) {
         LEFT JOIN brand_inventory bi ON bi.id = pr.brand_id
         LEFT JOIN activities act ON act.id = pr.activity_id
         WHERE COALESCE(pr.payment_status, 'unpaid') <> 'paid' AND COALESCE(pr.total_amount, 0) > 0
-        ${yearWhere.replaceAll('{alias}', 'pr')}
+        ${yearWhere.replaceAll('{alias}', 'pr')}${payeeWhere.replaceAll('{alias}', 'pr')}
       `,
     },
     {
@@ -150,14 +157,16 @@ async function fetchCandidates(query, conn = db) {
         FROM reimbursements r
         LEFT JOIN activities act ON act.id = r.activity_id
         WHERE COALESCE(r.payment_status, 'unpaid') <> 'paid' AND COALESCE(r.amount, 0) > 0
-        ${yearWhere.replaceAll('{alias}', 'r')}
+        ${yearWhere.replaceAll('{alias}', 'r')}${payeeWhere.replaceAll('{alias}', 'r')}
       `,
     },
   ];
 
   const all = [];
   for (const q of queries) {
-    const [rows] = await conn.query(q.sql, params);
+    const qParams = [...baseParams];
+    if (payeeLike) qParams.push(payeeLike);
+    const [rows] = await conn.query(q.sql, qParams);
     rows.forEach((row) => {
       const costModuleLabel = COST_MODULE_LABELS[row.cost_module] || normText(row.cost_module);
       const reimbursementDesc = q.type === 'reimbursement'
@@ -209,6 +218,9 @@ function requireSamePayee(rows, explicitPayee) {
 
 router.get('/candidates', async (req, res) => {
   try {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
     const rows = await fetchCandidates(req.query);
     res.json(rows);
   } catch (e) {

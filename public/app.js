@@ -63,15 +63,29 @@ let materialDashboardState = {
   topLimit: 10,
 };
 let propRepairPageState = { filterBrandId: '' };
-let reimbursementPageState = { rows: [], paymentOrders: [], activities: [], filterInput: '', view: 'registrations', selectedIds: new Set() };
+let reimbursementPageState = {
+  rows: [],
+  paymentOrders: [],
+  activities: [],
+  logistics: [],
+  warehouse: [],
+  materialPurchases: [],
+  propRepairs: [],
+  filterInput: '',
+  view: 'registrations',
+  statsCard: null,
+  selectedIds: new Set(),
+};
 /** 付款申请 · 成本登记列表行内展开 */
 let reimbursementListExpanded = new Set();
-let paymentOrderState = { candidates: [], selectedKeys: new Set(), previewRows: [] };
+let paymentOrderState = { candidates: [], selectedKeys: new Set(), previewRows: [], filters: {} };
 const reimbursementActivityIndex = {
   codes: new Set(),
   codeToId: new Map(),
   idToCode: new Map(),
 };
+let reimbursementProjectMenuBound = false;
+const REIMB_PROJECT_MENU_Z = 10050;
 const REIMB_PAYMENT_TYPE_OPTIONS = [
   { value: 'personal_reimbursement', label: '个人报销' },
   { value: 'corporate_payment', label: '对公付款' },
@@ -285,6 +299,7 @@ let inventoryPageState = {
     recipient_address: '',
     contact_name: '',
     contact_phone: '',
+    logistics_supplier: '',
     logistics_method: '顺丰',
     tracking_number: '',
     remarks: '',
@@ -479,6 +494,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   checkConnection();
   renderLucideIcons();
   initHarmonyUiInteractions();
+  bindModalEscapeClose();
   applyHarmonySurfaceAnimations(document);
 });
 
@@ -1089,6 +1105,26 @@ function openModal(id) {
     applyHarmonySurfaceAnimations(modal);
     activeModal = id;
   }
+}
+
+function isModalEscapeBlocked() {
+  const reimbMenu = document.getElementById('reimbProjectMenu');
+  if (reimbMenu && reimbMenu.style.display === 'block') return true;
+  const invMenu = document.getElementById('invProjectMenu');
+  if (invMenu && invMenu.style.display === 'block') return true;
+  if (typeof dashboardDatePickerState !== 'undefined' && dashboardDatePickerState.open) return true;
+  return !!document.querySelector('.aq-pc-menu-portal[style*="display: block"]');
+}
+
+function bindModalEscapeClose() {
+  if (bindModalEscapeClose._bound) return;
+  bindModalEscapeClose._bound = true;
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape' || !activeModal) return;
+    if (isModalEscapeBlocked()) return;
+    e.preventDefault();
+    closeModal();
+  });
 }
 
 function closeModal() {
@@ -5394,17 +5430,17 @@ function parseLogisticsAddrMeta(remarks) {
     const v = part.slice(idx + 1).replace(/｜/g, '|');
     kv[k] = v;
   });
-  const hasNew = ['发件人', '发件电话', '发件地址', '收件人', '收件电话', '收件地址'].some((key) =>
+  const purpose = kv['用途'] || '';
+  const hasAddrFields = ['发件人', '发件电话', '发件地址', '收件人', '收件电话', '收件地址'].some((key) =>
     Object.prototype.hasOwnProperty.call(kv, key),
   );
-  if (hasNew) {
+  if (hasAddrFields || purpose) {
     const shipName = kv['发件人'] || '';
     const shipPhone = kv['发件电话'] || '';
     const shipAddr = kv['发件地址'] || '';
     const recvName = kv['收件人'] || '';
     const recvPhone = kv['收件电话'] || '';
     const recvAddr = kv['收件地址'] || '';
-    const purpose = kv['用途'] || '';
     return {
       shipName,
       shipPhone,
@@ -5598,6 +5634,130 @@ function invOutboundMethodToLogisticsUnitExpress(methodRaw) {
 function preserveInvObSuffix(remarks) {
   const m = String(remarks || '').match(/\[INV-OB:\d+\][^\n]*$/);
   return m ? m[0].trim() : '';
+}
+
+function logisticsOutboundIdFromRemarks(remarks) {
+  const m = String(remarks || '').match(/\[INV-OB:(\d+)\]/);
+  if (!m) return null;
+  const id = parseInt(m[1], 10);
+  return Number.isFinite(id) ? id : null;
+}
+
+function logisticsRowHasOutboundLink(row) {
+  return logisticsOutboundIdFromRemarks(row?.remarks) != null;
+}
+
+function logisticsRowClick(ev, logId) {
+  if (ev.target.closest('button') || ev.target.closest('a') || ev.target.closest('input')) return;
+  void logisticsOpenShipmentDetail(logId);
+}
+
+async function logisticsOpenShipmentDetail(logId) {
+  const lid = Number(logId);
+  if (!Number.isFinite(lid)) return;
+  const row = (logisticsState.data || []).find((l) => Number(l.id) === lid);
+  if (!row) {
+    showToast('记录不存在', 'warning');
+    return;
+  }
+  const outboundId = logisticsOutboundIdFromRemarks(row.remarks);
+  if (outboundId) {
+    await invOpenOutboundOrderDetail(outboundId, {
+      title: `发货详情 · 出库单 #${outboundId}`,
+      logisticsId: lid,
+      logisticsRow: row,
+    });
+    return;
+  }
+  logisticsOpenManualShipDetail(row);
+}
+
+function logisticsDetailMoneyText(amount) {
+  const n = roundMoney2(amount);
+  return n > 0 ? fmtMoney(n) : '—';
+}
+
+function logisticsDetailShipDateText(row) {
+  if (!row) return '—';
+  const display = logisticsDisplayDate(row);
+  if (display && display !== '—') return display;
+  return row.shipping_date ? fmtDateShort(row.shipping_date) : '—';
+}
+
+function logisticsShipDetailCostSectionHtml(row) {
+  const fees = row ? logisticsFeeFieldsFromRow(row) : null;
+  const shipDate = logisticsDetailShipDateText(row);
+  const returnDate = row?.return_date ? fmtDateShort(row.return_date) : '—';
+  const payee = row?.payee_name ? escapeHtml(row.payee_name) : '—';
+  return `
+    <section class="activity-detail-card logistics-cost-detail-card logistics-cost-compact">
+      <h4>物流成本</h4>
+      <div class="logistics-cost-compact-table" role="table" aria-label="物流成本明细">
+        <div class="logistics-cost-compact-head" role="row">
+          <span role="columnheader"></span>
+          <span role="columnheader">日期</span>
+          <span role="columnheader">运费</span>
+          <span role="columnheader">操作费</span>
+        </div>
+        <div class="logistics-cost-compact-row" role="row">
+          <span class="logistics-cost-compact-label" role="rowheader">发货</span>
+          <span role="cell">${escapeHtml(shipDate)}</span>
+          <span class="amount" role="cell">${logisticsDetailMoneyText(fees?.shipping)}</span>
+          <span class="amount" role="cell">${logisticsDetailMoneyText(fees?.handling)}</span>
+        </div>
+        <div class="logistics-cost-compact-row" role="row">
+          <span class="logistics-cost-compact-label" role="rowheader">回收</span>
+          <span role="cell">${escapeHtml(returnDate)}</span>
+          <span class="amount" role="cell">${logisticsDetailMoneyText(fees?.returnShipping)}</span>
+          <span class="amount" role="cell">${logisticsDetailMoneyText(fees?.returnHandling)}</span>
+        </div>
+        <div class="logistics-cost-compact-summary" role="row">
+          <span class="logistics-cost-compact-label" role="rowheader">合计</span>
+          <span class="logistics-cost-compact-total amount amount-cost" role="cell">${logisticsDetailMoneyText(fees?.total)}</span>
+          <span class="logistics-cost-compact-payee" role="cell" title="${payee}">收款方 ${payee}</span>
+        </div>
+      </div>
+    </section>`;
+}
+
+function logisticsShipDetailFooterHtml(logisticsId) {
+  const lid = Number(logisticsId);
+  if (!Number.isFinite(lid)) return '';
+  return `<div class="inv-ob-detail-footer logistics-ship-detail-footer">
+    <button type="button" class="btn btn-secondary btn-sm" onclick="closeModal()">关闭</button>
+    <button type="button" class="btn btn-primary btn-sm" onclick="closeModal();showLogisticsModal(${lid})">编辑物流成本</button>
+  </div>`;
+}
+
+function logisticsOpenManualShipDetail(row) {
+  const titleEl = document.getElementById('invOutboundGroupTitle');
+  const body = document.getElementById('invOutboundGroupBody');
+  if (!body) return;
+  if (titleEl) titleEl.textContent = `发货详情 · 物流 #${row.id}`;
+  const shipRecvHtml = logisticsRouteCellHtml(row);
+  const purposeText = logisticsPurposeText(row) || '—';
+  body.innerHTML = `
+    <div class="inv-ob-shell">
+      <p class="form-hint" style="margin-top:0;margin-bottom:12px">该记录为手工登记物流，非出库单自动生成。</p>
+      <div class="activity-detail-grid logistics-ship-detail-grid" style="margin-bottom:12px">
+        <section class="activity-detail-card">
+          <h4>物流信息</h4>
+          ${activityDetailRow('单位', String(row.logistics_company || '').trim() || '—')}
+          ${activityDetailRow('方式', String(row.express_company || '').trim() || '—')}
+          ${activityDetailRow('单号', String(row.tracking_number || '').trim() || '—')}
+          ${activityDetailRow('品牌', row.brand || '—')}
+        </section>
+        <section class="activity-detail-card">
+          <h4>收发 / 用途</h4>
+          ${activityDetailRowHtml('收发地址', shipRecvHtml === '—' ? '—' : shipRecvHtml)}
+          ${activityDetailRow('用途说明', purposeText)}
+        </section>
+        ${logisticsShipDetailCostSectionHtml(row)}
+      </div>
+      ${logisticsShipDetailFooterHtml(row.id)}
+    </div>`;
+  openModal('modalInvOutboundGroup');
+  renderLucideIcons();
 }
 
 function onLogisticsUnitChange() {
@@ -5937,20 +6097,22 @@ async function loadLogistics() {
           <tbody>
             ${filtered.length ? filtered.map(l => {
               const lid = Number(l.id);
+              const linkedOb = logisticsRowHasOutboundLink(l);
+              const rowTitle = linkedOb ? '点击查看发货详情（关联出库单）' : '点击查看发货详情';
               return `
-              <tr>
+              <tr class="log-table-row" style="cursor:pointer" title="${rowTitle}" onclick="logisticsRowClick(event, ${lid})">
                 <td>${logisticsDisplayDate(l)}</td>
                 <td><span class="badge badge-purple">${escapeHtml(l.brand || 'PHD')}</span></td>
                 <td>${logisticsCompanyCellHtml(l)}</td>
                 <td>${logisticsTrackingCellHtml(l)}</td>
                 <td style="font-size:12px;max-width:280px;white-space:normal;line-height:1.45">${logisticsRouteCellHtml(l)}</td>
                 <td style="font-size:12px;max-width:260px;white-space:normal;line-height:1.45">${logisticsPurposeCellHtml(l)}</td>
-                <td class="amount ${parseFloat(l.fee)>0?'amount-cost':'amount-neutral'}">${parseFloat(l.fee)>0?fmtMoney(l.fee):'—'}</td>
+                <td class="amount ${parseFloat(l.fee)>0?'amount-cost':'amount-neutral'}">${logisticsFeeCellHtml(l)}</td>
                 <td>${paymentStatusHtml(l.payment_status, l.payment_order_id)}</td>
                 <td>
                   <div style="display:flex;gap:4px">
-                    <button class="btn btn-secondary btn-sm" onclick="showLogisticsModal(${l.id})">编辑</button>
-                    <button class="btn btn-danger btn-sm" onclick="deleteLogistics(${l.id})">删</button>
+                    <button class="btn btn-secondary btn-sm" onclick="event.stopPropagation();showLogisticsModal(${l.id})">编辑</button>
+                    <button class="btn btn-danger btn-sm" onclick="event.stopPropagation();deleteLogistics(${l.id})">删</button>
                   </div>
                 </td>
               </tr>
@@ -6107,6 +6269,110 @@ async function loadLogProjectDatalist() {
   }
 }
 
+let supplierDictCache = [];
+
+async function loadSupplierPayeeSelect(selectId, selectedName) {
+  const sel = document.getElementById(selectId);
+  if (!sel) return;
+  try {
+    const rows = await api('GET', '/dict?category=supplier');
+    supplierDictCache = (Array.isArray(rows) ? rows : [])
+      .filter((e) => e.is_active !== false && e.is_active !== 0)
+      .map((e) => {
+        const c = e.content || {};
+        const name = String(c.company_name || e.name || '').trim();
+        return { id: e.id, name };
+      })
+      .filter((x) => x.name);
+  } catch (_) {
+    supplierDictCache = [];
+  }
+  const want = String(selectedName || '').trim();
+  const opts = ['<option value="">请选择供应商</option>'];
+  let matched = false;
+  supplierDictCache.forEach((e) => {
+    const on = want && e.name === want;
+    if (on) matched = true;
+    opts.push(`<option value="${escapeHtml(e.name)}"${on ? ' selected' : ''}>${escapeHtml(e.name)}</option>`);
+  });
+  if (want && !matched) {
+    opts.push(`<option value="${escapeHtml(want)}" selected>${escapeHtml(want)}（已保存）</option>`);
+  }
+  sel.innerHTML = opts.join('');
+}
+
+function supplierPayeeSelectChanged(selectId) {
+  const sel = document.getElementById(selectId);
+  const name = sel?.value?.trim() || '';
+  const hit = supplierDictCache.find((e) => e.name === name);
+  if (hit?.id) api('POST', `/dict/${hit.id}/touch`).catch(() => {});
+}
+
+async function loadLogPayeeSupplierSelect(selectedName) {
+  await loadSupplierPayeeSelect('logPayeeSelect', selectedName);
+}
+
+function logPayeeSelectChanged() {
+  supplierPayeeSelectChanged('logPayeeSelect');
+}
+
+function parseLogisticsFeePartInput(id) {
+  const raw = document.getElementById(id)?.value;
+  if (raw === '' || raw == null) return 0;
+  return Math.max(0, roundMoney2(raw));
+}
+
+function logisticsFeePartsChanged() {
+  const shipping = parseLogisticsFeePartInput('logShippingFee');
+  const handling = parseLogisticsFeePartInput('logHandlingFee');
+  const returnShipping = parseLogisticsFeePartInput('logReturnShippingFee');
+  const returnHandling = parseLogisticsFeePartInput('logReturnHandlingFee');
+  const total = roundMoney2(shipping + handling + returnShipping + returnHandling);
+  const hint = document.getElementById('logFeeTotalHint');
+  const val = document.getElementById('logFeeTotalValue');
+  if (!hint || !val) return;
+  if (shipping > 0 || handling > 0 || returnShipping > 0 || returnHandling > 0) {
+    hint.style.display = '';
+    val.textContent = fmtMoney(total);
+  } else {
+    hint.style.display = 'none';
+  }
+}
+
+function logisticsFeeFieldsFromRow(item) {
+  const shipping = roundMoney2(item?.shipping_fee);
+  const handling = roundMoney2(item?.handling_fee);
+  const returnShipping = roundMoney2(item?.return_shipping_fee);
+  const returnHandling = roundMoney2(item?.return_handling_fee);
+  const total = roundMoney2(item?.fee);
+  const sum = roundMoney2(shipping + handling + returnShipping + returnHandling);
+  if (sum > 0 && Math.abs(sum - total) < 0.01) {
+    return { shipping, handling, returnShipping, returnHandling, total };
+  }
+  if (total > 0 && sum <= 0) {
+    return { shipping: total, handling: 0, returnShipping: 0, returnHandling: 0, total };
+  }
+  return { shipping, handling, returnShipping, returnHandling, total: sum || total };
+}
+
+function logisticsFeeBreakdownFromRow(item) {
+  return logisticsFeeFieldsFromRow(item);
+}
+
+function logisticsFeeCellHtml(row) {
+  const { shipping, handling, returnShipping, returnHandling, total } = logisticsFeeBreakdownFromRow(row);
+  if (total <= 0) return '—';
+  const parts = [];
+  if (shipping > 0) parts.push(`出货运费 ${fmtMoney(shipping)}`);
+  if (handling > 0) parts.push(`出货操作费 ${fmtMoney(handling)}`);
+  if (returnShipping > 0) parts.push(`回收运费 ${fmtMoney(returnShipping)}`);
+  if (returnHandling > 0) parts.push(`回收操作费 ${fmtMoney(returnHandling)}`);
+  if (parts.length > 1) {
+    return `<span title="${escapeHtml(parts.join(' + '))}">${fmtMoney(total)}</span>`;
+  }
+  return fmtMoney(total);
+}
+
 async function showLogisticsModal(id = null) {
   document.getElementById('logModalTitle').textContent = id ? '编辑物流记录' : '新建物流记录';
   document.getElementById('logId').value = id || '';
@@ -6114,8 +6380,11 @@ async function showLogisticsModal(id = null) {
     'logTrack',
     'logBrand',
     'logDate',
-    'logFee',
-    'logPayeeName',
+    'logShippingFee',
+    'logHandlingFee',
+    'logReturnDate',
+    'logReturnShippingFee',
+    'logReturnHandlingFee',
     'logPurpose',
     'logShipName',
     'logShipPhone',
@@ -6127,10 +6396,14 @@ async function showLogisticsModal(id = null) {
     const el = document.getElementById(f);
     if (el) el.value = '';
   });
+  const payeeSel = document.getElementById('logPayeeSelect');
+  if (payeeSel) payeeSel.innerHTML = '<option value="">请选择供应商</option>';
+  logisticsFeePartsChanged();
   fillLogisticsUnitSelect('快递');
   onLogisticsUnitChange();
   document.getElementById('logBrand').value = 'PHD';
   document.getElementById('logDate').value = todayDateInputValue();
+  await loadLogPayeeSupplierSelect('');
 
   const nid = id != null && id !== '' ? Number(id) : NaN;
   if (Number.isFinite(nid)) {
@@ -6150,9 +6423,18 @@ async function showLogisticsModal(id = null) {
       document.getElementById('logTrack').value = item.tracking_number || '';
       document.getElementById('logBrand').value = ['PHD', 'X.O', 'CLUB', 'REMY'].includes(item.brand) ? item.brand : 'PHD';
       if (item.shipping_date) document.getElementById('logDate').value = toDateInputValue(item.shipping_date);
-      document.getElementById('logFee').value =
-        item.fee != null && item.fee !== '' ? roundMoney2(item.fee).toFixed(2) : '';
-      document.getElementById('logPayeeName').value = item.payee_name || '';
+      const feeParts = logisticsFeeFieldsFromRow(item);
+      document.getElementById('logShippingFee').value =
+        feeParts.shipping > 0 ? feeParts.shipping.toFixed(2) : '';
+      document.getElementById('logHandlingFee').value =
+        feeParts.handling > 0 ? feeParts.handling.toFixed(2) : '';
+      document.getElementById('logReturnDate').value = item.return_date ? toDateInputValue(item.return_date) : '';
+      document.getElementById('logReturnShippingFee').value =
+        feeParts.returnShipping > 0 ? feeParts.returnShipping.toFixed(2) : '';
+      document.getElementById('logReturnHandlingFee').value =
+        feeParts.returnHandling > 0 ? feeParts.returnHandling.toFixed(2) : '';
+      logisticsFeePartsChanged();
+      await loadLogPayeeSupplierSelect(item.payee_name || '');
       const addr = parseLogisticsAddrMeta(item.remarks || '');
       document.getElementById('logPurpose').value = addr.purpose || '';
       const hasDetail =
@@ -6203,15 +6485,19 @@ async function saveLogistics() {
     showToast('请选择发货日期', 'warning');
     return;
   }
-  const feeRaw = document.getElementById('logFee').value;
-  const fee = feeRaw === '' || feeRaw == null ? 0 : roundMoney2(feeRaw);
-  if (fee < 0) {
-    showToast('费用不能为负数', 'warning');
+  const shippingFee = parseLogisticsFeePartInput('logShippingFee');
+  const handlingFee = parseLogisticsFeePartInput('logHandlingFee');
+  const returnShippingFee = parseLogisticsFeePartInput('logReturnShippingFee');
+  const returnHandlingFee = parseLogisticsFeePartInput('logReturnHandlingFee');
+  const returnDate = document.getElementById('logReturnDate')?.value?.trim() || null;
+  const fee = roundMoney2(shippingFee + handlingFee + returnShippingFee + returnHandlingFee);
+  if (shippingFee < 0 || handlingFee < 0 || returnShippingFee < 0 || returnHandlingFee < 0) {
+    showToast('运费与操作费不能为负数', 'warning');
     return;
   }
-  const payee = document.getElementById('logPayeeName')?.value?.trim() || '';
+  const payee = document.getElementById('logPayeeSelect')?.value?.trim() || '';
   if (!payee) {
-    showToast('请填写收款方（物流公司）', 'warning');
+    showToast('请选择收款方（供应商）', 'warning');
     return;
   }
   const shipName = document.getElementById('logShipName')?.value?.trim() || '';
@@ -6263,6 +6549,11 @@ async function saveLogistics() {
     origin_city: originLine || null,
     destination_city: destLine || null,
     shipping_date: shipDate || null,
+    shipping_fee: shippingFee,
+    handling_fee: handlingFee,
+    return_date: returnDate,
+    return_shipping_fee: returnShippingFee,
+    return_handling_fee: returnHandlingFee,
     fee,
     payee_name: payee,
     related_project_code: null,
@@ -6280,7 +6571,7 @@ async function saveLogistics() {
       showToast('已创建', 'success');
     }
     closeModal();
-    loadLogistics();
+    await loadLogistics();
   } catch (err) {
     showToast('保存失败: ' + err.message, 'error');
   }
@@ -6650,7 +6941,9 @@ function showWarehouseFixedCostModal() {
       </div>
       <div class="form-group">
         <label class="form-label">收款方 <span class="required">*</span></label>
-        <input type="text" class="form-control" id="warFixedPayee" placeholder="付款筛选用">
+        <select class="form-control" id="warFixedPayee" onchange="supplierPayeeSelectChanged('warFixedPayee')">
+          <option value="">请选择供应商</option>
+        </select>
       </div>
     </div>
     <div class="form-group">
@@ -6661,6 +6954,7 @@ function showWarehouseFixedCostModal() {
   `;
   openModal('modalWarehouseFixedCost');
   updateWarehouseFixedCostPreview();
+  loadSupplierPayeeSelect('warFixedPayee', '');
 }
 
 async function saveWarehouseFixedCosts() {
@@ -6672,7 +6966,7 @@ async function saveWarehouseFixedCosts() {
   const brand = document.getElementById('warFixedBrand')?.value || 'PHD';
   const rows = warehouseFixedCostPreviewRows();
   if (!payee) {
-    showToast('请填写收款方', 'warning');
+    showToast('请选择收款方（供应商）', 'warning');
     return;
   }
   if (!rows.length) {
@@ -6764,7 +7058,7 @@ async function showWarehouseModal(id = null, opts = {}) {
       ? '编辑仓储记录'
       : '新建仓储记录';
   document.getElementById('warId').value = editing ? String(wid) : '';
-  ['warMonth', 'warQty', 'warUnitPrice', 'warQuotedPrice', 'warActualCost', 'warPayeeName', 'warRemarks', 'warProject', 'warAllocationNote', 'warPeriodStart', 'warPeriodEnd'].forEach((fid) => {
+  ['warMonth', 'warQty', 'warUnitPrice', 'warQuotedPrice', 'warActualCost', 'warRemarks', 'warProject', 'warAllocationNote', 'warPeriodStart', 'warPeriodEnd'].forEach((fid) => {
     const el = document.getElementById(fid);
     if (el) el.value = '';
   });
@@ -6842,7 +7136,6 @@ async function showWarehouseModal(id = null, opts = {}) {
       item.quoted_price != null && item.quoted_price !== '' ? roundMoney2(item.quoted_price).toFixed(2) : '';
     document.getElementById('warActualCost').value =
       item.actual_cost != null && item.actual_cost !== '' ? roundMoney2(item.actual_cost).toFixed(2) : '';
-    document.getElementById('warPayeeName').value = item.payee_name || '';
     const noActual = item.no_actual_cost === true || item.no_actual_cost === 1 || String(item.no_actual_cost) === '1';
     if (noCostCb) noCostCb.checked = noActual;
     if (noActual) document.getElementById('warActualCost').value = '';
@@ -6892,6 +7185,7 @@ async function showWarehouseModal(id = null, opts = {}) {
     if (reg) reg.value = WAREHOUSE_REGION_OPTIONS.includes(rSel2) ? rSel2 : '';
   }
   updateWarQuotedPrice();
+  await loadSupplierPayeeSelect('warPayeeName', item?.payee_name || '');
   openModal('modalWarehouse');
 }
 
@@ -9319,8 +9613,6 @@ function reimbActivityLine(a) {
 }
 
 function reimbRenderActivityPicker() {
-  const dl = document.getElementById('reimbProjectList');
-  if (!dl) return;
   const acts = reimbursementPageState.activities || [];
   const rows = acts
     .map((a) => ({ id: Number(a.id), code: String(a.project_code || '').replace(/^\uFEFF/, '').trim() }))
@@ -9331,8 +9623,167 @@ function reimbRenderActivityPicker() {
   rows.forEach((x) => {
     if (!reimbursementActivityIndex.codeToId.has(x.code)) reimbursementActivityIndex.codeToId.set(x.code, x.id);
   });
-  const uniqSorted = [...new Set(rows.map((x) => x.code))].sort();
-  dl.innerHTML = uniqSorted.map((c) => `<option value="${escapeHtml(c)}"></option>`).join('');
+}
+
+function reimbGetProjectCodeOptions() {
+  const acts = reimbursementPageState.activities || [];
+  const seen = new Set();
+  const rows = [];
+  acts.forEach((a) => {
+    const code = String(a.project_code || '').replace(/^\uFEFF/, '').trim();
+    const id = Number(a.id);
+    if (!code || !Number.isFinite(id) || id <= 0 || seen.has(code)) return;
+    seen.add(code);
+    rows.push({ id, code, activity: a });
+  });
+  return rows.sort((a, b) => a.code.localeCompare(b.code, 'zh-CN'));
+}
+
+function reimbFilterProjectOptions(keyword) {
+  const q = String(keyword || '').trim().toLowerCase();
+  const all = reimbGetProjectCodeOptions();
+  if (!q) return all;
+  return all.filter(({ code, activity: a }) => {
+    const city = String(a.city || '').toLowerCase();
+    const type = String(a.activity_type || '').toLowerCase();
+    const pc = code.toLowerCase();
+    return pc.includes(q) || city.includes(q) || type.includes(q);
+  });
+}
+
+function reimbRenderProjectSuggestionList(keyword) {
+  const menu = document.getElementById('reimbProjectMenu');
+  if (!menu) return;
+  const list = reimbFilterProjectOptions(keyword);
+  const shown = list.slice(0, 80);
+  if (!shown.length) {
+    menu.innerHTML = '<div class="inv-project-menu-empty">无匹配项目编号</div>';
+    return;
+  }
+  menu.innerHTML = shown
+    .map(({ code, activity: a }) => `<button type="button" class="inv-project-option" data-value="${escapeHtml(code)}" onclick="reimbPickProjectSuggestionFromBtn(this)">${reimbActivityLine(a)}</button>`)
+    .join('');
+}
+
+function reimbPortalProjectMenu(menu, input) {
+  if (!menu || !input) return;
+  const home = input.closest('.reimb-project-combobox');
+  if (!home) return;
+  if (!menu._reimbPcHome) menu._reimbPcHome = home;
+  if (menu.parentElement !== document.body) document.body.appendChild(menu);
+  menu.classList.add('aq-pc-menu-portal');
+}
+
+function reimbRestoreProjectMenu(menu) {
+  if (!menu) return;
+  menu.style.display = 'none';
+  menu.classList.remove('aq-pc-menu-portal');
+  menu.style.position = '';
+  menu.style.left = '';
+  menu.style.top = '';
+  menu.style.width = '';
+  menu.style.zIndex = '';
+  const home = menu._reimbPcHome;
+  if (home && home.isConnected) {
+    try {
+      home.appendChild(menu);
+    } catch (_) {
+      menu.remove();
+    }
+  } else if (menu.parentElement === document.body) {
+    menu.remove();
+  }
+  delete menu._reimbPcHome;
+}
+
+function reimbPositionProjectMenu() {
+  const menu = document.getElementById('reimbProjectMenu');
+  const input = document.getElementById('reimbProjectCode');
+  if (!menu || !input) return;
+  reimbPortalProjectMenu(menu, input);
+  const r = input.getBoundingClientRect();
+  menu.style.position = 'fixed';
+  menu.style.left = `${Math.round(r.left)}px`;
+  menu.style.top = `${Math.round(r.bottom + 4)}px`;
+  menu.style.width = `${Math.max(Math.round(r.width), 320)}px`;
+  menu.style.zIndex = String(REIMB_PROJECT_MENU_Z);
+}
+
+function reimbEnsureProjectMenuGlobalClose() {
+  if (reimbursementProjectMenuBound) return;
+  document.addEventListener('click', (evt) => {
+    const t = evt && evt.target;
+    if (t && t.closest && (t.closest('.reimb-project-combobox') || t.closest('#reimbProjectMenu'))) return;
+    reimbCloseProjectSuggestionList();
+  });
+  const reposition = () => {
+    const menu = document.getElementById('reimbProjectMenu');
+    if (menu && menu.style.display === 'block') reimbPositionProjectMenu();
+  };
+  window.addEventListener('scroll', reposition, true);
+  window.addEventListener('resize', reposition);
+  reimbursementProjectMenuBound = true;
+}
+
+function reimbOpenProjectSuggestionList() {
+  const menu = document.getElementById('reimbProjectMenu');
+  if (!menu) return;
+  reimbEnsureProjectMenuGlobalClose();
+  reimbRenderProjectSuggestionList(document.getElementById('reimbProjectCode')?.value || '');
+  menu.style.display = 'block';
+  reimbPositionProjectMenu();
+}
+
+function reimbCloseProjectSuggestionList() {
+  const menu = document.getElementById('reimbProjectMenu');
+  if (menu) reimbRestoreProjectMenu(menu);
+}
+
+function reimbOnProjectInput(value) {
+  reimbProjectInputChanged();
+  reimbRenderProjectSuggestionList(value);
+  const menu = document.getElementById('reimbProjectMenu');
+  if (!menu) return;
+  reimbEnsureProjectMenuGlobalClose();
+  menu.style.display = 'block';
+  reimbPositionProjectMenu();
+}
+
+function reimbOnProjectInputBlur() {
+  window.setTimeout(() => {
+    const wrap = document.querySelector('.reimb-project-combobox');
+    const active = document.activeElement;
+    if (wrap && active && wrap.contains(active)) return;
+    const menu = document.getElementById('reimbProjectMenu');
+    if (menu && active && menu.contains(active)) return;
+    reimbCloseProjectSuggestionList();
+  }, 120);
+}
+
+function reimbHandleProjectInputKeydown(e) {
+  if (!e) return;
+  if (e.key === 'Escape') {
+    e.stopPropagation();
+    reimbCloseProjectSuggestionList();
+    return;
+  }
+  if (e.key === 'Enter') {
+    const menu = document.getElementById('reimbProjectMenu');
+    const first = menu?.querySelector('.inv-project-option');
+    if (first && menu.style.display === 'block') {
+      e.preventDefault();
+      first.click();
+    }
+  }
+}
+
+function reimbPickProjectSuggestionFromBtn(btn) {
+  const val = btn ? String(btn.getAttribute('data-value') || '').trim() : '';
+  const input = document.getElementById('reimbProjectCode');
+  if (!input) return;
+  input.value = val;
+  reimbProjectInputChanged();
+  reimbCloseProjectSuggestionList();
 }
 
 function reimbSelectActivity(id) {
@@ -9340,18 +9791,8 @@ function reimbSelectActivity(id) {
   const a = (reimbursementPageState.activities || []).find((x) => Number(x.id) === idNum);
   const hid = document.getElementById('reimbActivityId');
   const input = document.getElementById('reimbProjectCode');
-  const lbl = document.getElementById('reimbActivityPicked');
   if (hid) hid.value = a ? String(a.id) : '';
   if (input) input.value = a ? (a.project_code || '') : '';
-  if (lbl) {
-    if (a) {
-      lbl.innerHTML = reimbActivityLine(a);
-      lbl.style.display = 'block';
-    } else {
-      lbl.textContent = '';
-      lbl.style.display = 'none';
-    }
-  }
   if (a && a.brand) {
     const mapped = reimbDetailBrandFromLegacyBrand(a.brand);
     if (mapped) reimbDetailDefaultBrand = mapped;
@@ -9361,22 +9802,14 @@ function reimbSelectActivity(id) {
 function reimbProjectInputChanged() {
   const input = document.getElementById('reimbProjectCode');
   const hid = document.getElementById('reimbActivityId');
-  const lbl = document.getElementById('reimbActivityPicked');
   const code = (input?.value || '').replace(/^\uFEFF/, '').trim();
   const id = code ? reimbursementActivityIndex.codeToId.get(code) : null;
   if (hid) hid.value = id ? String(id) : '';
-  if (lbl) {
-    if (!id) {
-      lbl.style.display = 'none';
-      lbl.textContent = '';
-    } else {
-      const a = (reimbursementPageState.activities || []).find((x) => Number(x.id) === Number(id));
-      lbl.innerHTML = a ? reimbActivityLine(a) : code;
-      lbl.style.display = 'block';
-      if (a && a.brand) {
-        const mapped = reimbDetailBrandFromLegacyBrand(a.brand);
-        if (mapped) reimbDetailDefaultBrand = mapped;
-      }
+  if (id) {
+    const a = (reimbursementPageState.activities || []).find((x) => Number(x.id) === Number(id));
+    if (a && a.brand) {
+      const mapped = reimbDetailBrandFromLegacyBrand(a.brand);
+      if (mapped) reimbDetailDefaultBrand = mapped;
     }
   }
 }
@@ -10091,11 +10524,6 @@ function reimbOnCostAttributionChange() {
     if (pci) pci.value = '';
     const syncEl = document.getElementById('reimbSyncToActivity');
     if (syncEl && !syncEl.disabled) syncEl.checked = false;
-    const picked = document.getElementById('reimbActivityPicked');
-    if (picked) {
-      picked.style.display = 'none';
-      picked.textContent = '';
-    }
   }
   reimbOnSyncToActivityChange();
   reimbUpdateDetailTotals();
@@ -10133,7 +10561,26 @@ function reimbOnSyncToActivityChange() {
   }
 }
 
+function poReadFilterValues() {
+  const out = {};
+  ['payee', 'brand', 'sourceType', 'projectCode', 'dateFrom', 'dateTo'].forEach((id) => {
+    const el = document.getElementById(`poFilter_${id}`);
+    out[id] = el ? (el.value?.trim() || '') : (paymentOrderState.filters?.[id] || '');
+  });
+  paymentOrderState.filters = out;
+  return out;
+}
+
+function poFilterEnter(e) {
+  if (e && e.key === 'Enter') {
+    e.preventDefault();
+    paymentOrderLoadCandidates();
+  }
+}
+
 function poQuickFilter(sourceType) {
+  paymentOrderState.filters = paymentOrderState.filters || {};
+  paymentOrderState.filters.sourceType = sourceType || '';
   const el = document.getElementById('poFilter_sourceType');
   if (el) el.value = sourceType || '';
   paymentOrderLoadCandidates();
@@ -10188,7 +10635,7 @@ async function showCorporatePaymentTodo() {
     showToast('请先选择年度', 'warning');
     return;
   }
-  paymentOrderState = { candidates: [], selectedKeys: new Set(), previewRows: [] };
+  paymentOrderState = { candidates: [], selectedKeys: new Set(), previewRows: [], filters: {} };
   const body = document.getElementById('modalPaymentOrderBody');
   if (body) body.innerHTML = '<div class="empty-state"><div class="skeleton skeleton-title"></div></div>';
   openModal('modalPaymentOrder');
@@ -10198,12 +10645,23 @@ async function showCorporatePaymentTodo() {
 async function paymentOrderLoadCandidates() {
   const qs = new URLSearchParams();
   qs.set('yearFrameId', String(currentYearFrameId || ''));
+  qs.set('_', String(Date.now()));
+  const filterVals = poReadFilterValues();
   ['payee', 'brand', 'sourceType', 'projectCode', 'dateFrom', 'dateTo'].forEach((id) => {
-    const v = document.getElementById(`poFilter_${id}`)?.value?.trim();
+    const v = filterVals[id];
     if (v) qs.set(id, v);
   });
   try {
-    paymentOrderState.candidates = await api('GET', `/payment-orders/candidates?${qs.toString()}`);
+    const url = `${API}/payment-orders/candidates?${qs.toString()}`;
+    const res = await fetch(url, { credentials: 'include', cache: 'no-store' });
+    let data;
+    try {
+      data = await res.json();
+    } catch {
+      throw new Error(res.ok ? '响应不是合法 JSON' : `请求失败 (${res.status})`);
+    }
+    if (!res.ok) throw new Error(data.error || data.message || `请求失败 (${res.status})`);
+    paymentOrderState.candidates = data;
     const visibleKeys = new Set(paymentOrderState.candidates.map(paymentOrderKey));
     paymentOrderState.selectedKeys = new Set([...paymentOrderState.selectedKeys].filter((k) => visibleKeys.has(k)));
     paymentOrderRenderModal();
@@ -10217,15 +10675,69 @@ function paymentOrderToggleRow(key, checked) {
   if (checked) paymentOrderState.selectedKeys.add(key);
   else paymentOrderState.selectedKeys.delete(key);
   paymentOrderState.previewRows = [];
-  paymentOrderRenderModal();
+  const previewBlock = document.getElementById('paymentOrderPreviewBlock');
+  if (previewBlock) previewBlock.innerHTML = '';
+  paymentOrderUpdateSelectionSummary();
+  paymentOrderUpdateFooterButtons();
+}
+
+function paymentOrderSyncSelectAllCheckbox() {
+  const el = document.getElementById('poSelectAll');
+  if (!el) return;
+  const rows = paymentOrderState.candidates || [];
+  if (!rows.length) {
+    el.checked = false;
+    el.indeterminate = false;
+    el.disabled = true;
+    return;
+  }
+  el.disabled = false;
+  const visibleKeys = rows.map(paymentOrderKey);
+  const selectedCount = visibleKeys.filter((k) => paymentOrderState.selectedKeys.has(k)).length;
+  el.checked = selectedCount === visibleKeys.length;
+  el.indeterminate = selectedCount > 0 && selectedCount < visibleKeys.length;
+}
+
+function paymentOrderToggleSelectAll(checked) {
+  const rows = paymentOrderState.candidates || [];
+  rows.forEach((r) => {
+    const key = paymentOrderKey(r);
+    if (checked) paymentOrderState.selectedKeys.add(key);
+    else paymentOrderState.selectedKeys.delete(key);
+  });
+  paymentOrderState.previewRows = [];
+  const previewBlock = document.getElementById('paymentOrderPreviewBlock');
+  if (previewBlock) previewBlock.innerHTML = '';
+  const body = document.getElementById('modalPaymentOrderBody');
+  body?.querySelectorAll('.payment-order-table tbody .payment-order-check').forEach((cb) => {
+    cb.checked = checked;
+  });
+  paymentOrderUpdateSelectionSummary();
+  paymentOrderUpdateFooterButtons();
+}
+
+function paymentOrderUpdateSelectionSummary() {
+  const rows = paymentOrderState.candidates || [];
+  const selected = paymentOrderSelectedRows();
+  const total = roundMoney2(selected.reduce((s, r) => s + roundMoney2(r.amount), 0));
+  const summaryEl = document.getElementById('poSelectionSummary');
+  const totalEl = document.getElementById('poSelectionTotal');
+  if (summaryEl) summaryEl.textContent = `未支付记录 ${rows.length} 条 · 已选 ${selected.length} 条`;
+  if (totalEl) totalEl.textContent = fmtMoney(total);
+  paymentOrderSyncSelectAllCheckbox();
 }
 
 function paymentOrderRenderModal() {
   const body = document.getElementById('modalPaymentOrderBody');
   if (!body) return;
-  const filterVals = {};
+  const scrollState = {
+    bodyTop: body.scrollTop,
+    tableTop: body.querySelector('.payment-order-table-wrap')?.scrollTop ?? 0,
+  };
+  const filterVals = { ...(paymentOrderState.filters || {}) };
   ['payee', 'brand', 'sourceType', 'projectCode', 'dateFrom', 'dateTo'].forEach((id) => {
-    filterVals[id] = document.getElementById(`poFilter_${id}`)?.value || '';
+    const el = document.getElementById(`poFilter_${id}`);
+    if (el) filterVals[id] = el.value || filterVals[id] || '';
   });
   const orderDateVal = document.getElementById('poOrderDate')?.value || todayDateInputValue();
   const paymentDateVal = document.getElementById('poPaymentDate')?.value || todayDateInputValue();
@@ -10252,14 +10764,14 @@ function paymentOrderRenderModal() {
       <button type="button" class="btn btn-secondary btn-xs" onclick="poQuickFilter('')">全部</button>
     </div>
     <div class="payment-order-filter-grid">
-      <input class="form-control" id="poFilter_payee" placeholder="收款方信息筛选" value="${escapeHtml(filterVals.payee || '')}">
-      <input class="form-control" id="poFilter_projectCode" placeholder="项目编号" value="${escapeHtml(filterVals.projectCode || '')}">
+      <input class="form-control" id="poFilter_payee" placeholder="收款方信息筛选（支持关键字）" value="${escapeHtml(filterVals.payee || '')}" onkeydown="poFilterEnter(event)">
+      <input class="form-control" id="poFilter_projectCode" placeholder="项目编号" value="${escapeHtml(filterVals.projectCode || '')}" onkeydown="poFilterEnter(event)">
       <select class="form-control" id="poFilter_sourceType">${sourceOpts}</select>
       <select class="form-control" id="poFilter_brand">
         <option value="">全部品牌</option>${FIXED_BRAND_CODES.map((b) => `<option value="${b}">${b}</option>`).join('')}
       </select>
-      <input type="date" class="form-control" id="poFilter_dateFrom" value="${escapeHtml(filterVals.dateFrom || '')}">
-      <input type="date" class="form-control" id="poFilter_dateTo" value="${escapeHtml(filterVals.dateTo || '')}">
+      <input type="date" class="form-control" id="poFilter_dateFrom" value="${escapeHtml(filterVals.dateFrom || '')}" onkeydown="poFilterEnter(event)">
+      <input type="date" class="form-control" id="poFilter_dateTo" value="${escapeHtml(filterVals.dateTo || '')}" onkeydown="poFilterEnter(event)">
       <button type="button" class="btn btn-secondary btn-sm payment-order-filter-btn" onclick="paymentOrderLoadCandidates()">筛选</button>
     </div>
     <div class="payment-order-meta-grid">
@@ -10277,29 +10789,27 @@ function paymentOrderRenderModal() {
       </label>
     </div>
     <div style="display:flex;justify-content:space-between;align-items:center;margin:8px 0 10px">
-      <div style="font-size:13px;color:var(--text-secondary)">未支付记录 ${rows.length} 条 · 已选 ${selected.length} 条</div>
-      <div class="amount" style="font-weight:800">${fmtMoney(total)}</div>
+      <div id="poSelectionSummary" style="font-size:13px;color:var(--text-secondary)">未支付记录 ${rows.length} 条 · 已选 ${selected.length} 条</div>
+      <div id="poSelectionTotal" class="amount" style="font-weight:800">${fmtMoney(total)}</div>
     </div>
     <div class="table-wrapper payment-order-table-wrap">
       <table class="data-table payment-order-table">
-        <thead><tr><th></th><th>日期</th><th>板块</th><th>收款方信息</th><th>品牌</th><th>项目编号</th><th>说明</th><th style="text-align:right">金额</th></tr></thead>
+        <thead><tr><th><input type="checkbox" class="payment-order-check" id="poSelectAll" ${rows.length ? '' : 'disabled'} onchange="paymentOrderToggleSelectAll(this.checked)" aria-label="全选当前列表"></th><th>日期</th><th>板块</th><th>收款方信息</th><th>品牌</th><th>项目编号</th><th style="text-align:right">金额</th></tr></thead>
         <tbody>
           ${rows.length ? rows.map((r) => {
             const key = paymentOrderKey(r);
-            const desc = paymentOrderDescriptionText(r);
             const brandText = String(r.brand || '—');
             const pcText = String(r.project_code || '—');
             return `<tr>
               <td><input type="checkbox" class="payment-order-check" ${paymentOrderState.selectedKeys.has(key) ? 'checked' : ''} onchange="paymentOrderToggleRow('${escapeHtml(key)}', this.checked)" aria-label="选择该条待付款记录"></td>
               <td>${escapeHtml(fmtDateShort(r.source_date))}</td>
               <td>${escapeHtml(paymentSourceLabel(r.source_type))}</td>
-              <td title="${escapeHtml(r.payee_name || '')}">${escapeHtml(r.payee_name || '（未填）')}</td>
-              <td title="${escapeHtml(brandText)}">${escapeHtml(brandText)}</td>
-              <td title="${escapeHtml(pcText)}">${escapeHtml(pcText)}</td>
-              <td class="payment-order-desc-cell" title="${escapeHtml(desc || '')}">${escapeHtml(desc || '—')}</td>
-              <td class="amount" style="text-align:right">${fmtMoney(r.amount)}</td>
+              <td class="payment-order-payee-cell" title="${escapeHtml(r.payee_name || '')}">${escapeHtml(r.payee_name || '（未填）')}</td>
+              <td class="payment-order-brand-cell" title="${escapeHtml(brandText)}">${escapeHtml(brandText)}</td>
+              <td class="payment-order-pc-cell" title="${escapeHtml(pcText)}">${escapeHtml(pcText)}</td>
+              <td class="amount payment-order-amount-cell">${fmtMoney(r.amount)}</td>
             </tr>`;
-          }).join('') : '<tr><td colspan="8" style="text-align:center;color:var(--text-muted);padding:22px">暂无未支付记录</td></tr>'}
+          }).join('') : '<tr><td colspan="7" style="text-align:center;color:var(--text-muted);padding:22px">暂无未支付记录</td></tr>'}
         </tbody>
       </table>
     </div>
@@ -10309,6 +10819,11 @@ function paymentOrderRenderModal() {
     const el = document.getElementById(`poFilter_${id}`);
     if (el) el.value = filterVals[id] || '';
   });
+  paymentOrderState.filters = { ...filterVals };
+  paymentOrderSyncSelectAllCheckbox();
+  const tableWrap = body.querySelector('.payment-order-table-wrap');
+  if (tableWrap) tableWrap.scrollTop = scrollState.tableTop;
+  body.scrollTop = scrollState.bodyTop;
   paymentOrderUpdateFooterButtons();
 }
 
@@ -11715,6 +12230,7 @@ function reimbursementInlineHost() {
 }
 
 function hideReimbursementInline() {
+  reimbCloseProjectSuggestionList();
   const host = reimbursementInlineHost();
   if (!host) return;
   host.hidden = true;
@@ -11809,6 +12325,8 @@ async function showReimbursementForm(record) {
       <div class="reimb-form-body" id="reimbInlineBody">
         <input type="hidden" id="reimbRecordId" value="${rid}">
         <input type="hidden" id="reimbActivityId" value="${actId || ''}">
+        <div class="reimb-form-basic-zone">
+        <div class="reimb-form-zone-label">基本信息</div>
         <div id="reimbMergedNote" style="display:${merged ? 'block' : 'none'};margin-bottom:10px;padding:10px;background:var(--accent-soft);border-radius:var(--radius-sm);font-size:12px;color:var(--text-primary)" data-merged="${merged ? '1' : '0'}">
           本单已同步项目成本；保存时将按费用明细再次合并。不可更换关联项目。
         </div>
@@ -11829,9 +12347,10 @@ async function showReimbursementForm(record) {
             ${
               merged
                 ? `<div class="reimb-project-readonly">${pickedMergedLabel}</div>`
-                : `<input type="text" class="form-control" id="reimbProjectCode" list="reimbProjectList" autocomplete="off" placeholder="输入关键字并从下拉选择项目编号" oninput="reimbProjectInputChanged()">
-                   <datalist id="reimbProjectList"></datalist>
-                   <div id="reimbActivityPicked" style="display:none;margin-top:6px;font-size:12px;color:var(--text-secondary)"></div>`
+                : `<div class="reimb-project-combobox inv-project-combobox">
+                     <input type="text" class="form-control" id="reimbProjectCode" autocomplete="off" placeholder="输入关键字并从下拉选择项目编号" onfocus="reimbOpenProjectSuggestionList()" onblur="reimbOnProjectInputBlur()" oninput="reimbOnProjectInput(this.value)" onkeydown="reimbHandleProjectInputKeydown(event)">
+                     <div id="reimbProjectMenu" class="inv-project-menu aq-pc-menu" style="display:none"></div>
+                   </div>`
             }
           </div>
           <div class="form-group">
@@ -11890,6 +12409,8 @@ async function showReimbursementForm(record) {
             </label>
           </div>
         </div>
+        </div>
+        <div class="reimb-form-detail-zone">
         <div class="form-group reimb-detail-section">
           <div class="reimb-detail-section-head">
             <span class="form-label" style="margin:0">费用明细</span>
@@ -11932,6 +12453,7 @@ async function showReimbursementForm(record) {
         <div class="form-group" style="margin-top:12px">
           <label class="form-label">备注</label>
           <textarea class="form-control" id="reimbRemarks" rows="2" placeholder="选填">${remarksEsc}</textarea>
+        </div>
         </div>
       </div>
       <footer class="reimb-inline-footer">
@@ -12200,12 +12722,33 @@ async function reimbursementDetailUnmerge() {
 }
 
 let _reimbListFilterT;
+let _reimbListFilterComposing = false;
+
+function reimbursementListFilterInput(el) {
+  if (_reimbListFilterComposing || el?.isComposing) return;
+  reimbursementListFilterDebounced();
+}
+
+function reimbursementListFilterCompositionStart() {
+  _reimbListFilterComposing = true;
+  clearTimeout(_reimbListFilterT);
+}
+
+function reimbursementListFilterCompositionEnd(el) {
+  _reimbListFilterComposing = false;
+  reimbursementPageState.filterInput = el?.value ?? document.getElementById('reimbListFilter')?.value ?? '';
+  reimbursementListFilterDebounced();
+}
+
 function reimbursementListFilterDebounced() {
+  if (_reimbListFilterComposing) return;
   clearTimeout(_reimbListFilterT);
   _reimbListFilterT = setTimeout(() => {
-    reimbursementPageState.filterInput = document.getElementById('reimbListFilter')?.value || '';
-    reimbursementRenderListDom();
-  }, 220);
+    if (_reimbListFilterComposing) return;
+    const el = document.getElementById('reimbListFilter');
+    if (el && !el.isComposing) reimbursementPageState.filterInput = el.value || '';
+    reimbursementRenderListDom(true);
+  }, 280);
 }
 
 function reimbursementRowClick(ev, id) {
@@ -12261,7 +12804,7 @@ function reimbursementToggleRowSelect(id, checked) {
   const nid = Number(id);
   if (checked) reimbursementPageState.selectedIds.add(nid);
   else reimbursementPageState.selectedIds.delete(nid);
-  reimbursementRenderListDom();
+  reimbursementRenderListDom(true);
 }
 
 function reimbursementToggleSelectAll(checked) {
@@ -12275,7 +12818,7 @@ function reimbursementToggleSelectAll(checked) {
   } else {
     reimbursementPageState.selectedIds.clear();
   }
-  reimbursementRenderListDom();
+  reimbursementRenderListDom(true);
 }
 
 /**
@@ -12471,29 +13014,419 @@ async function reimbursementMergeRecordsByIds(ids) {
   return { newId, deleted };
 }
 
-function reimbursementRenderListDom() {
-  const container = document.getElementById('pageContainer');
-  if (!container) return;
+function reimbursementBindStatsCardDelegation() {
+  if (window._reimbStatsCardBound) return;
+  window._reimbStatsCardBound = true;
+  document.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-reimb-stats-card]');
+    if (!btn || !document.getElementById('reimbStatsBodyHost')) return;
+    reimbursementSetStatsCard(btn.getAttribute('data-reimb-stats-card'));
+  });
+}
+
+function reimbursementCostStatProjectCode(row) {
+  return String(
+    row?.related_project_code
+    || row?.activity_project_code
+    || row?.project_code
+    || ''
+  ).trim();
+}
+
+function reimbursementBuildAllCostStatRows() {
+  const out = [];
+  const push = (row) => {
+    if (!row || roundMoney2(row.amount) <= 0) return;
+    out.push(row);
+  };
+
+  (reimbursementPageState.rows || []).forEach((r) => {
+    const pc = reimbursementCostStatProjectCode(r);
+    push({
+      key: `reimbursement:${r.id}`,
+      source_type: 'reimbursement',
+      source_label: '成本登记',
+      amount: roundMoney2(r.amount),
+      payee_name: String(r.payee_name || '').trim(),
+      payment_status: r.payment_status || 'unpaid',
+      project_code: pc,
+      project_bucket: pc ? '有项目编号' : '无项目编号',
+      brand: String(r.brand || '').trim(),
+      city: String(r.city || '').trim(),
+      remarks: reimbVisibleRemarks(r.remarks || ''),
+      module_label: reimbRecordCostAttributionLabel(r),
+      party_label: reimbPayeePartyLabel(reimbPayeePartyFromPaymentType(r.payment_type || 'personal_reimbursement')),
+    });
+  });
+
+  (reimbursementPageState.logistics || []).forEach((r) => {
+    const pc = reimbursementCostStatProjectCode(r);
+    push({
+      key: `logistics:${r.id}`,
+      source_type: 'logistics',
+      source_label: '物流成本',
+      amount: roundMoney2(r.fee),
+      payee_name: String(r.payee_name || '').trim(),
+      payment_status: r.payment_status || 'unpaid',
+      project_code: pc,
+      project_bucket: pc ? '有项目编号' : '无项目编号',
+      brand: String(r.brand || '').trim(),
+      city: String(r.destination_city || r.origin_city || '').trim(),
+      remarks: String(r.remarks || '').trim(),
+      module_label: '物流成本',
+      party_label: '公司',
+    });
+  });
+
+  (reimbursementPageState.warehouse || []).forEach((r) => {
+    if (r.no_actual_cost === true || r.no_actual_cost === 1 || String(r.no_actual_cost) === '1') return;
+    const amt = roundMoney2(r.actual_cost);
+    const pc = reimbursementCostStatProjectCode(r);
+    push({
+      key: `warehouse:${r.id}`,
+      source_type: 'warehouse',
+      source_label: '仓储成本',
+      amount: amt,
+      payee_name: String(r.payee_name || '').trim(),
+      payment_status: r.payment_status || 'unpaid',
+      project_code: pc,
+      project_bucket: '仓储费用',
+      brand: String(r.brand || '').trim(),
+      city: String(r.region || '').trim(),
+      remarks: String(r.remarks || '').trim(),
+      module_label: '仓储成本',
+      party_label: '公司',
+    });
+  });
+
+  (reimbursementPageState.materialPurchases || []).forEach((r) => {
+    const pc = reimbursementCostStatProjectCode(r);
+    push({
+      key: `material_purchase:${r.id}`,
+      source_type: 'material_purchase',
+      source_label: '物料采购',
+      amount: roundMoney2(r.total_amount),
+      payee_name: String(r.payee_name || '').trim(),
+      payment_status: r.payment_status || 'unpaid',
+      project_code: pc,
+      project_bucket: pc ? '有项目编号' : '无项目编号',
+      brand: String(r.brand_name || r.brand_code || '').trim(),
+      city: '',
+      remarks: String(r.remarks || '').trim(),
+      module_label: '物料采购',
+      party_label: '公司',
+    });
+  });
+
+  (reimbursementPageState.propRepairs || []).forEach((r) => {
+    const pc = reimbursementCostStatProjectCode(r);
+    push({
+      key: `prop_repair:${r.id}`,
+      source_type: 'prop_repair',
+      source_label: '道具维修',
+      amount: roundMoney2(r.total_amount),
+      payee_name: String(r.payee_name || '').trim(),
+      payment_status: r.payment_status || 'unpaid',
+      project_code: pc,
+      project_bucket: pc ? '有项目编号' : '无项目编号',
+      brand: String(r.brand_name || r.brand_code || '').trim(),
+      city: String(r.region || '').trim(),
+      remarks: String(r.remarks || '').trim(),
+      module_label: '道具维修',
+      party_label: '公司',
+    });
+  });
+
+  return out;
+}
+
+function reimbursementCostStatRowMatchesKeyword(row, kw) {
+  if (!kw) return true;
+  const hay = [
+    row.payee_name,
+    row.project_code,
+    row.source_label,
+    row.source_type,
+    row.module_label,
+    row.party_label,
+    row.brand,
+    row.city,
+    row.remarks,
+    row.key,
+  ].join(' ').toLowerCase();
+  return hay.includes(kw);
+}
+
+function reimbursementFilterCostStatRows(rows, kw) {
+  const list = Array.isArray(rows) ? rows : [];
+  if (!kw) return list;
+  return list.filter((r) => reimbursementCostStatRowMatchesKeyword(r, kw));
+}
+
+function reimbursementRowAmount(r) {
+  return roundMoney2(r?.amount);
+}
+
+function reimbursementComputeCostStats(rows) {
+  const list = Array.isArray(rows) ? rows : [];
+  let total = 0;
+  let unpaidCount = 0;
+  let unpaidTotal = 0;
+  let paidCount = 0;
+  let paidTotal = 0;
+  let unpaidExclWarehouse = 0;
+  const byPayee = new Map();
+  const bySource = new Map();
+  const byProject = new Map();
+
+  const bump = (map, key, amt) => {
+    const k = key || '—';
+    const prev = map.get(k) || { count: 0, total: 0 };
+    map.set(k, { count: prev.count + 1, total: roundMoney2(prev.total + amt) });
+  };
+
+  list.forEach((r) => {
+    const amt = reimbursementRowAmount(r);
+    total = roundMoney2(total + amt);
+    const isPaid = String(r.payment_status || 'unpaid').toLowerCase() === 'paid';
+    if (isPaid) {
+      paidCount += 1;
+      paidTotal = roundMoney2(paidTotal + amt);
+    } else {
+      unpaidCount += 1;
+      unpaidTotal = roundMoney2(unpaidTotal + amt);
+      if (r.source_type !== 'warehouse') unpaidExclWarehouse = roundMoney2(unpaidExclWarehouse + amt);
+    }
+    bump(byPayee, String(r.payee_name || '').trim() || '（未填收款方）', amt);
+    bump(bySource, r.source_label || paymentSourceLabel(r.source_type), amt);
+    bump(byProject, r.project_bucket || (r.project_code ? '有项目编号' : '无项目编号'), amt);
+  });
+
+  return {
+    count: list.length,
+    total,
+    unpaidCount,
+    unpaidTotal,
+    paidCount,
+    paidTotal,
+    unpaidExclWarehouse,
+    byPayee,
+    bySource,
+    byProject,
+  };
+}
+
+function reimbursementStatsGroupRows(map, keyOrder) {
+  const order = Array.isArray(keyOrder) ? keyOrder : null;
+  const rows = [...(map || new Map()).entries()]
+    .map(([key, v]) => ({ key, count: v.count, total: v.total }));
+  if (order) {
+    const rank = new Map(order.map((k, i) => [k, i]));
+    rows.sort((a, b) => {
+      const ra = rank.has(a.key) ? rank.get(a.key) : 999;
+      const rb = rank.has(b.key) ? rank.get(b.key) : 999;
+      if (ra !== rb) return ra - rb;
+      return b.total - a.total || b.count - a.count;
+    });
+    return rows;
+  }
+  return rows.sort((a, b) => b.total - a.total || b.count - a.count || String(a.key).localeCompare(String(b.key), 'zh-CN'));
+}
+
+function reimbursementStatsGroupTableHtml(title, rows, emptyHint) {
+  if (!rows.length) {
+    return `<section class="reimb-stats-block"><h3 class="reimb-stats-block-title">${escapeHtml(title)}</h3><div class="reimb-stats-empty">${escapeHtml(emptyHint || '暂无数据')}</div></section>`;
+  }
+  const sumCount = rows.reduce((s, r) => s + r.count, 0);
+  const sumTotal = roundMoney2(rows.reduce((s, r) => s + r.total, 0));
+  return `<section class="reimb-stats-block">
+    <h3 class="reimb-stats-block-title">${escapeHtml(title)}</h3>
+    <div class="table-wrapper">
+      <table class="data-table reimb-stats-table">
+        <thead><tr><th>分类</th><th style="text-align:right">笔数</th><th style="text-align:right">金额</th></tr></thead>
+        <tbody>${rows.map((r) => `<tr>
+          <td class="reimb-stats-key" title="${escapeHtml(r.key)}">${escapeHtml(r.key)}</td>
+          <td style="text-align:right">${r.count}</td>
+          <td class="amount" style="text-align:right">${fmtMoney(r.total)}</td>
+        </tr>`).join('')}</tbody>
+        <tfoot><tr>
+          <td>合计</td>
+          <td style="text-align:right">${sumCount}</td>
+          <td class="amount reimb-stats-total" style="text-align:right">${fmtMoney(sumTotal)}</td>
+        </tr></tfoot>
+      </table>
+    </div>
+  </section>`;
+}
+
+function reimbursementStatsRowsForFilter() {
+  const allRows = reimbursementBuildAllCostStatRows();
+  const kw = reimbursementReadListFilterKeyword();
+  return reimbursementFilterCostStatRows(allRows, kw);
+}
+
+function reimbursementFilterRowsByStatsCard(rows, cardKey) {
+  const list = Array.isArray(rows) ? rows : [];
+  if (!cardKey || cardKey === 'all' || cardKey === 'total') return list;
+  if (cardKey === 'unpaid') {
+    return list.filter((r) => String(r.payment_status || 'unpaid').toLowerCase() !== 'paid');
+  }
+  if (cardKey === 'unpaid_excl_wh') {
+    return list.filter(
+      (r) => String(r.payment_status || 'unpaid').toLowerCase() !== 'paid' && r.source_type !== 'warehouse',
+    );
+  }
+  if (cardKey === 'paid') {
+    return list.filter((r) => String(r.payment_status || 'unpaid').toLowerCase() === 'paid');
+  }
+  return list;
+}
+
+function reimbursementStatsCardLabel(cardKey) {
+  const map = {
+    all: '全部明细',
+    total: '金额合计明细',
+    unpaid: '未支付明细',
+    unpaid_excl_wh: '未支付明细（不含仓储）',
+    paid: '已支付明细',
+  };
+  return map[cardKey] || '明细';
+}
+
+function reimbursementStatsDetailTableHtml(rows, title) {
+  if (!rows.length) {
+    return `<section class="reimb-stats-detail">
+      <h3 class="reimb-stats-detail-title">${escapeHtml(title)}</h3>
+      <div class="reimb-stats-empty">暂无匹配记录</div>
+    </section>`;
+  }
+  const sum = roundMoney2(rows.reduce((s, r) => s + reimbursementRowAmount(r), 0));
+  const sorted = [...rows].sort((a, b) => {
+    const da = String(a.payee_name || '');
+    const db = String(b.payee_name || '');
+    return da.localeCompare(db, 'zh-CN') || reimbursementRowAmount(b) - reimbursementRowAmount(a);
+  });
+  return `<section class="reimb-stats-detail">
+    <h3 class="reimb-stats-detail-title">${escapeHtml(title)} <span class="reimb-stats-detail-meta">${rows.length} 笔 · ${fmtMoney(sum)}</span></h3>
+    <div class="table-wrapper reimb-stats-detail-wrap">
+      <table class="data-table reimb-stats-table reimb-stats-detail-table">
+        <thead><tr>
+          <th>板块</th>
+          <th>收款方</th>
+          <th>项目编号</th>
+          <th>分类</th>
+          <th style="text-align:right">金额</th>
+          <th>状态</th>
+          <th>备注</th>
+        </tr></thead>
+        <tbody>${sorted.map((r) => {
+          const paid = String(r.payment_status || 'unpaid').toLowerCase() === 'paid';
+          const remarks = [r.brand, r.city, r.remarks].filter(Boolean).join(' · ');
+          return `<tr>
+            <td>${escapeHtml(r.source_label || '—')}</td>
+            <td class="reimb-stats-key" title="${escapeHtml(r.payee_name || '')}">${escapeHtml(r.payee_name || '—')}</td>
+            <td>${escapeHtml(r.project_code || '—')}</td>
+            <td>${escapeHtml(r.project_bucket || '—')}</td>
+            <td class="amount" style="text-align:right">${fmtMoney(reimbursementRowAmount(r))}</td>
+            <td><span class="badge ${paid ? 'badge-success' : 'badge-warning'}">${paid ? '已支付' : '未支付'}</span></td>
+            <td class="reimb-stats-key" title="${escapeHtml(remarks)}">${escapeHtml(remarks || '—')}</td>
+          </tr>`;
+        }).join('')}</tbody>
+        <tfoot><tr>
+          <td colspan="4">合计</td>
+          <td class="amount reimb-stats-total" style="text-align:right">${fmtMoney(sum)}</td>
+          <td colspan="2">${rows.length} 笔</td>
+        </tr></tfoot>
+      </table>
+    </div>
+  </section>`;
+}
+
+function reimbursementStatsSummaryCardHtml(cardKey, label, valueHtml, active) {
+  return `<button type="button" class="reimb-stats-card${active ? ' reimb-stats-card--active' : ''}"
+    data-reimb-stats-card="${escapeHtml(cardKey)}"
+    aria-pressed="${active ? 'true' : 'false'}"
+    title="点击查看${escapeHtml(label)}">
+    <span class="reimb-stats-card-label">${escapeHtml(label)}</span>
+    <strong class="reimb-stats-card-value">${valueHtml}</strong>
+  </button>`;
+}
+
+function reimbursementBuildCostStatsBodyHtml(vm) {
+  const kw = reimbursementReadListFilterKeyword();
+  const dataRows = reimbursementStatsRowsForFilter();
+  const stats = reimbursementComputeCostStats(dataRows);
+  const filterDesc = kw
+    ? `筛选「${reimbursementPageState.filterInput || kw}」· 含成本登记 / 物流 / 仓储 / 物料 / 道具维修`
+    : '当前未设置筛选（全部待统计费用）';
+  const activeCard = reimbursementPageState.statsCard || null;
+  const detailRows = activeCard ? reimbursementFilterRowsByStatsCard(dataRows, activeCard) : [];
+
+  const byPayee = reimbursementStatsGroupRows(stats.byPayee);
+  const bySource = reimbursementStatsGroupRows(stats.bySource);
+  const byProject = reimbursementStatsGroupRows(stats.byProject, ['有项目编号', '无项目编号', '仓储费用']);
+
+  return `
+    <p class="reimb-stats-scope">${escapeHtml(filterDesc)}</p>
+    <div class="reimb-stats-summary" role="group" aria-label="费用汇总">
+      ${reimbursementStatsSummaryCardHtml('all', '笔数', String(stats.count), activeCard === 'all')}
+      ${reimbursementStatsSummaryCardHtml('total', '金额合计', `<span class="amount">${fmtMoney(stats.total)}</span>`, activeCard === 'total')}
+      ${reimbursementStatsSummaryCardHtml('unpaid', '未支付', `${stats.unpaidCount} 笔 · <span class="amount">${fmtMoney(stats.unpaidTotal)}</span>`, activeCard === 'unpaid')}
+      ${reimbursementStatsSummaryCardHtml('unpaid_excl_wh', '未支付（不含仓储）', `<span class="amount">${fmtMoney(stats.unpaidExclWarehouse)}</span>`, activeCard === 'unpaid_excl_wh')}
+      ${reimbursementStatsSummaryCardHtml('paid', '已支付', `${stats.paidCount} 笔 · <span class="amount">${fmtMoney(stats.paidTotal)}</span>`, activeCard === 'paid')}
+    </div>
+    ${activeCard ? reimbursementStatsDetailTableHtml(detailRows, reimbursementStatsCardLabel(activeCard)) : ''}
+    <div class="reimb-stats-grid">
+      ${reimbursementStatsGroupTableHtml('按板块', bySource, '无板块数据')}
+      ${reimbursementStatsGroupTableHtml('按项目编号 / 仓储', byProject, '无分类数据')}
+      ${reimbursementStatsGroupTableHtml('按收款方', byPayee, '无收款方数据')}
+    </div>`;
+}
+
+function reimbursementRenderStatsBody() {
+  const host = document.getElementById('reimbStatsBodyHost');
+  if (!host) return;
+  host.innerHTML = reimbursementBuildCostStatsBodyHtml(reimbursementBuildListVm());
+}
+
+function reimbursementSetStatsCard(cardKey) {
+  const key = String(cardKey || '').trim();
+  if (!key) return;
+  reimbursementPageState.statsCard = reimbursementPageState.statsCard === key ? null : key;
+  reimbursementRenderStatsBody();
+}
+
+function reimbursementReadListFilterKeyword() {
+  const el = document.getElementById('reimbListFilter');
+  if (_reimbListFilterComposing) {
+    return (reimbursementPageState.filterInput || '').trim().toLowerCase();
+  }
+  const live = el ? el.value : (reimbursementPageState.filterInput || '');
+  if (el && !el.isComposing) reimbursementPageState.filterInput = live;
+  return String(live).trim().toLowerCase();
+}
+
+function reimbursementBuildListVm() {
   const view = reimbursementPageState.view || 'registrations';
   const rows = reimbursementPageState.rows || [];
   const orders = reimbursementPageState.paymentOrders || [];
   reimbursementSelectionPrune();
   const selectedIds = reimbursementPageState.selectedIds || new Set();
   const selectedCount = selectedIds.size;
-  const kw = (reimbursementPageState.filterInput || '').trim().toLowerCase();
+  const kw = reimbursementReadListFilterKeyword();
   const filtered = !kw
     ? rows
     : rows.filter((r) => {
         const pc = String(r.related_project_code || '').toLowerCase();
         const brand = String(r.brand || '').toLowerCase();
         const city = String(r.city || '').toLowerCase();
+        const payee = String(r.payee_name || '').toLowerCase();
         const rm = reimbVisibleRemarks(r.remarks || '').toLowerCase();
         const tp = reimbPayeePartyLabel(reimbPayeePartyFromPaymentType(r.payment_type)).toLowerCase();
         const mod = reimbRecordCostAttributionLabel(r).toLowerCase();
         const st = reimbClaimStatusLabel(r.claim_status || '').toLowerCase();
-        return pc.includes(kw) || brand.includes(kw) || city.includes(kw) || rm.includes(kw) || tp.includes(kw) || mod.includes(kw) || st.includes(kw) || String(r.id).includes(kw);
+        return pc.includes(kw) || brand.includes(kw) || city.includes(kw) || payee.includes(kw) || rm.includes(kw) || tp.includes(kw) || mod.includes(kw) || st.includes(kw) || String(r.id).includes(kw);
       });
-  const fi = escapeHtml(reimbursementPageState.filterInput || '');
   const ordersFiltered = orders.filter((o) => {
     if (!kw) return true;
     return [o.order_no, o.payee_name, o.remarks, o.status, o.id].some((x) => String(x || '').toLowerCase().includes(kw));
@@ -12571,49 +13504,17 @@ function reimbursementRenderListDom() {
   const eligibleVisible = filtered.filter(reimbursementSelectionEligible);
   const allEligibleChecked =
     eligibleVisible.length > 0 && eligibleVisible.every((r) => selectedIds.has(Number(r.id)));
-  const someEligibleChecked = eligibleVisible.some((r) => selectedIds.has(Number(r.id)));
   const headerSelectChecked = allEligibleChecked ? 'checked' : '';
-  const headerSelectIndeterminate = !allEligibleChecked && someEligibleChecked;
+  const headerSelectIndeterminate = !allEligibleChecked && eligibleVisible.some((r) => selectedIds.has(Number(r.id)));
   const canMerge = selectedCount >= 2;
-  container.innerHTML = `
-    <div class="reimbursement-page">
-      <div class="page-toolbar reimbursement-toolbar">
-        <div class="reimb-tool-group" role="tablist" aria-label="付款申请视图切换">
-          <button type="button" class="btn reimb-tool-btn reimb-tool-btn--tab" role="tab" aria-selected="${view === 'registrations' ? 'true' : 'false'}" data-active="${view === 'registrations' ? 'true' : 'false'}" onclick="reimbursementPageState.view='registrations';reimbursementRenderListDom()">成本登记</button>
-          <button type="button" class="btn reimb-tool-btn reimb-tool-btn--tab" role="tab" aria-selected="${view === 'payment_orders' ? 'true' : 'false'}" data-active="${view === 'payment_orders' ? 'true' : 'false'}" onclick="reimbursementPageState.view='payment_orders';reimbursementRenderListDom()">付款单</button>
-        </div>
-        <span class="reimb-tool-divider" aria-hidden="true"></span>
-        <div class="reimb-tool-group reimb-tool-group--actions">
-          <button type="button" class="btn reimb-tool-btn reimb-tool-btn--action" onclick="showReimbursementForm(null)">
-            <i data-lucide="plus" class="reimb-tool-btn-icon" aria-hidden="true"></i>报销登记
-          </button>
-          <button type="button" class="btn reimb-tool-btn reimb-tool-btn--action" onclick="showCorporatePaymentTodo()">
-            <i data-lucide="file-text" class="reimb-tool-btn-icon" aria-hidden="true"></i>付款申请
-          </button>
-          ${
-            view === 'registrations'
-              ? `<button type="button" class="btn reimb-tool-btn reimb-tool-btn--action" onclick="reimbursementMergeSelected()" ${canMerge ? '' : 'disabled'} title="${escapeHtml(canMerge ? '将选中的成本登记合并为一条新记录（可在详情中撤销合并）' : '请至少勾选 2 条同收款方、同板块的未支付记录')}">
-                  <i data-lucide="git-merge" class="reimb-tool-btn-icon" aria-hidden="true"></i>合并选中${selectedCount > 0 ? `（${selectedCount}）` : ''}
-                </button>`
-              : ''
-          }
-        </div>
-        <input type="search" class="form-control" id="reimbListFilter" placeholder="筛选：品牌 / 项目编号 / 城市 / 备注 / 类型" style="max-width:360px;margin-left:auto"
-          value="${fi}"
-          oninput="reimbursementPageState.filterInput=this.value;reimbursementListFilterDebounced()">
-      </div>
-      <div id="reimbInlineHost" class="reimbursement-inline-host" hidden></div>
-      <div class="reimbursement-list-panel">
-        <div class="table-wrapper reimbursement-list-wrap">
-            ${view === 'payment_orders' ? `
-            <table class="data-table">
+  const tableHtml = view === 'payment_orders'
+    ? `<table class="data-table">
               <thead>
                 <tr><th>付款单号</th><th>申请日期</th><th>付款日期</th><th>收款方信息</th><th style="text-align:left">金额</th><th>状态</th><th>明细数</th><th>备注</th><th>操作</th></tr>
               </thead>
               <tbody>${listRowsHtml}</tbody>
-            </table>
-            ` : `
-            <table class="data-table reimbursement-registration-table reimbursement-table-compact">
+            </table>`
+    : `<table class="data-table reimbursement-registration-table reimbursement-table-compact">
               <thead>
                 <tr>
                   <th class="reimb-select-cell" style="width:36px;text-align:center">
@@ -12642,20 +13543,100 @@ function reimbursementRenderListDom() {
                 ${registrationRowsHtml(paidReg)}`
                 }
               </tbody>
-            </table>
-            `}
+            </table>`;
+  const emptyHtml = view === 'registrations' && !filtered.length
+    ? '<div class="empty-state" style="padding:24px"><div class="empty-title">暂无付款申请记录</div></div>'
+    : '';
+  const mergeBtnTitle = canMerge
+    ? '将选中的成本登记合并为一条新记录（可在详情中撤销合并）'
+    : '请至少勾选 2 条同收款方、同板块的未支付记录';
+  return {
+    view,
+    filtered,
+    selectedCount,
+    canMerge,
+    headerSelectIndeterminate,
+    tableHtml,
+    emptyHtml,
+    mergeBtnTitle,
+  };
+}
+
+function reimbursementRenderListTableOnly() {
+  const vm = reimbursementBuildListVm();
+  if (vm.view === 'cost_stats') {
+    reimbursementRenderStatsBody();
+    return true;
+  }
+  const wrap = document.getElementById('reimbListTableWrap');
+  if (!wrap) return false;
+  wrap.innerHTML = vm.tableHtml;
+  const emptyHost = document.getElementById('reimbListEmptyHost');
+  if (emptyHost) emptyHost.innerHTML = vm.emptyHtml;
+  if (vm.view !== 'registrations') return true;
+  const headerCb = document.getElementById('reimbSelectAll');
+  if (headerCb) headerCb.indeterminate = !!vm.headerSelectIndeterminate;
+  const mergeBtn = document.getElementById('reimbMergeSelectedBtn');
+  if (mergeBtn) {
+    mergeBtn.disabled = !vm.canMerge;
+    mergeBtn.title = vm.mergeBtnTitle;
+    const label = vm.selectedCount > 0 ? `合并选中（${vm.selectedCount}）` : '合并选中';
+    mergeBtn.innerHTML = `<i data-lucide="git-merge" class="reimb-tool-btn-icon" aria-hidden="true"></i>${escapeHtml(label)}`;
+    renderLucideIcons();
+  }
+  return true;
+}
+
+function reimbursementRenderListDom(tableOnly = false) {
+  if (tableOnly && reimbursementRenderListTableOnly()) return;
+  const container = document.getElementById('pageContainer');
+  if (!container) return;
+  const vm = reimbursementBuildListVm();
+  const fi = escapeHtml(reimbursementPageState.filterInput || '');
+  const isStats = vm.view === 'cost_stats';
+  container.innerHTML = `
+    <div class="reimbursement-page">
+      <div class="page-toolbar reimbursement-toolbar">
+        <div class="reimb-tool-group" role="tablist" aria-label="付款申请视图切换">
+          <button type="button" class="btn reimb-tool-btn reimb-tool-btn--tab" role="tab" aria-selected="${vm.view === 'registrations' ? 'true' : 'false'}" data-active="${vm.view === 'registrations' ? 'true' : 'false'}" onclick="reimbursementPageState.view='registrations';reimbursementRenderListDom()">成本登记</button>
+          <button type="button" class="btn reimb-tool-btn reimb-tool-btn--tab" role="tab" aria-selected="${vm.view === 'payment_orders' ? 'true' : 'false'}" data-active="${vm.view === 'payment_orders' ? 'true' : 'false'}" onclick="reimbursementPageState.view='payment_orders';reimbursementRenderListDom()">付款单</button>
+          <button type="button" class="btn reimb-tool-btn reimb-tool-btn--tab" role="tab" aria-selected="${isStats ? 'true' : 'false'}" data-active="${isStats ? 'true' : 'false'}" onclick="reimbursementPageState.view='cost_stats';reimbursementRenderListDom()">费用统计</button>
         </div>
+        <span class="reimb-tool-divider" aria-hidden="true"></span>
+        <div class="reimb-tool-group reimb-tool-group--actions">
+          <button type="button" class="btn reimb-tool-btn reimb-tool-btn--action" onclick="showReimbursementForm(null)">
+            <i data-lucide="plus" class="reimb-tool-btn-icon" aria-hidden="true"></i>报销登记
+          </button>
+          <button type="button" class="btn reimb-tool-btn reimb-tool-btn--action" onclick="showCorporatePaymentTodo()">
+            <i data-lucide="file-text" class="reimb-tool-btn-icon" aria-hidden="true"></i>付款申请
+          </button>
           ${
-            view !== 'payment_orders' && !filtered.length
-              ? '<div class="empty-state" style="padding:24px"><div class="empty-title">暂无付款申请记录</div></div>'
+            vm.view === 'registrations'
+              ? `<button type="button" class="btn reimb-tool-btn reimb-tool-btn--action" id="reimbMergeSelectedBtn" onclick="reimbursementMergeSelected()" ${vm.canMerge ? '' : 'disabled'} title="${escapeHtml(vm.mergeBtnTitle)}">
+                  <i data-lucide="git-merge" class="reimb-tool-btn-icon" aria-hidden="true"></i>合并选中${vm.selectedCount > 0 ? `（${vm.selectedCount}）` : ''}
+                </button>`
               : ''
           }
+        </div>
+        <input type="text" class="form-control" id="reimbListFilter" placeholder="筛选：收款方 / 品牌 / 项目编号 / 城市 / 备注" style="max-width:360px;margin-left:auto;${vm.view === 'payment_orders' ? 'visibility:hidden' : ''}"
+          value="${fi}"
+          autocomplete="off"
+          oninput="reimbursementListFilterInput(this)"
+          oncompositionstart="reimbursementListFilterCompositionStart()"
+          oncompositionend="reimbursementListFilterCompositionEnd(this)">
+      </div>
+      <div id="reimbInlineHost" class="reimbursement-inline-host" hidden></div>
+      <div class="reimbursement-list-panel${isStats ? ' reimbursement-list-panel--stats' : ''}">
+        <div id="reimbStatsBodyHost" class="reimb-stats-body-wrap"${isStats ? '' : ' hidden'}>${isStats ? reimbursementBuildCostStatsBodyHtml(vm) : ''}</div>
+        <div id="reimbListTableWrap" class="table-wrapper reimbursement-list-wrap"${isStats ? ' hidden' : ''}>${isStats ? '' : vm.tableHtml}</div>
+        <div id="reimbListEmptyHost"${isStats ? ' hidden' : ''}>${isStats ? '' : vm.emptyHtml}</div>
       </div>
     </div>
     `;
+  reimbursementBindStatsCardDelegation();
   renderLucideIcons();
   const headerCb = document.getElementById('reimbSelectAll');
-  if (headerCb) headerCb.indeterminate = !!headerSelectIndeterminate;
+  if (headerCb) headerCb.indeterminate = !!vm.headerSelectIndeterminate;
 }
 
 async function renderReimbursements() {
@@ -12669,14 +13650,22 @@ async function renderReimbursements() {
   container.innerHTML = '<div class="empty-state"><div class="skeleton skeleton-title"></div></div>';
   try {
     const qs = `?yearFrameId=${currentYearFrameId}`;
-    const [rows, acts, paymentOrders] = await Promise.all([
+    const [rows, acts, paymentOrders, logistics, warehouse, materialPurchases, propRepairs] = await Promise.all([
       api('GET', `/reimbursements${qs}`),
       api('GET', `/activities?yearFrameId=${currentYearFrameId}&sortBy=date&sortOrder=DESC&isVirtual=0`),
       api('GET', `/payment-orders${qs}`),
+      api('GET', `/logistics${qs}`),
+      api('GET', `/warehouse${qs}`),
+      api('GET', `/material-purchases${qs}`),
+      api('GET', `/prop-repairs${qs}`),
     ]);
     reimbursementPageState.rows = rows;
     reimbursementPageState.activities = acts;
     reimbursementPageState.paymentOrders = paymentOrders;
+    reimbursementPageState.logistics = logistics || [];
+    reimbursementPageState.warehouse = warehouse || [];
+    reimbursementPageState.materialPurchases = materialPurchases || [];
+    reimbursementPageState.propRepairs = propRepairs || [];
     if (reimbursementPageState.filterInput == null) reimbursementPageState.filterInput = '';
     const idSet = new Set((rows || []).map((r) => Number(r.id)).filter(Number.isFinite));
     reimbursementListExpanded = new Set([...reimbursementListExpanded].filter((id) => idSet.has(id)));
@@ -15358,6 +16347,7 @@ function invCaptureOutboundDraft() {
   of.recipient_address = g('invRecvAddr')?.value ?? '';
   of.contact_name = g('invContactName')?.value ?? '';
   of.contact_phone = g('invContactPhone')?.value ?? '';
+  of.logistics_supplier = g('invLogisticsSupplier')?.value?.trim() ?? '';
   of.logistics_method = g('invLogistics')?.value || of.logistics_method || INV_LOGISTICS_OPTS[0];
   of.tracking_number = g('invTrackingNo')?.value ?? '';
   of.remarks = g('invObRemarks')?.value ?? '';
@@ -15460,6 +16450,7 @@ function invOnProjectInputBlur() {
 function invHandleProjectInputKeydown(e) {
   if (!e) return;
   if (e.key === 'Escape') {
+    e.stopPropagation();
     invCloseProjectSuggestionList();
     return;
   }
@@ -15855,6 +16846,65 @@ function invApplyOutboundSmartFill() {
   showToast(city ? '已填入（已识别收件城市）' : '已填入', 'success');
 }
 
+let invOutboundSupplierCache = [];
+
+async function invLoadOutboundSupplierOptions(selectedName, opts = {}) {
+  const sel = document.getElementById('invLogisticsSupplier');
+  if (!sel) return;
+  const autoPickForWarehouse = !!opts.autoPickForWarehouse;
+  try {
+    const rows = await api('GET', '/dict?category=supplier');
+    invOutboundSupplierCache = (Array.isArray(rows) ? rows : [])
+      .filter((e) => e.is_active !== false && e.is_active !== 0)
+      .map((e) => {
+        const c = e.content || {};
+        const name = String(c.company_name || e.name || '').trim();
+        return { id: e.id, name };
+      })
+      .filter((x) => x.name);
+  } catch (_) {
+    invOutboundSupplierCache = [];
+  }
+  let want = String(selectedName || '').trim();
+  if (!want && autoPickForWarehouse) {
+    const whId = Number(inventoryPageState.warehouseId || 0);
+    const wh = (inventoryPageState.outboundWarehousesCache || []).find((w) => Number(w.id) === whId);
+    want = invGuessSupplierForWarehouse(wh, invOutboundSupplierCache);
+    if (want) inventoryPageState.outboundForm.logistics_supplier = want;
+  }
+  const options = ['<option value="">请选择供应商</option>'];
+  let matched = false;
+  invOutboundSupplierCache.forEach((e) => {
+    const on = want && e.name === want;
+    if (on) matched = true;
+    options.push(`<option value="${escapeHtml(e.name)}"${on ? ' selected' : ''}>${escapeHtml(e.name)}</option>`);
+  });
+  if (want && !matched) {
+    options.push(`<option value="${escapeHtml(want)}" selected>${escapeHtml(want)}（已保存）</option>`);
+  }
+  sel.innerHTML = options.join('');
+}
+
+function invGuessSupplierForWarehouse(wh, suppliers) {
+  if (!wh || !suppliers?.length) return '';
+  const label = String(wh.label || '').trim();
+  const region = String(wh.region || '').trim();
+  const brand = String(wh.brand_code || '').trim();
+  const tokens = [label, region ? `${region}仓` : '', brand && region ? `${brand} ${region}` : '', region].filter(Boolean);
+  for (const t of tokens) {
+    const hit = suppliers.find((s) => s.name.includes(t) || (label && label.includes(s.name)));
+    if (hit) return hit.name;
+  }
+  return '';
+}
+
+function invOutboundSupplierChanged() {
+  const name = document.getElementById('invLogisticsSupplier')?.value?.trim() || '';
+  inventoryPageState.outboundForm.logistics_supplier = name;
+  const hit = invOutboundSupplierCache.find((s) => s.name === name);
+  if (hit?.id) api('POST', `/dict/${hit.id}/touch`).catch(() => {});
+}
+
 function invBuildOutboundModalMarkup(warehouses, items, of, modalOpts) {
   modalOpts = modalOpts || {};
   invSeedOutboundItemMetaFromItems(inventoryPageState.warehouseId, items);
@@ -15929,6 +16979,12 @@ function invBuildOutboundModalMarkup(warehouses, items, of, modalOpts) {
               <div class="form-group inv-ob-field-mid inv-ob-field-purpose-detail" id="invPurposeWrap" style="display:none">
                 <label class="form-label">发货说明 <span class="required">*</span></label>
                 <input type="text" class="form-control" id="invPurpose" placeholder="如：内部调拨/赞助寄样/办公使用" value="${escapeHtml(of.purpose || '')}">
+              </div>
+              <div class="form-group inv-ob-field-mid inv-ob-field-supplier">
+                <label class="form-label">公司名称 <span class="required">*</span></label>
+                <select class="form-control" id="invLogisticsSupplier" required onchange="invOutboundSupplierChanged()">
+                  <option value="">请选择供应商</option>
+                </select>
               </div>
               <div class="form-group inv-ob-field-short inv-ob-field-logistics">
                 <label class="form-label">物流方式</label>
@@ -16121,6 +17177,10 @@ async function invOnModalWarehouseChange(warehouseId) {
   await invRefreshOutboundModalLineTables();
   const hd = document.getElementById('invWarehouseSelect');
   if (hd) hd.value = String(id);
+  const curSupplier = document.getElementById('invLogisticsSupplier')?.value?.trim() || '';
+  if (!curSupplier) {
+    await invLoadOutboundSupplierOptions('', { autoPickForWarehouse: true });
+  }
 }
 
 function invSetOutboundModalTitle(isEdit) {
@@ -16152,6 +17212,7 @@ async function invOpenOutboundModal() {
       recipient_address: '',
       contact_name: '',
       contact_phone: '',
+      logistics_supplier: '',
       logistics_method: INV_LOGISTICS_OPTS[0],
       tracking_number: '',
       remarks: '',
@@ -16195,6 +17256,7 @@ async function invOpenOutboundModal() {
     if (!body) return;
     body.innerHTML = invBuildOutboundModalMarkup(warehouses, items, of);
     await invFillInvProjectDatalist();
+    await invLoadOutboundSupplierOptions(of.logistics_supplier, { autoPickForWarehouse: !of.logistics_supplier });
     const lmEl = document.getElementById('invLinkMode');
     if (lmEl) {
       lmEl.value = of.linkMode !== 'standalone' ? 'activity' : 'standalone';
@@ -16239,6 +17301,7 @@ async function invToggleOutboundInlineForm(forceOpen) {
       recipient_address: '',
       contact_name: '',
       contact_phone: '',
+      logistics_supplier: '',
       logistics_method: INV_LOGISTICS_OPTS[0],
       tracking_number: '',
       remarks: '',
@@ -16288,6 +17351,7 @@ function invFilterOutboundOrders(orders, query) {
       o.contact_phone,
       o.tracking_number,
       o.logistics_method,
+      o.logistics_supplier,
       o.recipient_city,
       o.recipient_address,
       o.brand_code,
@@ -16316,8 +17380,8 @@ function invOutboundMonthKeys(orders) {
 function invFilterOutboundByMonth(orders, monthKey) {
   if (!monthKey || monthKey === 'all') return orders;
   return (orders || []).filter((o) => {
-    const d = o.shipped_at || o.created_at || '';
-    return String(d).slice(0, 7) === monthKey;
+    const ymd = invBusinessYmd(o.shipped_at || o.created_at);
+    return ymd ? ymd.slice(0, 7) === monthKey : false;
   });
 }
 
@@ -16390,6 +17454,11 @@ function invGoInboundPendingPage(page) {
   invRefreshInboundPendingSection();
 }
 
+function invSetOutboundMonth(key) {
+  inventoryPageState.outboundMonthFilter = key || 'all';
+  invRefreshOutboundTable();
+}
+
 function invRefreshInboundLedgerSection() {
   const host = document.getElementById('invInboundLedgerHost');
   if (host) host.innerHTML = invRenderInboundLedgerHostContent();
@@ -16438,6 +17507,12 @@ function invRefreshOutboundTable() {
   const bar = document.getElementById('invObMonthBar');
   if (bar) {
     const keys = invOutboundMonthKeys(cache);
+    if (
+      inventoryPageState.outboundMonthFilter !== 'all' &&
+      !keys.includes(inventoryPageState.outboundMonthFilter)
+    ) {
+      inventoryPageState.outboundMonthFilter = 'all';
+    }
     bar.innerHTML = invRenderOutboundMonthButtons(keys, inventoryPageState.outboundMonthFilter);
   }
   if (typeof lucide !== 'undefined') lucide.createIcons();
@@ -16754,17 +17829,32 @@ async function invOpenInboundReceiptDetail(batchId) {
   }
 }
 
-async function invOpenOutboundOrderDetail(orderId) {
+async function invOpenOutboundOrderDetail(orderId, opts) {
+  opts = opts || {};
   const titleEl = document.getElementById('invOutboundGroupTitle');
   const body = document.getElementById('invOutboundGroupBody');
-  if (titleEl) titleEl.textContent = `出库单 #${orderId}`;
+  if (titleEl) titleEl.textContent = opts.title || `出库单 #${orderId}`;
   if (!body) return;
   body.innerHTML = '<div class="empty-state">加载中…</div>';
   openModal('modalInvOutboundGroup');
   try {
+    let logRow = opts.logisticsRow || null;
+    if (!logRow && opts.logisticsId) {
+      logRow = (logisticsState.data || []).find((l) => Number(l.id) === Number(opts.logisticsId)) || null;
+      if (!logRow) {
+        try {
+          logRow = await api('GET', `/logistics/${opts.logisticsId}`);
+        } catch (_) {
+          logRow = null;
+        }
+      }
+    }
     const det = await api('GET', `/inventory/outbound/${orderId}`);
     const ord = det.order;
     const lines = det.lines || [];
+    const costSectionHtml = opts.logisticsId || opts.logisticsRow
+      ? logisticsShipDetailCostSectionHtml(logRow)
+      : '';
     const colHtml = '<colgroup><col style="width:25%"><col style="width:25%"><col style="width:15%"><col style="width:10%"><col style="width:25%"></colgroup>';
     const recipientCity = ord.recipient_city || '—';
     const contactName = ord.contact_name || '—';
@@ -16778,7 +17868,7 @@ async function invOpenOutboundOrderDetail(orderId) {
         <div class="inv-ob-shell">
           <div class="inv-ob-head-fixed">
             <div class="inv-ob-detail-head">出库单 #${ord.id} · ${ord.shipped_at ? String(ord.shipped_at).slice(0, 16) : '—'} · ${escapeHtml(invWarehouseFullLabel(ord))} · ${ord.status === 'closed' ? '已结清' : '待归还'}</div>
-            <div class="activity-detail-grid" style="margin-bottom:12px">
+            <div class="activity-detail-grid logistics-ship-detail-grid" style="margin-bottom:8px">
               <section class="activity-detail-card">
                 <h4>基础信息</h4>
                 ${activityDetailRow('关联方式', ord.link_mode === 'standalone' ? '非项目出库' : '项目编号')}
@@ -16792,9 +17882,11 @@ async function invOpenOutboundOrderDetail(orderId) {
                 ${activityDetailRow('联系人', contactName)}
                 ${activityDetailRow('联系电话', contactPhone)}
                 ${activityDetailRow('收件地址', recipientAddr)}
+                ${activityDetailRow('公司名称', ord.logistics_supplier || '—')}
                 ${activityDetailRow('物流方式', logisticsMethod)}
                 ${activityDetailRowHtml('物流单号', trackingHtml)}
               </section>
+              ${costSectionHtml}
             </div>
           </div>
           <div class="inv-ob-items-header">
@@ -16827,6 +17919,7 @@ async function invOpenOutboundOrderDetail(orderId) {
               </tbody>
             </table>
           </div>
+          ${logisticsShipDetailFooterHtml(opts.logisticsId)}
         </div>`;
     body.innerHTML = html;
     renderLucideIcons();
@@ -16922,6 +18015,7 @@ async function invOpenOutboundEditModal(orderId) {
     of.recipient_address = o.recipient_address || '';
     of.contact_name = o.contact_name || '';
     of.contact_phone = o.contact_phone || '';
+    of.logistics_supplier = o.logistics_supplier || '';
     of.logistics_method = o.logistics_method || INV_LOGISTICS_OPTS[0];
     of.tracking_number = o.tracking_number || '';
     of.remarks = o.remarks || '';
@@ -16938,6 +18032,7 @@ async function invOpenOutboundEditModal(orderId) {
       });
       invSetOutboundModalTitle(true);
       await invFillInvProjectDatalist();
+      await invLoadOutboundSupplierOptions(of.logistics_supplier);
       const lmEl = document.getElementById('invLinkMode');
       if (lmEl) {
         lmEl.value = of.linkMode !== 'standalone' ? 'activity' : 'standalone';
@@ -17378,6 +18473,10 @@ async function renderInventory() {
     inventoryPageState.outboundForm.linkMode = lmEl.value;
     invToggleLinkMode();
   }
+  if (document.getElementById('invLogisticsSupplier')) {
+    const of = inventoryPageState.outboundForm || {};
+    void invLoadOutboundSupplierOptions(of.logistics_supplier, { autoPickForWarehouse: !of.logistics_supplier });
+  }
 }
 
 function invSwitchTab(t) {
@@ -17686,6 +18785,7 @@ async function invSubmitOutbound() {
     recipient_address: document.getElementById('invRecvAddr')?.value || null,
     contact_name: document.getElementById('invContactName')?.value || null,
     contact_phone: document.getElementById('invContactPhone')?.value || null,
+    logistics_supplier: document.getElementById('invLogisticsSupplier')?.value?.trim() || null,
     logistics_method: document.getElementById('invLogistics')?.value || null,
     tracking_number: (document.getElementById('invTrackingNo')?.value || '').trim() || null,
     remarks: document.getElementById('invObRemarks')?.value || null,
@@ -17696,6 +18796,10 @@ async function invSubmitOutbound() {
   }
   if (lm === 'standalone' && !baseBody.purpose) {
     showToast('请填写非活动信息', 'warning');
+    return;
+  }
+  if (!String(baseBody.logistics_supplier || '').trim()) {
+    showToast('请选择物流公司（供应商）', 'warning');
     return;
   }
   const editHidden = document.getElementById('invOutboundEditOrderId');
@@ -17758,6 +18862,7 @@ async function invSubmitOutbound() {
         recipient_address: '',
         contact_name: '',
         contact_phone: '',
+        logistics_supplier: '',
         logistics_method: INV_LOGISTICS_OPTS[0],
         tracking_number: '',
         remarks: '',
@@ -17823,8 +18928,10 @@ async function invSubmitOutbound() {
             origin_city: senderHint || null,
             destination_city: baseBody.recipient_city || null,
             shipping_date: (baseBody.shipped_at || '').trim() || todayDateInputValue(),
+            shipping_fee: 0,
+            handling_fee: 0,
             fee: 0,
-            payee_name: express || '物流公司',
+            payee_name: String(baseBody.logistics_supplier || '').trim() || express || '物流公司',
             payment_status: 'unpaid',
             related_project_code: null,
             remarks: remarkPieces.join('\n'),
@@ -17854,6 +18961,7 @@ async function invSubmitOutbound() {
       recipient_address: '',
       contact_name: '',
       contact_phone: '',
+      logistics_supplier: '',
       logistics_method: INV_LOGISTICS_OPTS[0],
       tracking_number: '',
       remarks: '',
