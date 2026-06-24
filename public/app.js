@@ -111,6 +111,35 @@ function reimbPayeePartyLabel(party) {
   return REIMB_PAYEE_PARTY_OPTIONS.find((x) => x.value === party)?.label || '个人';
 }
 
+function reimbNormalizePayeeName(name) {
+  return String(name || '').trim();
+}
+
+function reimbLooksLikeCompanyName(name) {
+  const n = reimbNormalizePayeeName(name);
+  if (!n) return false;
+  return /(有限公司|股份有限公司|有限责任公司|集团有限公司|集团公司|集团)$/.test(n);
+}
+
+function reimbBuildSupplierNameSet(rows) {
+  const set = new Set();
+  (Array.isArray(rows) ? rows : [])
+    .filter((e) => e.is_active !== false && e.is_active !== 0)
+    .forEach((e) => {
+      const c = e.content || {};
+      const name = reimbNormalizePayeeName(c.company_name || e.name);
+      if (name) set.add(name);
+    });
+  return set;
+}
+
+function reimbIsCompanyPayeeName(name, supplierNames) {
+  const n = reimbNormalizePayeeName(name);
+  if (!n) return true;
+  if (supplierNames && supplierNames.has(n)) return true;
+  return reimbLooksLikeCompanyName(n);
+}
+
 function reimbCostAttributionLabel(isNonActivity) {
   return isNonActivity ? '统筹成本（不同步场次）' : '活动成本（可同步场次）';
 }
@@ -348,6 +377,8 @@ let inventoryPageState = {
   outboundCommonOrderByWarehouse: {},
   outboundCommonSearchByWarehouse: {},
   outboundItemMetaByWarehouse: {},
+  /** 编辑出库：从单据明细缓存的物料名/规格（跨仓物料不在当前仓 items 列表时用于预览） */
+  outboundEditLineMeta: {},
   outboundInlineOpen: false,
   /** 新建出库左侧列表：common=仅常用 | uncommon=仅非常用 */
   outboundListFilter: 'common',
@@ -1157,6 +1188,8 @@ function closeModal() {
     if (vh) vh.value = '0';
     const cityEl = document.getElementById('actCity');
     if (cityEl) cityEl.setAttribute('required', 'required');
+    const dateEl = document.getElementById('actDate');
+    if (dateEl) dateEl.setAttribute('required', 'required');
   }
   const cur = document.getElementById(activeModal);
   if (cur) cur.classList.remove('active');
@@ -4095,9 +4128,13 @@ async function showActivityModal(id = null, opts = {}) {
     }
     const cityEl = document.getElementById('actCity');
     if (cityEl) cityEl.removeAttribute('required');
+    const dateEl = document.getElementById('actDate');
+    if (dateEl) dateEl.removeAttribute('required');
   } else {
     const cityEl = document.getElementById('actCity');
     if (cityEl) cityEl.setAttribute('required', 'required');
+    const dateEl = document.getElementById('actDate');
+    if (dateEl) dateEl.setAttribute('required', 'required');
   }
 
   openModal('modalActivity');
@@ -4224,12 +4261,23 @@ async function syncActivityWineUsageRecords(activityId, activityBody) {
   }
 }
 
-async function saveActivity() {
+async function saveActivity(event) {
+  if (event && typeof event.preventDefault === 'function') event.preventDefault();
   const id = document.getElementById('actId').value;
   const isVirt = document.getElementById('actIsVirtual')?.value === '1';
   const brandAmbassadorEl = document.getElementById('actBrandAmbassador');
   const brandAmbassadorVal = brandAmbassadorEl ? String(brandAmbassadorEl.value || '').trim() : '';
-  const actDateVal = document.getElementById('actDate').value || null;
+  const actDateEl = document.getElementById('actDate');
+  const actDateVal = String(actDateEl?.value || '').trim() || null;
+  if (!isVirt && !actDateVal) {
+    showToast('请填写活动日期', 'warning');
+    actDateEl?.focus();
+    return;
+  }
+  const activityForm = document.getElementById('activityForm');
+  if (activityForm && typeof activityForm.reportValidity === 'function' && !activityForm.reportValidity()) {
+    return;
+  }
   let projectCode = String(document.getElementById('actProjectCode').value || '').trim();
   if (!isVirt && actDateVal) {
     if (!projectCodeHasDateSuffix(projectCode)) {
@@ -4311,6 +4359,9 @@ async function saveActivity() {
     }
     closeModal();
     if (currentPage === 'virtual-activities') loadVirtualActivities();
+    else if (currentPage === 'calendar' && typeof window._calYear === 'number') {
+      await drawCalendar(window._calYear, window._calMonth);
+    } else if (currentPage === 'activities') loadActivities();
     else loadActivities();
     void updateBadges();
   } catch (err) {
@@ -4494,6 +4545,20 @@ async function showActivityDetail(id, opts = {}) {
       };
     }
 
+    const outboundBtn = document.getElementById('detailOutboundBtn');
+    if (outboundBtn) {
+      if (isVirt || !hasWriteAccess()) {
+        outboundBtn.style.display = 'none';
+        outboundBtn.onclick = null;
+      } else {
+        outboundBtn.style.display = '';
+        outboundBtn.onclick = () => {
+          closeModal();
+          setTimeout(() => invOpenOutboundModalForActivity(a), 100);
+        };
+      }
+    }
+
     openModal('modalActivityDetail');
     renderLucideIcons();
   } catch (err) {
@@ -4596,7 +4661,10 @@ async function renderCalendar() {
             <h2 id="calTitle" class="cal-toolbar-title"></h2>
             <button type="button" class="btn btn-secondary" onclick="nextCalMonth()">下月 ›</button>
           </div>
-          <button type="button" class="btn btn-secondary btn-sm" onclick="goCalToday()">今天</button>
+          <div class="cal-toolbar-actions">
+            <button type="button" class="btn btn-primary btn-sm" onclick="showActivityModal()">+ 新建活动</button>
+            <button type="button" class="btn btn-secondary btn-sm" onclick="goCalToday()">今天</button>
+          </div>
         </div>
         <div class="calendar-grid cal-weekhead" id="calHeader"></div>
       </div>
@@ -10021,23 +10089,64 @@ async function reimbFetchPayeeInfoEntries(partyType) {
       })
       .filter((x) => x.name);
   }
-  const [payees, reimbursers] = await Promise.all([
+  const [commonPayees, personalPayees, reimbursers, suppliers] = await Promise.all([
+    api('GET', '/dict?category=payee'),
     api('GET', '/dict?category=personal_payee'),
     api('GET', '/dict?category=reimburser'),
+    api('GET', '/dict?category=supplier'),
   ]);
+  const supplierNames = reimbBuildSupplierNameSet(suppliers);
   const out = [];
   const seen = new Set();
-  (Array.isArray(payees) ? payees : [])
+  const push = (entry) => {
+    const name = reimbNormalizePayeeName(entry.name);
+    if (!name || seen.has(name) || reimbIsCompanyPayeeName(name, supplierNames)) return;
+    seen.add(name);
+    out.push({ ...entry, name, label: entry.label || name });
+  };
+
+  (Array.isArray(commonPayees) ? commonPayees : [])
     .filter((e) => e.is_active !== false && e.is_active !== 0)
     .forEach((e) => {
       const c = e.content || {};
-      const name = String(c.payee_name || e.name || '').trim();
-      if (!name || seen.has(name)) return;
-      seen.add(name);
-      out.push({
+      const name = reimbNormalizePayeeName(c.company_name || e.name);
+      push({
+        id: `payee:${e.id}`,
+        dictId: e.id,
+        name,
+        bank_name: String(c.bank_name || '').trim(),
+        bank_account: String(c.bank_account || '').trim(),
+        payment_method: 'bank_transfer',
+        source: 'payee',
+      });
+    });
+
+  (Array.isArray(reimbursers) ? reimbursers : [])
+    .filter((e) => e.is_active !== false && e.is_active !== 0)
+    .forEach((e) => {
+      const c = e.content || {};
+      const name = reimbNormalizePayeeName(c.employee_name || e.name);
+      const dept = String(c.department || '').trim();
+      push({
+        id: `reimburser:${e.id}`,
+        dictId: e.id,
+        name,
+        label: dept ? `${name} · ${dept}` : name,
+        bank_name: '',
+        bank_account: String(c.bank_card || '').trim(),
+        payment_method: '',
+        source: 'reimburser',
+      });
+    });
+
+  (Array.isArray(personalPayees) ? personalPayees : [])
+    .filter((e) => e.is_active !== false && e.is_active !== 0)
+    .forEach((e) => {
+      const c = e.content || {};
+      const name = reimbNormalizePayeeName(c.payee_name || e.name);
+      push({
         id: `personal_payee:${e.id}`,
         dictId: e.id,
-        label: name,
         name,
         bank_name: String(c.bank_name || '').trim(),
         bank_account: String(c.bank_account || '').trim(),
@@ -10045,25 +10154,7 @@ async function reimbFetchPayeeInfoEntries(partyType) {
         source: 'personal_payee',
       });
     });
-  (Array.isArray(reimbursers) ? reimbursers : [])
-    .filter((e) => e.is_active !== false && e.is_active !== 0)
-    .forEach((e) => {
-      const c = e.content || {};
-      const name = String(c.employee_name || e.name || '').trim();
-      if (!name || seen.has(name)) return;
-      seen.add(name);
-      const dept = String(c.department || '').trim();
-      out.push({
-        id: `reimburser:${e.id}`,
-        dictId: e.id,
-        label: dept ? `${name} · ${dept}` : name,
-        name,
-        bank_name: '',
-        bank_account: String(c.bank_card || '').trim(),
-        payment_method: '',
-        source: 'reimburser',
-      });
-    });
+
   return out;
 }
 
@@ -10073,13 +10164,30 @@ function reimbRenderPayeeInfoOptions(entries, selectedName) {
   const want = String(selectedName || '').trim();
   const opts = ['<option value="">请选择</option>'];
   let matched = '';
-  (entries || []).forEach((e) => {
+  const party = document.getElementById('reimbPayeePartyType')?.value || 'personal';
+  const appendOption = (e) => {
     const on = want && e.name === want;
     if (on) matched = e.id;
     opts.push(
-      `<option value="${escapeHtml(e.id)}"${on ? ' selected' : ''}>${escapeHtml(e.label)}</option>`,
+      `<option value="${escapeHtml(e.id)}"${on ? ' selected' : ''}>${escapeHtml(e.label || e.name)}</option>`,
     );
-  });
+  };
+  if (party === 'personal') {
+    const groups = [
+      { source: 'payee', label: '常用收款人' },
+      { source: 'reimburser', label: '公司成员' },
+      { source: 'personal_payee', label: '历史收款人' },
+    ];
+    groups.forEach((g) => {
+      const list = (entries || []).filter((e) => e.source === g.source);
+      if (!list.length) return;
+      opts.push(`<optgroup label="${escapeHtml(g.label)}">`);
+      list.forEach(appendOption);
+      opts.push('</optgroup>');
+    });
+  } else {
+    (entries || []).forEach(appendOption);
+  }
   if (want && !matched) {
     opts.push(`<option value="__custom__" selected>${escapeHtml(want)}（已保存）</option>`);
   }
@@ -10225,6 +10333,12 @@ async function reimbTryFillPayeeFromDict() {
 
 async function reimbUpsertPersonalPayeeDict(payeeName, paymentMethod, bankName, bankAccount) {
   if (!payeeName || !paymentMethod) return;
+  try {
+    const suppliers = await api('GET', '/dict?category=supplier');
+    if (reimbIsCompanyPayeeName(payeeName, reimbBuildSupplierNameSet(suppliers))) return;
+  } catch (_) {
+    if (reimbLooksLikeCompanyName(payeeName)) return;
+  }
   const content = {
     payee_name: payeeName,
     payment_method: paymentMethod,
@@ -15735,6 +15849,15 @@ function invItemImageInnerHtml(it) {
   return '<span class="inv-no-img">无图</span>';
 }
 
+/** 出库左侧物料列表：名称前缩略图，便于辨认 */
+function invObItemThumbHtml(it) {
+  const u = it && it.image_urls && it.image_urls[0];
+  if (u) {
+    return `<img src="${escapeHtml(u)}" alt="${escapeHtml(it.name || '物料')}" loading="lazy">`;
+  }
+  return '<span class="inv-no-img">无图</span>';
+}
+
 function invStatQty(n) {
   if (n == null || n === '') return 0;
   if (typeof n === 'bigint') return Number(n);
@@ -16244,6 +16367,148 @@ async function renderEmptyBottleRecovery() {
   navigate('inv-empty');
 }
 
+function invUsageQtyCell(v) {
+  return v != null && v !== '' ? escapeHtml(String(v)) : '—';
+}
+
+function invUsageProjectCell(code) {
+  const t = String(code || '').trim();
+  if (!t) return '<td class="col-project">—</td>';
+  return `<td class="col-project" title="${escapeHtml(t)}">${escapeHtml(t)}</td>`;
+}
+
+function invUsageTableColgroup(isWine) {
+  if (isWine) {
+    return `<colgroup>
+      <col class="col-w-project">
+      <col class="col-w-date"><col class="col-w-qty col-group-out-end">
+      <col class="col-w-date col-group-in-start"><col class="col-w-qty">
+      <col class="col-w-qty col-group-rec-start"><col class="col-w-qty"><col class="col-w-qty"><col class="col-w-qty"><col class="col-w-qty">
+    </colgroup>`;
+  }
+  return `<colgroup>
+    <col class="col-w-project">
+    <col class="col-w-date"><col class="col-w-qty col-group-out-end">
+    <col class="col-w-date col-group-in-start"><col class="col-w-qty">
+  </colgroup>`;
+}
+
+function invBuildItemActivityUsageTableHtml(usageRows, isWine) {
+  const rows = Array.isArray(usageRows) ? usageRows : [];
+  const title = isWine ? '关联场次用量与回收' : '关联场次用量';
+  const hint = isWine
+    ? '<p class="form-hint inv-item-usage-hint">酒类：空瓶回收、留给客户、丢失、损坏、消耗等按每次归还登记展示。</p>'
+    : '';
+  if (!rows.length) {
+    return `<section class="inv-item-detail-usage inv-item-detail-usage--empty">
+      <h4 class="inv-item-usage-head">${title}</h4>
+      ${hint}
+      <div class="inv-item-usage-empty">暂无关联场次的出库/入库记录</div>
+    </section>`;
+  }
+  if (isWine) {
+    const body = rows
+      .map(
+        (row) => `<tr>
+          ${invUsageProjectCell(row.project_code)}
+          <td class="col-date">${escapeHtml(row.outbound_date ? fmtDate(row.outbound_date) : '—')}</td>
+          <td class="num col-group-out-end">${invUsageQtyCell(row.outbound_quantity)}</td>
+          <td class="col-date col-group-in-start">${escapeHtml(row.inbound_date ? fmtDate(row.inbound_date) : '—')}</td>
+          <td class="num">${invUsageQtyCell(row.inbound_quantity)}</td>
+          <td class="num col-group-rec-start">${invUsageQtyCell(row.qty_empty_recovered)}</td>
+          <td class="num">${invUsageQtyCell(row.qty_customer_keep)}</td>
+          <td class="num">${invUsageQtyCell(row.qty_lost)}</td>
+          <td class="num">${invUsageQtyCell(row.qty_damaged)}</td>
+          <td class="num">${invUsageQtyCell(row.qty_consumed)}</td>
+        </tr>`,
+      )
+      .join('');
+    return `<section class="inv-item-detail-usage">
+      <h4 class="inv-item-usage-head">${title}</h4>
+      ${hint}
+      <div class="inv-item-usage-table-scroll" tabindex="0" role="region" aria-label="关联场次明细列表">
+        <table class="data-table inv-item-usage-table inv-item-usage-table--wine">
+          ${invUsageTableColgroup(true)}
+          <thead>
+            <tr>
+              <th class="col-project">项目编号</th>
+              <th class="col-date" title="出库日期">出库日期</th>
+              <th class="num col-group-out-end" title="出库数量">出库</th>
+              <th class="col-date col-group-in-start" title="入库日期">入库日期</th>
+              <th class="num" title="归还数量">归还</th>
+              <th class="num col-group-rec-start" title="空瓶回收">空瓶</th>
+              <th class="num" title="留给客户">留客</th>
+              <th class="num" title="丢失">丢失</th>
+              <th class="num" title="损坏">损坏</th>
+              <th class="num" title="消耗">消耗</th>
+            </tr>
+          </thead>
+          <tbody>${body}</tbody>
+        </table>
+      </div>
+    </section>`;
+  }
+  const body = rows
+    .map(
+      (row) => `<tr>
+        ${invUsageProjectCell(row.project_code)}
+        <td class="col-date">${escapeHtml(row.outbound_date ? fmtDate(row.outbound_date) : '—')}</td>
+        <td class="num col-group-out-end">${invUsageQtyCell(row.outbound_quantity)}</td>
+        <td class="col-date col-group-in-start">${escapeHtml(row.inbound_date ? fmtDate(row.inbound_date) : '—')}</td>
+        <td class="num">${invUsageQtyCell(row.inbound_quantity)}</td>
+      </tr>`,
+    )
+    .join('');
+  return `<section class="inv-item-detail-usage">
+    <h4 class="inv-item-usage-head">${title}</h4>
+    <div class="inv-item-usage-table-scroll" tabindex="0" role="region" aria-label="关联场次明细列表">
+      <table class="data-table inv-item-usage-table">
+        ${invUsageTableColgroup(false)}
+        <thead>
+          <tr>
+            <th class="col-project">项目编号</th>
+            <th class="col-date">出库日期</th>
+            <th class="num col-group-out-end">出库</th>
+            <th class="col-date col-group-in-start">入库日期</th>
+            <th class="num">入库</th>
+          </tr>
+        </thead>
+        <tbody>${body}</tbody>
+      </table>
+    </div>
+  </section>`;
+}
+
+function invBuildItemDetailMediaHtml(urls) {
+  const list = Array.isArray(urls) ? urls.filter(Boolean) : [];
+  const main = list[0]
+    ? `<img class="inv-item-detail-main-img" src="${escapeHtml(list[0])}" alt="">`
+    : '<div class="inv-item-detail-main-img inv-item-detail-main-img--empty">暂无图片</div>';
+  const thumbs =
+    list.length > 1
+      ? `<div class="inv-item-detail-thumbs">${list
+          .slice(1, 9)
+          .map((u) => `<img src="${escapeHtml(u)}" alt="">`)
+          .join('')}</div>`
+      : '';
+  return `${main}${thumbs}`;
+}
+
+function invBuildItemDetailMetaHtml(it) {
+  const wineVal = invItemIsWineTagged(it)
+    ? `是 · ${escapeHtml(it.wine_label || it.name || '—')}`
+    : '否';
+  return `<dl class="inv-item-detail-meta">
+    <div class="inv-item-detail-kv inv-item-detail-kv--name"><dt>名称</dt><dd>${escapeHtml(it.name || '—')}</dd></div>
+    <div class="inv-item-detail-kv"><dt>规格</dt><dd>${escapeHtml(it.dimensions || '—')}</dd></div>
+    <div class="inv-item-detail-kv"><dt>用酒</dt><dd>${wineVal}</dd></div>
+    <div class="inv-item-detail-kv"><dt>库存</dt><dd><span class="${invStockClass(it)}">${escapeHtml(String(it.quantity_on_hand ?? 0))}</span></dd></div>
+    <div class="inv-item-detail-kv"><dt>累计出库</dt><dd>${escapeHtml(String(invStatQty(it.total_outbound)))}</dd></div>
+    <div class="inv-item-detail-kv"><dt>损坏/丢失</dt><dd>${escapeHtml(String(invStatQty(it.total_damaged)))} / ${escapeHtml(String(invStatQty(it.total_lost)))}</dd></div>
+    <div class="inv-item-detail-kv inv-item-detail-kv--wide"><dt>备注</dt><dd>${escapeHtml(it.description || '—')}</dd></div>
+  </dl>`;
+}
+
 async function invOpenItemDetail(itemId) {
   const id = parseInt(itemId, 10);
   if (!Number.isFinite(id) || id <= 0) return;
@@ -16251,41 +16516,24 @@ async function invOpenItemDetail(itemId) {
   const title = document.getElementById('invItemDetailTitle');
   if (!body) return;
   if (title) title.textContent = '物品详情';
-  body.innerHTML = '<div style="padding:8px;color:var(--text-muted)">加载中...</div>';
+  body.innerHTML = '<div class="inv-item-detail-loading">加载中...</div>';
   openModal('modalInvItemDetail');
   try {
-    const it = await api('GET', `/inventory/items/${id}`);
+    const [it, usageResp] = await Promise.all([
+      api('GET', `/inventory/items/${id}`),
+      api('GET', `/inventory/items/${id}/activity-usage`).catch(() => ({ data: [] })),
+    ]);
+    const usageRows = Array.isArray(usageResp?.data) ? usageResp.data : [];
+    const usageIsWine = !!(usageResp?.is_wine || invItemIsWineTagged(it));
     const urls = Array.isArray(it.image_urls) ? it.image_urls.filter(Boolean) : [];
-    // 控制弹窗高度：主图用固定高度，减少滚动查阅
-    const main = urls[0]
-      ? `<img src="${escapeHtml(urls[0])}" alt="" style="width:240px;max-width:100%;height:155px;object-fit:contain;object-position:center;border-radius:8px;background:var(--bg-secondary);border:1px solid var(--border)">`
-      : `<div style="width:240px;max-width:100%;height:155px;border-radius:8px;background:var(--bg-secondary);display:flex;align-items:center;justify-content:center;color:var(--text-muted);border:1px solid var(--border)">暂无图片</div>`;
-    const thumbs =
-      urls.length > 1
-        ? `<div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:10px;max-width:240px;max-height:86px;overflow:hidden">
-            ${urls
-              .slice(1, 9)
-              .map(
-                (u) =>
-                  `<img src="${escapeHtml(u)}" alt="" style="width:46px;height:46px;object-fit:contain;object-position:center;border-radius:6px;border:1px solid var(--border);background:var(--bg-secondary)">`,
-              )
-              .join('')}
-          </div>`
-        : '';
+    const usageTable = invBuildItemActivityUsageTableHtml(usageRows, usageIsWine);
     body.innerHTML = `
-      <div style="display:grid;grid-template-columns:280px 1fr;gap:12px;align-items:start">
-        <div style="display:flex;flex-direction:column;gap:10px;align-items:flex-start">
-          ${main}${thumbs}
+      <div class="inv-item-detail-shell">
+        <div class="inv-item-detail-top">
+          <div class="inv-item-detail-media">${invBuildItemDetailMediaHtml(urls)}</div>
+          ${invBuildItemDetailMetaHtml(it)}
         </div>
-        <div style="display:grid;grid-template-columns:96px 1fr;gap:7px 12px;font-size:13px;line-height:1.55">
-          <div style="color:var(--text-muted)">名称</div><div style="font-weight:700">${escapeHtml(it.name || '—')}</div>
-          <div style="color:var(--text-muted)">规格</div><div>${escapeHtml(it.dimensions || '—')}</div>
-          <div style="color:var(--text-muted)">用酒统计</div><div>${invItemIsWineTagged(it) ? `是 · ${escapeHtml(it.wine_label || it.name || '—')}` : '否'}</div>
-          <div style="color:var(--text-muted)">库存</div><div><span class="${invStockClass(it)}">${escapeHtml(String(it.quantity_on_hand ?? 0))}</span></div>
-          <div style="color:var(--text-muted)">累计出库</div><div>${escapeHtml(String(invStatQty(it.total_outbound)))}</div>
-          <div style="color:var(--text-muted)">损坏 / 丢失</div><div>${escapeHtml(String(invStatQty(it.total_damaged)))} / ${escapeHtml(String(invStatQty(it.total_lost)))}</div>
-          <div style="color:var(--text-muted)">备注</div><div style="word-break:break-word">${escapeHtml(it.description || '—')}</div>
-        </div>
+        ${usageTable}
       </div>
     `;
     if (title) title.textContent = it.name ? `物品详情 · ${it.name}` : '物品详情';
@@ -16480,10 +16728,48 @@ function invSeedOutboundItemMetaFromItems(warehouseId, items) {
     inventoryPageState.outboundItemMetaByWarehouse[whNum] || {};
   items.forEach((it) => {
     if (!it || it.id == null) return;
-    inventoryPageState.outboundItemMetaByWarehouse[whNum][String(it.id)] = {
-      name: it.name || '',
-      dimensions: it.dimensions || '',
+    const key = String(it.id);
+    const prev = inventoryPageState.outboundItemMetaByWarehouse[whNum][key] || {};
+    inventoryPageState.outboundItemMetaByWarehouse[whNum][key] = {
+      name: String(it.name || '').trim() || prev.name || '',
+      dimensions: String(it.dimensions || '').trim() || prev.dimensions || '',
     };
+  });
+}
+
+function invBuildOutboundLineMetaFromDetailLines(lines, fallbackWhId) {
+  const map = {};
+  (lines || []).forEach((ln) => {
+    const whNum = Number(ln.inv_warehouse_id || fallbackWhId || 0);
+    const itemId = ln.item_id;
+    if (!Number.isFinite(whNum) || itemId == null) return;
+    const key = String(itemId);
+    map[whNum] = map[whNum] || {};
+    map[whNum][key] = {
+      name: String(ln.item_name || '').trim(),
+      dimensions: String(ln.item_dimensions || '').trim(),
+    };
+  });
+  return map;
+}
+
+function invApplyOutboundEditLineMeta() {
+  const bundle = inventoryPageState.outboundEditLineMeta;
+  if (!bundle || typeof bundle !== 'object') return;
+  Object.keys(bundle).forEach((whK) => {
+    const whNum = Number(whK);
+    if (!Number.isFinite(whNum)) return;
+    inventoryPageState.outboundItemMetaByWarehouse[whNum] =
+      inventoryPageState.outboundItemMetaByWarehouse[whNum] || {};
+    const items = bundle[whK] || {};
+    Object.keys(items).forEach((itemK) => {
+      const m = items[itemK] || {};
+      const prev = inventoryPageState.outboundItemMetaByWarehouse[whNum][itemK] || {};
+      inventoryPageState.outboundItemMetaByWarehouse[whNum][itemK] = {
+        name: String(m.name || '').trim() || prev.name || '',
+        dimensions: String(m.dimensions || '').trim() || prev.dimensions || '',
+      };
+    });
   });
 }
 
@@ -16564,11 +16850,14 @@ function invBuildCommonRowsHtml(items, preset) {
             </div>
           </td>
           <td class="inv-ob-col-material">
-            <div class="inv-ob-name-block">
-              <div class="inv-ob-name-line">
-                <span class="inv-ob-name-text">${escapeHtml(it.name)}</span>
+            <div class="inv-ob-material-cell">
+              <div class="inv-ob-item-thumb" aria-hidden="true">${invObItemThumbHtml(it)}</div>
+              <div class="inv-ob-name-block">
+                <div class="inv-ob-name-line">
+                  <span class="inv-ob-name-text">${escapeHtml(it.name)}</span>
+                </div>
+                <div class="inv-ob-name-dim">${escapeHtml((it.dimensions || '—').slice(0, 40))}</div>
               </div>
-              <div class="inv-ob-name-dim">${escapeHtml((it.dimensions || '—').slice(0, 40))}</div>
             </div>
           </td>
           <td class="inv-ob-col-stock ${invStockClass(it)}">${it.quantity_on_hand}</td>
@@ -16597,6 +16886,8 @@ function invBuildSelectedOutboundPreviewHtml() {
       const meta =
         inventoryPageState.outboundItemMetaByWarehouse?.[wid]?.[idKey] ||
         inventoryPageState.outboundItemMetaByWarehouse?.[wid]?.[itemId] ||
+        inventoryPageState.outboundEditLineMeta?.[wid]?.[idKey] ||
+        inventoryPageState.outboundEditLineMeta?.[wid]?.[itemId] ||
         {};
       rows.push({
         warehouse: wh ? invWarehouseFullLabel(wh) : `仓库#${wid}`,
@@ -16908,6 +17199,7 @@ function invOutboundSupplierChanged() {
 function invBuildOutboundModalMarkup(warehouses, items, of, modalOpts) {
   modalOpts = modalOpts || {};
   invSeedOutboundItemMetaFromItems(inventoryPageState.warehouseId, items);
+  invApplyOutboundEditLineMeta();
   const commonPreset =
     modalOpts.commonPreset != null ? modalOpts.commonPreset : inventoryPageState.outboundEditCommonPreset;
   const commonRows = invBuildCommonRowsHtml(items, commonPreset);
@@ -17113,13 +17405,8 @@ async function invRefreshOutboundModalLineTables() {
   }
   const whNum = Number(whId || 0);
   if (whNum > 0) {
-    inventoryPageState.outboundItemMetaByWarehouse[whNum] = {};
-    (Array.isArray(items) ? items : []).forEach((it) => {
-      inventoryPageState.outboundItemMetaByWarehouse[whNum][String(it.id)] = {
-        name: it.name || '',
-        dimensions: it.dimensions || '',
-      };
-    });
+    invSeedOutboundItemMetaFromItems(whNum, items);
+    invApplyOutboundEditLineMeta();
   }
   const commonTbody = document.getElementById('invObCommonTbody');
   if (commonTbody) {
@@ -17188,7 +17475,58 @@ function invSetOutboundModalTitle(isEdit) {
   if (el) el.textContent = isEdit ? '编辑物品出库' : '新建物品出库';
 }
 
-async function invOpenOutboundModal() {
+function invDefaultOutboundForm() {
+  return {
+    linkMode: 'activity',
+    project_code: '',
+    purpose: '',
+    activity_id: '',
+    shipped_at: '',
+    activity_date: '',
+    recipient_city: '',
+    recipient_address: '',
+    contact_name: '',
+    contact_phone: '',
+    logistics_supplier: '',
+    logistics_method: INV_LOGISTICS_OPTS[0],
+    tracking_number: '',
+    remarks: '',
+    hint_msg: '',
+  };
+}
+
+/** 从活动详情/日历场次一键打开出库弹窗，预填项目编号与场次 */
+async function invOpenOutboundModalForActivity(activity) {
+  if (!hasWriteAccess()) {
+    showToast('仅管理员可新建出库', 'warning');
+    return;
+  }
+  const a = activity || {};
+  const form = invDefaultOutboundForm();
+  form.linkMode = 'activity';
+  form.project_code = String(a.project_code || '').trim();
+  form.activity_id = a.id != null ? String(a.id) : '';
+  form.activity_date = toDateInputValue(a.date || a.activity_date) || '';
+  form.shipped_at = todayDateInputValue();
+  form.hint_msg = form.project_code ? '已关联当前场次' : '请输入项目编号';
+  let suggestedWh = null;
+  if (currentYearFrameId && form.project_code) {
+    try {
+      const h = await api(
+        'GET',
+        `/inventory/hints/project?year_frame_id=${currentYearFrameId}&project_code=${encodeURIComponent(form.project_code)}`,
+      );
+      if (h.activity_id) form.activity_id = String(h.activity_id);
+      if (h.suggested_warehouse_id) suggestedWh = Number(h.suggested_warehouse_id);
+      form.hint_msg = h.activity_id ? '已匹配当前场次' : h.message || form.hint_msg;
+    } catch (_) {
+      /* ignore */
+    }
+  }
+  await invOpenOutboundModal(form, suggestedWh);
+}
+
+async function invOpenOutboundModal(prefillForm, suggestedWarehouseId) {
   try {
     const body = document.getElementById('invOutboundModalBody');
     if (body) body.innerHTML = '<div class="empty-state">加载中...</div>';
@@ -17200,24 +17538,11 @@ async function invOpenOutboundModal() {
     inventoryPageState.outboundCommonByWarehouse = {};
     inventoryPageState.outboundCommonSearchByWarehouse = {};
     inventoryPageState.outboundItemMetaByWarehouse = {};
+    inventoryPageState.outboundEditLineMeta = {};
     inventoryPageState.outboundListFilter = 'common';
-    inventoryPageState.outboundForm = {
-      linkMode: 'activity',
-      project_code: '',
-      purpose: '',
-      activity_id: '',
-      shipped_at: '',
-      activity_date: '',
-      recipient_city: '',
-      recipient_address: '',
-      contact_name: '',
-      contact_phone: '',
-      logistics_supplier: '',
-      logistics_method: INV_LOGISTICS_OPTS[0],
-      tracking_number: '',
-      remarks: '',
-      hint_msg: '',
-    };
+    inventoryPageState.outboundForm = prefillForm
+      ? { ...invDefaultOutboundForm(), ...prefillForm }
+      : invDefaultOutboundForm();
     invSetOutboundModalTitle(false);
     let warehouses = [];
     try {
@@ -17232,7 +17557,10 @@ async function invOpenOutboundModal() {
       closeModal();
       return;
     }
-    if (!inventoryPageState.warehouseId || !warehouses.some((w) => w.id === inventoryPageState.warehouseId)) {
+    const whHint = Number(suggestedWarehouseId);
+    if (Number.isFinite(whHint) && warehouses.some((w) => Number(w.id) === whHint)) {
+      inventoryPageState.warehouseId = whHint;
+    } else if (!inventoryPageState.warehouseId || !warehouses.some((w) => w.id === inventoryPageState.warehouseId)) {
       inventoryPageState.warehouseId = warehouses[0].id;
     }
     inventoryPageState.outboundWarehousesCache = warehouses.slice();
@@ -17289,6 +17617,7 @@ async function invToggleOutboundInlineForm(forceOpen) {
     inventoryPageState.outboundCommonByWarehouse = {};
     inventoryPageState.outboundCommonSearchByWarehouse = {};
     inventoryPageState.outboundItemMetaByWarehouse = {};
+    inventoryPageState.outboundEditLineMeta = {};
     inventoryPageState.outboundListFilter = 'common';
     inventoryPageState.outboundForm = {
       linkMode: 'activity',
@@ -17621,7 +17950,7 @@ function invRenderInboundLedgerTableRows(rows) {
       const sourceCol = isDirect ? (r.source ? escapeHtml(r.source) : '—') : '—';
       const sum = isDirect
         ? `入库 ×${r._qty || 0}`
-        : `归${r.sum_qty_return} 空${r.sum_qty_empty_recovered} 留${r.sum_qty_customer_keep} 丢${r.sum_qty_lost} 损${r.sum_qty_damaged}`;
+        : `归${r.sum_qty_return} 空${r.sum_qty_empty_recovered} 留${r.sum_qty_customer_keep} 丢${r.sum_qty_lost} 损${r.sum_qty_damaged} 耗${r.sum_qty_consumed || 0}`;
       const detailBtn = isDirect
         ? `<div class="inv-row-actions">
             <button type="button" class="btn btn-xs btn-secondary" onclick="invOpenInboundEditModal(${r.batch_id})">编辑</button>
@@ -17696,6 +18025,13 @@ function invRenderInboundPendingTableRows(orders) {
           : escapeHtml(o.project_code || '—');
       const pendingSummary = String(o.items_summary || '').trim();
       const trTitle = pendingSummary ? ` title="${escapeHtml(pendingSummary)}"` : '';
+      const rem = Number(o.qty_unaccounted) || 0;
+      const hasBatch = Number(o.return_batch_count) > 0;
+      let progressCell = '<span class="badge badge-warning">待登记</span>';
+      if (rem > 0) {
+        const progressTitle = hasBatch ? '已做过归还登记，但仍有数量未登记去向' : '尚未完成归还登记';
+        progressCell = `<span class="badge badge-warning" title="${escapeHtml(progressTitle)}">${hasBatch ? '部分已登记' : '待登记'} · 余 ${rem}</span>`;
+      }
       return `
       <tr${trTitle}>
         <td>#${o.id}</td>
@@ -17703,6 +18039,7 @@ function invRenderInboundPendingTableRows(orders) {
         <td>${cityCell}</td>
         <td>${projLine}</td>
         <td>${o.shipped_at ? escapeHtml(fmtDate(o.shipped_at)) : '—'}</td>
+        <td>${progressCell}</td>
         <td>
           <button type="button" class="btn btn-sm btn-primary" onclick="invOpenReturn(${o.id})">归还登记</button>
           <button type="button" class="btn btn-sm btn-secondary" onclick="invDownloadPdf(${o.id})">PDF</button>
@@ -17730,7 +18067,7 @@ function invRenderInboundPendingHostContent() {
       <table class="data-table">
         <thead>
           <tr>
-            <th>单号</th><th>品牌/区</th><th>城市</th><th>项目编号 / 场次</th><th>出库时间</th><th></th>
+            <th>单号</th><th>品牌/区</th><th>城市</th><th>项目编号 / 场次</th><th>出库时间</th><th>登记进度</th><th></th>
           </tr>
         </thead>
         <tbody>
@@ -17775,10 +18112,11 @@ async function invOpenInboundReceiptDetail(batchId) {
           <td>${ln.qty_customer_keep}</td>
           <td>${ln.qty_lost}</td>
           <td>${ln.qty_damaged}</td>
+          <td>${ln.qty_consumed != null ? ln.qty_consumed : 0}</td>
         </tr>`,
           )
           .join('')
-      : '<tr><td colspan="8" style="color:var(--text-muted)">无明细</td></tr>';
+      : '<tr><td colspan="9" style="color:var(--text-muted)">无明细</td></tr>';
     const remHtml = h.batch_remarks != null && String(h.batch_remarks).trim()
       ? escapeHtml(String(h.batch_remarks))
       : '—';
@@ -17816,7 +18154,7 @@ async function invOpenInboundReceiptDetail(batchId) {
           <table class="data-table">
             <thead>
               <tr>
-                <th>物料</th><th>规格</th><th>出库数</th><th>归还</th><th>空瓶回收</th><th>留给客户</th><th>丢失</th><th>损坏</th>
+                <th>物料</th><th>规格</th><th>出库数</th><th>归还</th><th>空瓶回收</th><th>留给客户</th><th>丢失</th><th>损坏</th><th>消耗</th>
               </tr>
             </thead>
             <tbody>${lineRows}</tbody>
@@ -17973,13 +18311,17 @@ async function invOpenOutboundEditModal(orderId) {
     } catch (_) {
       items = [];
     }
-    const commonPreset = {};
+    const commonByWh = {};
     for (const ln of det.lines || []) {
       const qty = Number(ln.quantity) || 0;
       const note = (ln.line_note && String(ln.line_note).trim()) || '';
-      const prev = commonPreset[ln.item_id];
+      const whKey = Number(ln.inv_warehouse_id || o.inv_warehouse_id);
+      if (!Number.isFinite(whKey)) continue;
+      if (!commonByWh[whKey]) commonByWh[whKey] = {};
+      const preset = commonByWh[whKey];
+      const prev = preset[ln.item_id];
       if (!prev) {
-        commonPreset[ln.item_id] = { checked: qty > 0, quantity: qty, line_note: note };
+        preset[ln.item_id] = { checked: qty > 0, quantity: qty, line_note: note };
       } else {
         prev.quantity += qty;
         const merged = [prev.line_note, note].filter(Boolean).join('；');
@@ -17989,11 +18331,10 @@ async function invOpenOutboundEditModal(orderId) {
     }
     inventoryPageState.outboundLines = [];
     inventoryPageState.editOutboundOrderId = orderId;
-    inventoryPageState.outboundEditCommonPreset = commonPreset;
+    inventoryPageState.outboundEditLineMeta = invBuildOutboundLineMetaFromDetailLines(det.lines, o.inv_warehouse_id);
+    inventoryPageState.outboundEditCommonPreset = commonByWh[Number(o.inv_warehouse_id)] || {};
     inventoryPageState.outboundLinesByWarehouse = {};
-    inventoryPageState.outboundCommonByWarehouse = {
-      [Number(o.inv_warehouse_id)]: commonPreset,
-    };
+    inventoryPageState.outboundCommonByWarehouse = commonByWh;
     inventoryPageState.outboundWarehousesCache = warehouses.slice();
     inventoryPageState.outboundListFilter = 'common';
     inventoryPageState.outboundInlineOpen = inlineEdit;
@@ -18028,7 +18369,7 @@ async function invOpenOutboundEditModal(orderId) {
       if (!body) return;
       body.innerHTML = invBuildOutboundModalMarkup(warehouses, items, of, {
         editOrderId: orderId,
-        commonPreset,
+        commonPreset: inventoryPageState.outboundEditCommonPreset,
       });
       invSetOutboundModalTitle(true);
       await invFillInvProjectDatalist();
@@ -18851,6 +19192,7 @@ async function invSubmitOutbound() {
       inventoryPageState.outboundLinesByWarehouse = {};
       inventoryPageState.outboundCommonByWarehouse = {};
       inventoryPageState.outboundItemMetaByWarehouse = {};
+      inventoryPageState.outboundEditLineMeta = {};
       inventoryPageState.outboundForm = {
         linkMode: 'activity',
         project_code: '',
@@ -18950,6 +19292,7 @@ async function invSubmitOutbound() {
     inventoryPageState.outboundLinesByWarehouse = {};
     inventoryPageState.outboundCommonByWarehouse = {};
     inventoryPageState.outboundItemMetaByWarehouse = {};
+    inventoryPageState.outboundEditLineMeta = {};
     inventoryPageState.outboundForm = {
       linkMode: 'activity',
       project_code: '',
@@ -19899,13 +20242,6 @@ async function invOpenReturn(orderId) {
     return;
   }
   const rd = inventoryPageState.returnDetail;
-  let warehouses = [];
-  try {
-    warehouses = await api('GET', '/inventory/warehouses');
-  } catch (e) {
-    showToast(e.message || '加载仓库失败', 'error');
-    return;
-  }
   const lines = Array.isArray(rd?.lines) ? rd.lines : [];
   const doneByLine = new Map();
   (rd?.batches || []).forEach((b) => {
@@ -19916,6 +20252,7 @@ async function invOpenReturn(orderId) {
         (parseInt(rl.qty_return, 10) || 0) +
         (parseInt(rl.qty_lost, 10) || 0) +
         (parseInt(rl.qty_damaged, 10) || 0) +
+        (parseInt(rl.qty_consumed, 10) || 0) +
         (parseInt(rl.qty_empty_recovered, 10) || 0) +
         (parseInt(rl.qty_customer_keep, 10) || 0);
       doneByLine.set(lid, (doneByLine.get(lid) || 0) + Math.max(0, done));
@@ -19926,36 +20263,40 @@ async function invOpenReturn(orderId) {
       const shipped = Number(ln.quantity) || 0;
       const done = doneByLine.get(Number(ln.id)) || 0;
       const remain = Math.max(0, shipped - done);
+      const whLabel = [ln.line_brand_code, ln.line_region].filter(Boolean).join(' ') || '—';
       return `
       <tr>
         <td>${escapeHtml(ln.item_name)}<input type="hidden" id="ret_max_${ln.id}" value="${remain}"></td>
+        <td style="font-size:12px;color:var(--text-secondary)">${escapeHtml(whLabel)}</td>
         <td>${shipped}</td>
         <td>${done}</td>
         <td>${remain}</td>
         <td><input type="number" class="form-control" min="0" id="ret_ok_${ln.id}" value="0"></td>
         <td><input type="number" class="form-control" min="0" id="ret_lost_${ln.id}" value="0"></td>
         <td><input type="number" class="form-control" min="0" id="ret_dmg_${ln.id}" value="0"></td>
+        <td><input type="number" class="form-control" min="0" id="ret_consume_${ln.id}" value="0"></td>
         <td><input type="number" class="form-control" min="0" id="ret_empty_${ln.id}" value="0"></td>
         <td><input type="number" class="form-control" min="0" id="ret_keep_${ln.id}" value="0"></td>
       </tr>`;
     })
     .join('');
   const order = rd?.order || {};
-  const defaultInboundWarehouseId = Number(order.inv_warehouse_id || 0);
-  const warehouseOptions = (Array.isArray(warehouses) ? warehouses : [])
-    .map((w) => {
-      const selected = Number(w.id) === defaultInboundWarehouseId ? 'selected' : '';
-      const text = `${invWarehouseFullLabel(w)}${w.label && w.label !== `${w.region}仓库` ? ` · ${w.label}` : ''}`;
-      return `<option value="${w.id}" ${selected}>${escapeHtml(text)}</option>`;
-    })
-    .join('');
+  const warehouseSet = new Set();
+  lines.forEach((ln) => {
+    const label = [ln.line_brand_code, ln.line_region].filter(Boolean).join(' ');
+    if (label) warehouseSet.add(label);
+  });
+  const returnWhHint =
+    warehouseSet.size <= 1
+      ? [...warehouseSet][0] || '原出库仓库'
+      : `${warehouseSet.size} 个出库仓库（各行按所属仓分别入库）`;
   const projLine =
     order.link_mode === 'standalone'
       ? escapeHtml(order.purpose || '—')
       : escapeHtml(order.project_code || '—');
   body.innerHTML = `
     <div class="modal-activity-form">
-      <p class="modal-activity-lead">默认归还到原出库仓库，也可改为其他仓库。若目标仓库不存在该物料，系统会自动建档后入库。请填写归还、丢失、损坏、空瓶回收、留给客户数量，五项合计不能超过该物料出库数量。</p>
+      <p class="modal-activity-lead">归还数量将<strong>按各行物料的原出库仓库</strong>分别加回库存（本单涉及：${escapeHtml(returnWhHint)}）。若目标仓尚无该物料，系统会自动建档。请填写归还、丢失、损坏、消耗、空瓶回收、留给客户数量，六项合计不能超过该物料出库数量。一次性耗材（如杯盖、纸垫）请计入「消耗」。</p>
       <div class="form-grid">
         <div class="form-group">
           <label class="form-label">出库单</label>
@@ -19966,10 +20307,8 @@ async function invOpenReturn(orderId) {
           <input class="form-control" value="${projLine}" readonly>
         </div>
         <div class="form-group">
-          <label class="form-label">入库仓库</label>
-          <select class="form-control" id="invReturnInboundWarehouse">
-            ${warehouseOptions || `<option value="${defaultInboundWarehouseId || ''}">原出库仓库</option>`}
-          </select>
+          <label class="form-label">归还入库</label>
+          <input class="form-control" value="${escapeHtml(returnWhHint)}" readonly title="各行按所属出库仓库入库">
         </div>
         <div class="form-group">
           <label class="form-label">归还日期</label>
@@ -19982,8 +20321,8 @@ async function invOpenReturn(orderId) {
       </div>
       <div class="table-wrapper" style="margin-top:14px;overflow-x:auto">
         <table class="data-table">
-          <thead><tr><th>物料</th><th>出库数</th><th>已登记</th><th>剩余可登记</th><th>归还</th><th>丢失</th><th>损坏</th><th>空瓶回收</th><th>留给客户</th></tr></thead>
-          <tbody>${rows || '<tr><td colspan="9" style="color:var(--text-muted)">无可归还明细</td></tr>'}</tbody>
+          <thead><tr><th>物料</th><th>出库仓库</th><th>出库数</th><th>已登记</th><th>剩余可登记</th><th>归还</th><th>丢失</th><th>损坏</th><th>消耗</th><th>空瓶回收</th><th>留给客户</th></tr></thead>
+          <tbody>${rows || '<tr><td colspan="11" style="color:var(--text-muted)">无可归还明细</td></tr>'}</tbody>
         </table>
       </div>
     </div>
@@ -20009,10 +20348,11 @@ async function invSubmitReturn() {
     const qty_return = parseInt(document.getElementById(`ret_ok_${ln.id}`)?.value, 10) || 0;
     const qty_lost = parseInt(document.getElementById(`ret_lost_${ln.id}`)?.value, 10) || 0;
     const qty_damaged = parseInt(document.getElementById(`ret_dmg_${ln.id}`)?.value, 10) || 0;
+    const qty_consumed = parseInt(document.getElementById(`ret_consume_${ln.id}`)?.value, 10) || 0;
     const qty_empty_recovered = parseInt(document.getElementById(`ret_empty_${ln.id}`)?.value, 10) || 0;
     const qty_customer_keep = parseInt(document.getElementById(`ret_keep_${ln.id}`)?.value, 10) || 0;
     const max = parseInt(document.getElementById(`ret_max_${ln.id}`)?.value, 10) || 0;
-    const entered = qty_return + qty_lost + qty_damaged + qty_empty_recovered + qty_customer_keep;
+    const entered = qty_return + qty_lost + qty_damaged + qty_consumed + qty_empty_recovered + qty_customer_keep;
     if (entered > max) {
       throw new Error(`「${ln.item_name || `明细#${ln.id}`}」本次登记 ${entered}，超过剩余可登记 ${max}`);
     }
@@ -20021,19 +20361,31 @@ async function invSubmitReturn() {
       qty_return,
       qty_lost,
       qty_damaged,
+      qty_consumed,
       qty_empty_recovered,
       qty_customer_keep,
     };
   });
   const body = {
-    inbound_warehouse_id: parseInt(document.getElementById('invReturnInboundWarehouse')?.value, 10) || null,
     return_date: document.getElementById('invReturnDate')?.value || todayDateInputValue(),
     remarks: document.getElementById('invReturnRemarks')?.value || null,
     lines,
   };
   try {
-    await api('POST', `/inventory/outbound/${oid}/returns`, body);
-    showToast('归还已登记', 'success');
+    const detail = await api('POST', `/inventory/outbound/${oid}/returns`, body);
+    const rem = Number(detail?.order?.qty_unaccounted) || 0;
+    const pending = Array.isArray(detail?.order?.pending_return_lines) ? detail.order.pending_return_lines : [];
+    if (detail?.order?.status === 'closed') {
+      showToast('归还已登记，该出库单已全部结清', 'success');
+    } else if (rem > 0) {
+      const lineHint =
+        pending.length === 1
+          ? `「${pending[0].item_name}」尚有 ${pending[0].remaining} 件未登记`
+          : `尚有 ${rem} 件未登记（${pending.length} 个物料行）`;
+      showToast(`归还已登记。${lineHint}，#${oid} 仍保留在待入库`, 'warning');
+    } else {
+      showToast('归还已登记', 'success');
+    }
     inventoryPageState.returnOrderId = null;
     inventoryPageState.returnDetail = null;
     closeModal();

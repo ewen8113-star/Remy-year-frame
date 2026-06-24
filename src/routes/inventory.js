@@ -588,6 +588,75 @@ router.get('/items/:id', async (req, res) => {
   }
 });
 
+/** 物品关联场次用量：出库日期/数量 + 归还入库日期/数量（按项目编号）；酒类含回收明细 */
+router.get('/items/:id/activity-usage', async (req, res) => {
+  try {
+    const itemId = parseInt(req.params.id, 10);
+    if (!Number.isFinite(itemId) || itemId <= 0) return res.status(400).json({ error: '无效物品 ID' });
+    const [items] = await db.query(
+      'SELECT id, name, is_wine, wine_label FROM inv_items WHERE id = ? LIMIT 1',
+      [itemId]
+    );
+    if (!items.length) return res.status(404).json({ error: '物品不存在' });
+    const itemRow = items[0];
+
+    const [rows] = await db.query(
+      `
+      SELECT
+        ol.id AS outbound_line_id,
+        o.id AS outbound_order_id,
+        COALESCE(NULLIF(TRIM(act.project_code), ''), NULLIF(TRIM(o.project_code), '')) AS project_code,
+        o.shipped_at AS outbound_shipped_at,
+        ol.quantity AS outbound_quantity,
+        rl.id AS return_line_id,
+        rb.return_date AS inbound_date,
+        rl.qty_return AS inbound_quantity,
+        rl.qty_empty_recovered,
+        rl.qty_customer_keep,
+        rl.qty_lost,
+        rl.qty_damaged,
+        rl.qty_consumed
+      FROM inv_outbound_lines ol
+      INNER JOIN inv_outbound_orders o ON o.id = ol.order_id
+      LEFT JOIN activities act ON act.id = o.activity_id
+      LEFT JOIN inv_return_lines rl ON rl.outbound_line_id = ol.id
+      LEFT JOIN inv_return_batches rb ON rb.id = rl.batch_id
+      WHERE ol.item_id = ?
+        AND (
+          o.activity_id IS NOT NULL
+          OR NULLIF(TRIM(o.project_code), '') IS NOT NULL
+          OR NULLIF(TRIM(act.project_code), '') IS NOT NULL
+        )
+      ORDER BY o.shipped_at DESC, rb.return_date DESC, rl.id DESC
+    `,
+      [itemId]
+    );
+
+    const mapped = rows.map((r) => ({
+      outbound_line_id: Number(r.outbound_line_id),
+      outbound_order_id: Number(r.outbound_order_id),
+      project_code: r.project_code ? String(r.project_code).trim() : null,
+      outbound_date: jsonYmd(r.outbound_shipped_at),
+      outbound_quantity: sqlAggNum(r.outbound_quantity),
+      inbound_date: r.return_line_id ? jsonYmd(r.inbound_date) : null,
+      inbound_quantity: r.return_line_id ? sqlAggNum(r.inbound_quantity) : null,
+      qty_empty_recovered: r.return_line_id ? sqlAggNum(r.qty_empty_recovered) : null,
+      qty_customer_keep: r.return_line_id ? sqlAggNum(r.qty_customer_keep) : null,
+      qty_lost: r.return_line_id ? sqlAggNum(r.qty_lost) : null,
+      qty_damaged: r.return_line_id ? sqlAggNum(r.qty_damaged) : null,
+      qty_consumed: r.return_line_id ? sqlAggNum(r.qty_consumed) : null,
+    }));
+
+    res.json({
+      is_wine: Number(itemRow.is_wine) === 1,
+      data: mapped,
+    });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: e.message || '加载场次用量失败' });
+  }
+});
+
 router.get('/empty-bottles/summary', async (req, res) => {
   try {
     const [rows] = await db.query(
