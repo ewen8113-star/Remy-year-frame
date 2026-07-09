@@ -48,6 +48,9 @@
     "migrate:users-auth": "node src/scripts/addUsersAuthTable.js",
     "migrate:quotations": "node src/scripts/addQuotationTables.js",
     "migrate:quotation-multi": "node src/scripts/addQuotationMultiSession.js",
+    "migrate:logistics-fee-breakdown": "node src/scripts/addLogisticsFeeBreakdown.js",
+    "migrate:logistics-return-fees": "node src/scripts/addLogisticsReturnFeeFields.js",
+    "migrate:inv-outbound-logistics-supplier": "node src/scripts/addInvOutboundLogisticsSupplier.js",
     "sync:activity-quoted-prices": "node src/scripts/syncActivityQuotedPricesFromQuotations.js",
     "verify:warehouse-db": "node src/scripts/verifyWarehouseDb.js",
     "script:set-all-activities-completed": "node src/scripts/setAllActivitiesStatusCompleted.js",
@@ -55,7 +58,9 @@
     "script:sync-inv-item-catalog": "node src/scripts/syncInvItemCatalogFromWarehouses.js",
     "export:inv-phd-east": "node src/scripts/exportInvPhdEastItems.js",
     "repair:activity-project-code-dates": "node src/scripts/repairActivityProjectCodeDates.js",
-    "repair:outbound-project-codes": "node src/scripts/repairOutboundProjectCodes.js"
+    "repair:outbound-project-codes": "node src/scripts/repairOutboundProjectCodes.js",
+    "repair:return-wrong-warehouse": "node src/scripts/repairReturnWrongWarehouse.js",
+    "repair:dict-payee-yijie-hengzhijie": "node src/scripts/repairDictPayeeNameYijieToHengzhijie.js"
   },
   "dependencies": {
     "bcryptjs": "^3.0.2",

@@ -47,8 +47,9 @@ async function loadSupersededQuoteIds(conn, yearFrameId) {
 
 /**
  * 将一条报价的金额写入关联场次。
+ * 同一活动可有多张单场报价（如采购 + 执行），按 activity_id 汇总 total_amount。
  * @param {import('mysql2/promise').PoolConnection} conn
- * @param {{ quote_mode?: string, activity_id?: number|null, total_amount?: number, linked_sessions?: unknown }} quotation
+ * @param {{ quote_mode?: string, activity_id?: number|null, total_amount?: number, linked_sessions?: unknown, year_frame_id?: number }} quotation
  */
 async function syncQuotationToActivities(conn, quotation) {
   if (!quotation) return;
@@ -56,14 +57,14 @@ async function syncQuotationToActivities(conn, quotation) {
 
   if (mode === 'multi') {
     const sessions = parseLinkedSessions(quotation.linked_sessions);
-    const byAct = new Map();
+    const byAct = new Set();
     sessions.forEach((raw) => {
       const aid = parseInt(raw.activity_id, 10);
-      if (!Number.isFinite(aid)) return;
-      const price = roundMoney(mergeSessionWithTotals(raw).row_total);
-      byAct.set(aid, roundMoney((byAct.get(aid) || 0) + price));
+      if (Number.isFinite(aid)) byAct.add(aid);
     });
-    for (const [aid, price] of byAct.entries()) {
+    for (const aid of byAct) {
+      const price = await resolveQuotedPriceForActivity(conn, aid);
+      if (price == null) continue;
       await conn.query(
         'UPDATE activities SET quoted_price = ? WHERE id = ? AND COALESCE(is_virtual, 0) = 0',
         [price, aid]
@@ -74,7 +75,8 @@ async function syncQuotationToActivities(conn, quotation) {
 
   const aid = parseInt(quotation.activity_id, 10);
   if (!Number.isFinite(aid)) return;
-  const price = roundMoney(quotation.total_amount);
+  const price = await resolveQuotedPriceForActivity(conn, aid);
+  if (price == null) return;
   await conn.query(
     'UPDATE activities SET quoted_price = ? WHERE id = ? AND COALESCE(is_virtual, 0) = 0',
     [price, aid]
@@ -129,19 +131,20 @@ async function resolveQuotedPriceForActivity(conn, activityId) {
     singleSql += ` AND id NOT IN (${supersededList.map(() => '?').join(',')})`;
     singleParams.push(...supersededList);
   }
-  singleSql += ' ORDER BY updated_at DESC, id DESC LIMIT 1';
+  singleSql += ' ORDER BY updated_at DESC, id DESC';
   const [singleRows] = await conn.query(singleSql, singleParams);
-  const bestSingle = singleRows.length
-    ? { price: roundMoney(singleRows[0].total_amount), updated_at: singleRows[0].updated_at }
+  const singleSum = singleRows.length
+    ? roundMoney(singleRows.reduce((s, row) => s + roundMoney(row.total_amount), 0))
     : null;
+  const bestSingleUpdated = singleRows.length ? singleRows[0].updated_at : null;
 
-  if (bestMulti && bestSingle) {
-    return new Date(bestMulti.updated_at) >= new Date(bestSingle.updated_at)
-      ? bestMulti.price
-      : bestSingle.price;
+  if (bestMulti && singleSum != null) {
+    // 若存在覆盖该场次的合并报价，优先合并报价口径
+    if (new Date(bestMulti.updated_at) >= new Date(bestSingleUpdated || 0)) return bestMulti.price;
+    return singleSum;
   }
   if (bestMulti) return bestMulti.price;
-  if (bestSingle) return bestSingle.price;
+  if (singleSum != null) return singleSum;
   return null;
 }
 
@@ -210,8 +213,23 @@ async function sumYearFrameEffectiveQuotedPrices(conn, yearFrameId) {
   };
 }
 
+/**
+ * 场次 project_code 变更时，同步关联报价与成本登记的项目编号。
+ */
+async function syncQuotationProjectCodesFromActivity(conn, activityId, projectCode) {
+  const aid = parseInt(activityId, 10);
+  const pc = String(projectCode || '').trim();
+  if (!Number.isFinite(aid) || !pc) return;
+  await conn.query('UPDATE quotations SET project_code = ? WHERE activity_id = ?', [pc, aid]);
+  await conn.query(
+    'UPDATE reimbursements SET related_project_code = ? WHERE activity_id = ?',
+    [pc, aid]
+  );
+}
+
 module.exports = {
   syncQuotationToActivities,
+  syncQuotationProjectCodesFromActivity,
   resolveQuotedPriceForActivity,
   ensureActivityQuotedPriceFromQuotations,
   syncYearFrameQuotedPricesFromQuotations,

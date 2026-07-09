@@ -46,6 +46,13 @@ function serializeLogisticsRow(row) {
   textKeys.forEach((k) => {
     if (out[k] != null && Buffer.isBuffer(out[k])) out[k] = out[k].toString('utf8');
   });
+  ['fee', 'shipping_fee', 'handling_fee', 'return_shipping_fee', 'return_handling_fee'].forEach((k) => {
+    if (out[k] != null && out[k] !== '') out[k] = roundMoney(out[k]);
+  });
+  if (out.return_date != null && out.return_date !== '') {
+    const d = out.return_date;
+    out.return_date = d instanceof Date ? d.toISOString().slice(0, 10) : String(d).slice(0, 10);
+  }
   if (out.related_project_code != null) {
     out.related_project_code = String(out.related_project_code).replace(/^\uFEFF/, '').trim() || null;
   }
@@ -101,6 +108,55 @@ async function enrichLogisticsRowsWithOutboundTracking(rows) {
 function canonicalBrand(brand) {
   const v = String(brand || '').trim();
   return LOGISTICS_BRANDS.has(v) ? v : 'PHD';
+}
+
+function roundMoney(v) {
+  return Math.round((parseFloat(v) || 0) * 100) / 100;
+}
+
+function parseOptionalLogisticsMoney(raw) {
+  if (raw == null || raw === '') return 0;
+  const n = roundMoney(Math.max(0, parseFloat(raw)));
+  return Number.isFinite(n) ? n : 0;
+}
+
+function parseReturnDateFromBody(body) {
+  const raw = body && body.return_date;
+  if (raw == null || String(raw).trim() === '') return null;
+  const s = String(raw).trim().slice(0, 10);
+  return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : null;
+}
+
+/** 解析出货/回收运费与操作费；fee 为四项之和（兼容旧客户端只传 fee） */
+function parseLogisticsFees(body) {
+  const src = body || {};
+  const hasBreakdown =
+    Object.prototype.hasOwnProperty.call(src, 'shipping_fee') ||
+    Object.prototype.hasOwnProperty.call(src, 'handling_fee') ||
+    Object.prototype.hasOwnProperty.call(src, 'return_shipping_fee') ||
+    Object.prototype.hasOwnProperty.call(src, 'return_handling_fee');
+  if (hasBreakdown) {
+    const shipping = parseOptionalLogisticsMoney(src.shipping_fee);
+    const handling = parseOptionalLogisticsMoney(src.handling_fee);
+    const returnShipping = parseOptionalLogisticsMoney(src.return_shipping_fee);
+    const returnHandling = parseOptionalLogisticsMoney(src.return_handling_fee);
+    return {
+      shipping_fee: shipping,
+      handling_fee: handling,
+      return_shipping_fee: returnShipping,
+      return_handling_fee: returnHandling,
+      fee: roundMoney(shipping + handling + returnShipping + returnHandling),
+    };
+  }
+  const feeNum = src.fee != null && src.fee !== '' ? parseFloat(src.fee) : 0;
+  const fee = Number.isFinite(feeNum) ? roundMoney(Math.max(0, feeNum)) : 0;
+  return {
+    shipping_fee: fee,
+    handling_fee: 0,
+    return_shipping_fee: 0,
+    return_handling_fee: 0,
+    fee,
+  };
 }
 
 async function fetchLogisticsRowById(id) {
@@ -191,7 +247,7 @@ router.get('/:id', async (req, res) => {
 // 创建物流记录
 router.post('/', async (req, res) => {
   try {
-    const { year_frame_id, activity_id, merged_into_activity, allocation_note, payee_name, logistics_company, express_company, tracking_number, origin_city, destination_city, shipping_date, fee, remarks, special_car, monthly_settlement, settlement_month, brand } = req.body;
+    const { year_frame_id, activity_id, merged_into_activity, allocation_note, payee_name, logistics_company, express_company, tracking_number, origin_city, destination_city, shipping_date, remarks, special_car, monthly_settlement, settlement_month, brand } = req.body;
     const relatedProjectCode = parseRelatedProjectCodeFromBody(req.body);
     const yfid = parseInt(year_frame_id, 10);
     const activityId = activity_id != null && String(activity_id).trim() !== '' ? parseInt(activity_id, 10) : null;
@@ -199,7 +255,8 @@ router.post('/', async (req, res) => {
     if (!Number.isFinite(yfid)) {
       return res.status(400).json({ error: '无效的年框（年份）' });
     }
-    const feeNum = fee != null && fee !== '' ? parseFloat(fee) : 0;
+    const fees = parseLogisticsFees(req.body);
+    const returnDate = parseReturnDateFromBody(req.body);
 
     const settlementMonthInput =
       settlement_month != null && String(settlement_month).trim() !== '' ? String(settlement_month).trim() : null;
@@ -215,8 +272,8 @@ router.post('/', async (req, res) => {
     const logisticsBrand = canonicalBrand(brand);
 
     const [result] = await db.query(`
-      INSERT INTO logistics (year_frame_id, activity_id, merged_into_activity, allocation_note, payee_name, logistics_company, brand, express_company, tracking_number, settlement_month, origin_city, destination_city, shipping_date, fee, related_project_code, remarks, special_car, monthly_settlement)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO logistics (year_frame_id, activity_id, merged_into_activity, allocation_note, payee_name, logistics_company, brand, express_company, tracking_number, settlement_month, origin_city, destination_city, shipping_date, fee, shipping_fee, handling_fee, return_date, return_shipping_fee, return_handling_fee, related_project_code, remarks, special_car, monthly_settlement)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `, [
       yfid,
       Number.isFinite(activityId) ? activityId : null,
@@ -231,7 +288,12 @@ router.post('/', async (req, res) => {
       origin_city,
       destination_city,
       shipping_date,
-      Number.isFinite(feeNum) ? feeNum : 0,
+      fees.fee,
+      fees.shipping_fee,
+      fees.handling_fee,
+      returnDate,
+      fees.return_shipping_fee,
+      fees.return_handling_fee,
       relatedProjectCode,
       remarks != null ? remarks : null,
       specialCar,
@@ -251,7 +313,11 @@ router.post('/batch-update-fee', async (req, res) => {
     const { updates } = req.body; // [{id, fee}, ...]
     
     for (const item of updates) {
-      await db.query('UPDATE logistics SET fee = ? WHERE id = ?', [item.fee, item.id]);
+      const feeNum = roundMoney(Math.max(0, parseFloat(item.fee) || 0));
+      await db.query(
+        'UPDATE logistics SET fee = ?, shipping_fee = ?, handling_fee = 0 WHERE id = ?',
+        [feeNum, feeNum, item.id]
+      );
     }
     
     res.json({ message: `成功更新 ${updates.length} 条记录` });
@@ -268,11 +334,12 @@ router.put('/:id', async (req, res) => {
     if (!Number.isFinite(nid)) {
       return res.status(400).json({ error: '无效的记录 ID' });
     }
-    const { activity_id, merged_into_activity, allocation_note, payee_name, logistics_company, express_company, tracking_number, origin_city, destination_city, shipping_date, fee, remarks, special_car, monthly_settlement, settlement_month, brand } = req.body;
+    const { activity_id, merged_into_activity, allocation_note, payee_name, logistics_company, express_company, tracking_number, origin_city, destination_city, shipping_date, remarks, special_car, monthly_settlement, settlement_month, brand } = req.body;
     const activityId = activity_id != null && String(activity_id).trim() !== '' ? parseInt(activity_id, 10) : null;
     const mergedFlag = merged_into_activity === true || merged_into_activity === 1 || String(merged_into_activity) === '1' ? 1 : 0;
     const relatedProjectCode = parseRelatedProjectCodeFromBody(req.body);
-    const feeNum = fee != null && fee !== '' ? parseFloat(fee) : 0;
+    const fees = parseLogisticsFees(req.body);
+    const returnDate = parseReturnDateFromBody(req.body);
     const settlementMonthInput =
       settlement_month != null && String(settlement_month).trim() !== '' ? String(settlement_month).trim() : null;
     const monthlySettlement = monthly_settlement ? 1 : (settlementMonthInput ? 1 : 0);
@@ -291,7 +358,7 @@ router.put('/:id', async (req, res) => {
         activity_id = ?, merged_into_activity = ?, allocation_note = ?, payee_name = ?,
         logistics_company = ?, brand = ?, express_company = ?, tracking_number = ?, settlement_month = ?,
         origin_city = ?, destination_city = ?, shipping_date = ?,
-        fee = ?, related_project_code = ?, remarks = ?, special_car = ?, monthly_settlement = ?
+        fee = ?, shipping_fee = ?, handling_fee = ?, return_date = ?, return_shipping_fee = ?, return_handling_fee = ?, related_project_code = ?, remarks = ?, special_car = ?, monthly_settlement = ?
       WHERE id = ?
     `, [
       Number.isFinite(activityId) ? activityId : null,
@@ -306,7 +373,12 @@ router.put('/:id', async (req, res) => {
       origin_city,
       destination_city,
       shipping_date,
-      Number.isFinite(feeNum) ? feeNum : 0,
+      fees.fee,
+      fees.shipping_fee,
+      fees.handling_fee,
+      returnDate,
+      fees.return_shipping_fee,
+      fees.return_handling_fee,
       relatedProjectCode,
       remarks != null ? remarks : null,
       specialCar,

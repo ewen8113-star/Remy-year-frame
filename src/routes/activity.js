@@ -8,7 +8,7 @@ const {
   projectCodeHasDateSuffix,
   repairProjectCodeDate,
 } = require('../lib/projectCode');
-const { ensureActivityQuotedPriceFromQuotations } = require('../quotation/syncQuotationToActivities');
+const { ensureActivityQuotedPriceFromQuotations, syncQuotationProjectCodesFromActivity } = require('../quotation/syncQuotationToActivities');
 
 const activityImportUpload = multer({
   storage: multer.memoryStorage(),
@@ -176,6 +176,68 @@ router.post('/import', (req, res) => {
   });
 });
 
+// 场次成本明细来源（按类别汇总，用于成本详情点击展开）
+router.get('/:id/cost-sources', async (req, res) => {
+  try {
+    const aid = parseInt(req.params.id, 10);
+    if (!Number.isFinite(aid)) return res.status(400).json({ error: '无效场次 ID' });
+
+    const COST_KEYS = [
+      'supervisor', 'pg', 'parttime', 'bartender', 'photo', 'cloud_album_edit', 'performance', 'makeup',
+      'travel_supervisor', 'travel_company',
+      'structure', 'av', 'print', 'spray',
+      'floral', 'payment', 'tasting', 'venue_fee', 'meal_fee', 'other_advance',
+      'warehouse', 'express', 'logistics', 'advance_offset',
+    ];
+
+    function round2(n) {
+      return Math.round((parseFloat(n) || 0) * 100) / 100;
+    }
+    function parseCostDetails(raw) {
+      if (!raw) return {};
+      if (typeof raw === 'object') return raw;
+      try { return JSON.parse(raw) || {}; } catch { return {}; }
+    }
+
+    const [rows] = await db.query(
+      `SELECT r.id, r.payee_name, r.amount, r.cost_details, r.payment_order_id, r.date,
+              po.order_no AS payment_order_no
+       FROM reimbursements r
+       LEFT JOIN payment_orders po ON po.id = r.payment_order_id
+       WHERE r.activity_id = ? AND COALESCE(r.merged_into_activity, 0) = 1
+       ORDER BY r.date ASC, r.id ASC`,
+      [aid]
+    );
+
+    const byCategory = {};
+    COST_KEYS.forEach((k) => { byCategory[k] = []; });
+
+    rows.forEach((r) => {
+      const details = parseCostDetails(r.cost_details);
+      COST_KEYS.forEach((key) => {
+        const amt = round2(details[key]);
+        if (amt === 0) return;
+        const poId = r.payment_order_id ? Number(r.payment_order_id) : null;
+        byCategory[key].push({
+          source_type: 'reimbursement',
+          source_id: Number(r.id),
+          payee_name: String(r.payee_name || '').trim() || '（未填）',
+          amount: amt,
+          payment_order_id: poId,
+          payment_order_no: r.payment_order_no ? String(r.payment_order_no) : null,
+          label: poId && r.payment_order_no
+            ? `付款单 ${r.payment_order_no}`
+            : `成本登记 #${r.id}`,
+        });
+      });
+    });
+
+    res.json({ data: byCategory });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // 获取单个活动
 router.get('/:id', async (req, res) => {
   try {
@@ -219,6 +281,9 @@ router.post('/', async (req, res) => {
     const cloudAlbumUrlFinal = String(cloud_album_url != null ? cloud_album_url : cloudAlbumUrl || '').trim() || null;
     const brandAmbassadorFinal = String(brand_ambassador || '').trim() || null;
     const virtualFlag = req.body && (is_virtual === 1 || is_virtual === true || String(is_virtual) === '1') ? 1 : 0;
+    if (virtualFlag !== 1 && !String(date || '').trim()) {
+      return res.status(400).json({ error: '活动日期为必填项' });
+    }
 
     const finalStatus =
       virtualFlag === 1 ? 'pending' : maybeAutoCompleteStatusByDate('pending', date);
@@ -267,11 +332,25 @@ router.put('/:id', async (req, res) => {
     if (req.body && req.body.brand_ambassador !== undefined) {
       req.body.brand_ambassador = String(req.body.brand_ambassador || '').trim() || null;
     }
+    const [existingRows] = await db.query(
+      'SELECT date, status, is_virtual FROM activities WHERE id = ? LIMIT 1',
+      [id]
+    );
+    const current = existingRows && existingRows[0] ? existingRows[0] : {};
+    const willBeVirtual =
+      req.body && req.body.is_virtual !== undefined
+        ? req.body.is_virtual === 1 || req.body.is_virtual === true || String(req.body.is_virtual) === '1'
+          ? 1
+          : 0
+        : Number(current.is_virtual) === 1
+          ? 1
+          : 0;
+    const effectiveDate = req.body && req.body.date !== undefined ? req.body.date : current.date;
+    if (willBeVirtual !== 1 && !String(effectiveDate || '').trim()) {
+      return res.status(400).json({ error: '活动日期为必填项' });
+    }
     // 若用户把状态设为待执行，但日期已早于今天，则自动改为已完成
     if (req.body && (req.body.status !== undefined || req.body.date !== undefined)) {
-      const [rows] = await db.query('SELECT date, status FROM activities WHERE id = ? LIMIT 1', [id]);
-      const current = rows && rows[0] ? rows[0] : {};
-      const effectiveDate = req.body.date !== undefined ? req.body.date : current.date;
       const effectiveStatus = req.body.status !== undefined ? req.body.status : current.status;
       const autoStatus = maybeAutoCompleteStatusByDate(effectiveStatus, effectiveDate);
       if (String(autoStatus) !== String(effectiveStatus)) {
@@ -324,6 +403,12 @@ router.put('/:id', async (req, res) => {
     params.push(id);
 
     await db.query(`UPDATE activities SET ${setClause} WHERE id = ?`, params);
+
+    if (keys.includes('project_code')) {
+      const pc = String(req.body.project_code || '').trim();
+      if (pc) await syncQuotationProjectCodesFromActivity(db, id, pc);
+    }
+    await ensureActivityQuotedPriceFromQuotations(db, id);
 
     res.json({ message: '更新成功' });
   } catch (error) {

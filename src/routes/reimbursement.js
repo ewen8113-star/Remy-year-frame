@@ -1,6 +1,19 @@
 const express = require('express');
+const multer = require('multer');
 const router = express.Router();
 const db = require('../config/database');
+const { importReimbursementFromExcelBuffer, previewReimbursementFromExcelBuffer } = require('../reimbursement/importReimbursementFromExcel');
+const { formatDateTimeMinute } = require('../lib/businessTime');
+
+const reimbImportUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 8 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    const name = String(file.originalname || '').toLowerCase();
+    const ok = name.endsWith('.xlsx') || name.endsWith('.xls');
+    cb(ok ? null : new Error('仅支持 .xlsx 或 .xls 文件'), ok);
+  },
+});
 
 const PAYMENT_TYPES = ['personal_reimbursement', 'corporate_payment'];
 const COST_MODULES = ['activity', 'warehouse', 'logistics', 'prop_repair', 'material_purchase', 'general'];
@@ -64,6 +77,30 @@ function readReimbDetailMeta(remarks) {
   } catch {
     return {};
   }
+}
+
+/** 从合并快照重建 remarks（新版 detail_rows 快照；旧版保留完整 remarks） */
+function remarksFromMergeSnapshot(src) {
+  const legacy = src && src.remarks != null ? String(src.remarks) : '';
+  if (legacy.includes('[REIMB_DETAIL_JSON]')) return legacy || null;
+
+  const rows = Array.isArray(src?.detail_rows) ? src.detail_rows.filter(Boolean) : [];
+  if (!rows.length) return legacy || null;
+
+  const visible = legacy.trim();
+  const gross = round2(
+    src.gross_total != null
+      ? src.gross_total
+      : rows.reduce((s, row) => s + round2(row.subtotal), 0),
+  );
+  const meta = {
+    rows,
+    use_advance: !!(src.use_advance === true || src.use_advance === 1),
+    advance_amount: round2(src.advance_amount),
+    gross_total: gross,
+    payment_date: src.payment_date ? String(src.payment_date).slice(0, 10) : '',
+  };
+  return `${visible}${REIMB_DETAIL_META_PREFIX}${JSON.stringify(meta)}`;
 }
 
 /**
@@ -170,6 +207,71 @@ async function mergeReimbIntoActivity(conn, activityId, reimbCostDetails, previo
     [JSON.stringify(merged), total, activityId]
   );
 }
+
+// 批量导入成本登记 — 预览（不写库）
+router.post('/import/preview', (req, res) => {
+  reimbImportUpload.single('file')(req, res, async (uploadErr) => {
+    if (uploadErr) {
+      return res.status(400).json({ error: uploadErr.message || '文件上传失败' });
+    }
+    if (!req.file || !req.file.buffer) {
+      return res.status(400).json({ error: '请选择要导入的 Excel 文件' });
+    }
+    try {
+      const yearFrameId = req.body && req.body.yearFrameId != null ? Number(req.body.yearFrameId) : null;
+      if (!Number.isFinite(yearFrameId)) {
+        return res.status(400).json({ error: '缺少 yearFrameId' });
+      }
+      const payeeName = req.body && req.body.payeeName != null ? String(req.body.payeeName).trim() : '';
+      const date = req.body && req.body.date != null ? String(req.body.date).slice(0, 10) : '';
+      const syncActivity = req.body && String(req.body.syncActivity) === '0' ? false : true;
+      const result = await previewReimbursementFromExcelBuffer(req.file.buffer, {
+        yearFrameId,
+        payeeName: payeeName || undefined,
+        date: date || undefined,
+        syncActivity,
+      });
+      res.json({ data: result, message: result.message });
+    } catch (error) {
+      res.status(400).json({ error: error.message || '预览失败' });
+    }
+  });
+});
+
+// 批量导入成本登记（Excel 报销单）
+router.post('/import', (req, res) => {
+  reimbImportUpload.single('file')(req, res, async (uploadErr) => {
+    if (uploadErr) {
+      return res.status(400).json({ error: uploadErr.message || '文件上传失败' });
+    }
+    if (!req.file || !req.file.buffer) {
+      return res.status(400).json({ error: '请选择要导入的 Excel 文件' });
+    }
+    try {
+      const yearFrameId = req.body && req.body.yearFrameId != null ? Number(req.body.yearFrameId) : null;
+      if (!Number.isFinite(yearFrameId)) {
+        return res.status(400).json({ error: '缺少 yearFrameId' });
+      }
+      const payeeName = req.body && req.body.payeeName != null ? String(req.body.payeeName).trim() : '';
+      const date = req.body && req.body.date != null ? String(req.body.date).slice(0, 10) : '';
+      const syncActivity = req.body && String(req.body.syncActivity) === '0' ? false : true;
+      const result = await importReimbursementFromExcelBuffer(req.file.buffer, {
+        yearFrameId,
+        payeeName: payeeName || undefined,
+        date: date || undefined,
+        syncActivity,
+      });
+      const atBj = formatDateTimeMinute(new Date());
+      res.json({
+        data: result,
+        importedAtBeijing: atBj,
+        message: `${result.message}（北京时间 ${atBj}）`,
+      });
+    } catch (error) {
+      res.status(400).json({ error: error.message || '导入失败' });
+    }
+  });
+});
 
 // 获取报销列表
 router.get('/', async (req, res) => {
@@ -708,7 +810,7 @@ router.post('/:id/unmerge', async (req, res) => {
           mergedFlag,
           hi,
           invoicesJson,
-          src.remarks || null,
+          remarksFromMergeSnapshot(src),
         ]
       );
       restored.push({

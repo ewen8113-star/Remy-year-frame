@@ -435,7 +435,11 @@ router.get('/', async (req, res) => {
   try {
     const { yearFrameId, type, status, q } = req.query;
     let sql = `SELECT q.id, q.quotation_no, q.type, q.quote_mode, q.year_frame_id, q.activity_id,
-      COALESCE(q.project_code, act.project_code) AS project_code,
+      CASE
+        WHEN q.activity_id IS NOT NULL AND act.project_code IS NOT NULL AND TRIM(act.project_code) <> ''
+          THEN act.project_code
+        ELSE q.project_code
+      END AS project_code,
       q.linked_sessions,
       q.project_name, q.client_brand, q.city, q.customer_name, q.event_date, q.event_type,
       q.total_amount, q.status, q.created_at, q.updated_at,

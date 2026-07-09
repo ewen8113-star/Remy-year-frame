@@ -22,6 +22,9 @@ function isPlaceholderProjectCode(pc) {
  * 合并报销：按 merge_sources 顺序为各行补回来源记录的 related_project_code
  */
 function enrichDetailRowsWithMergeSources(rows, meta) {
+  const fromMerge = detailRowsFromMergeSources(meta);
+  if (fromMerge.length) return fromMerge;
+
   const list = Array.isArray(rows) ? rows.map((r) => ({ ...r })) : [];
   const sources = Array.isArray(meta?.merge_sources) ? meta.merge_sources : [];
   if (!sources.length) return list;
@@ -32,8 +35,7 @@ function enrichDetailRowsWithMergeSources(rows, meta) {
   const enriched = [];
   let rowIdx = 0;
   for (const src of sources) {
-    const srcMeta = readMetaFromRemarks(src.remarks);
-    const srcRows = Array.isArray(srcMeta.rows) ? srcMeta.rows.filter(Boolean) : [];
+    const srcRows = mergeSourceDetailRows(src);
     const srcRowCount = srcRows.length || 1;
     const pc = String(src.related_project_code || '').trim();
     const pcBrand = extractBrandFromProjectCode(pc);
@@ -54,6 +56,43 @@ function enrichDetailRowsWithMergeSources(rows, meta) {
     rowIdx += 1;
   }
   return enriched.length ? enriched : list;
+}
+
+function mergeSourceDetailRows(src) {
+  if (!src) return [];
+  const pc = String(src.related_project_code || '').trim();
+  if (Array.isArray(src.detail_rows) && src.detail_rows.length) {
+    return src.detail_rows.filter(Boolean).map((row) => ({
+      ...row,
+      project_code: String(row.project_code || row.line_project || '').trim() || pc,
+    }));
+  }
+  const srcMeta = readMetaFromRemarks(src.remarks);
+  if (Array.isArray(srcMeta.rows) && srcMeta.rows.length) {
+    return srcMeta.rows.filter(Boolean).map((row) => ({
+      ...row,
+      project_code: String(row.project_code || row.line_project || '').trim() || pc,
+    }));
+  }
+  return [];
+}
+
+function detailRowsFromMergeSources(meta) {
+  const sources = Array.isArray(meta?.merge_sources) ? meta.merge_sources : [];
+  if (sources.length < 2) return [];
+  const rows = [];
+  for (const src of sources) {
+    const pc = String(src.related_project_code || '').trim();
+    const pcBrand = extractBrandFromProjectCode(pc);
+    for (const row of mergeSourceDetailRows(src)) {
+      rows.push({
+        ...row,
+        project_code: String(row.project_code || '').trim() || pc,
+        brand: (!row.brand || row.brand === '内部') && pcBrand ? pcBrand : row.brand,
+      });
+    }
+  }
+  return rows;
 }
 
 function lineProjectForRow(row, recordProjectCode, recordBrand) {

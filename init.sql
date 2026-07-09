@@ -82,6 +82,11 @@ CREATE TABLE IF NOT EXISTS logistics (
     destination_city VARCHAR(50),
     shipping_date DATE,
     fee DECIMAL(10,2) DEFAULT 0,
+    shipping_fee DECIMAL(10,2) NOT NULL DEFAULT 0 COMMENT '运费',
+    handling_fee DECIMAL(10,2) NOT NULL DEFAULT 0 COMMENT '操作费',
+    return_date DATE NULL COMMENT '物料回收日期',
+    return_shipping_fee DECIMAL(10,2) NOT NULL DEFAULT 0 COMMENT '回收运费',
+    return_handling_fee DECIMAL(10,2) NOT NULL DEFAULT 0 COMMENT '回收操作费',
     related_project_code VARCHAR(100),
     remarks TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -219,6 +224,7 @@ CREATE TABLE IF NOT EXISTS inv_outbound_orders (
     recipient_address VARCHAR(500),
     contact_name VARCHAR(100),
     contact_phone VARCHAR(50),
+    logistics_supplier VARCHAR(120) NULL COMMENT '物流公司（字典供应商）',
     logistics_method VARCHAR(80),
     tracking_number VARCHAR(100) NULL,
     status ENUM('shipped','closed') NOT NULL DEFAULT 'shipped',
@@ -246,24 +252,29 @@ CREATE TABLE IF NOT EXISTS inv_return_batches (
     id INT PRIMARY KEY AUTO_INCREMENT,
     outbound_order_id INT NOT NULL,
     return_date DATE NOT NULL,
+    inbound_warehouse_id INT NULL,
     operator VARCHAR(100),
     remarks TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    CONSTRAINT fk_inv_rb_ob FOREIGN KEY (outbound_order_id) REFERENCES inv_outbound_orders(id) ON DELETE CASCADE
+    CONSTRAINT fk_inv_rb_ob FOREIGN KEY (outbound_order_id) REFERENCES inv_outbound_orders(id) ON DELETE CASCADE,
+    CONSTRAINT fk_inv_rb_inbound_wh FOREIGN KEY (inbound_warehouse_id) REFERENCES inv_warehouses(id)
 );
 
 CREATE TABLE IF NOT EXISTS inv_return_lines (
     id INT PRIMARY KEY AUTO_INCREMENT,
     batch_id INT NOT NULL,
     outbound_line_id INT NOT NULL,
+    return_item_id INT NULL,
     qty_return INT NOT NULL DEFAULT 0,
     qty_lost INT NOT NULL DEFAULT 0,
     qty_damaged INT NOT NULL DEFAULT 0,
+    qty_consumed INT NOT NULL DEFAULT 0,
     qty_empty_recovered INT NOT NULL DEFAULT 0,
     qty_customer_keep INT NOT NULL DEFAULT 0,
     empty_bottle_item_id INT NULL,
     CONSTRAINT fk_inv_rl_batch FOREIGN KEY (batch_id) REFERENCES inv_return_batches(id) ON DELETE CASCADE,
-    CONSTRAINT fk_inv_rl_ol FOREIGN KEY (outbound_line_id) REFERENCES inv_outbound_lines(id) ON DELETE CASCADE
+    CONSTRAINT fk_inv_rl_ol FOREIGN KEY (outbound_line_id) REFERENCES inv_outbound_lines(id) ON DELETE CASCADE,
+    CONSTRAINT fk_inv_rl_ret_item FOREIGN KEY (return_item_id) REFERENCES inv_items(id)
 );
 
 -- 酒品目录（主数据，无库存数量；分仓库存后续单独建模）

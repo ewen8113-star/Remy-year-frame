@@ -9,7 +9,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="style.css?v=20260624-inv-ob-thumb">
+  <link rel="stylesheet" href="style.css?v=20260624-warehouse-quote-brand">
   <!-- Chart.js -->
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
   <script src="https://unpkg.com/lucide@latest"></script>
@@ -599,7 +599,7 @@
         </div>
         <div class="form-group">
           <label class="form-label">区域 <span class="required">*</span></label>
-          <select class="form-control" id="warRegion" required>
+          <select class="form-control" id="warRegion" required onchange="syncWarQuantityLabel()">
             <option value="">请选择</option>
             <option value="东区">东区</option>
             <option value="北区">北区</option>
@@ -717,6 +717,20 @@
     </div>
   </div>
 
+  <div class="modal wide" id="modalReimbImportPreview" style="max-width:1040px" onclick="event.stopPropagation()">
+    <div class="modal-header">
+      <span class="modal-title">报销导入预览</span>
+      <button type="button" class="modal-close" onclick="reimbursementImportPreviewCancel()">✕</button>
+    </div>
+    <div class="modal-body reimb-import-preview-body" id="modalReimbImportPreviewBody" style="max-height:72vh;overflow:auto">
+      <p class="reimb-import-preview-loading">正在解析 Excel…</p>
+    </div>
+    <div class="modal-footer">
+      <button type="button" class="btn btn-secondary" onclick="reimbursementImportPreviewCancel()">取消</button>
+      <button type="button" class="btn btn-primary" id="reimbImportConfirmBtn" onclick="reimbursementImportConfirm()" disabled>确认导入</button>
+    </div>
+  </div>
+
   <div class="modal wide" id="modalReimbPreview" style="max-width:980px" onclick="event.stopPropagation()">
     <div class="modal-header">
       <span class="modal-title" id="modalReimbPreviewTitle">预览</span>
@@ -751,16 +765,16 @@
     </div>
   </div>
 
-  <div class="modal wide" id="modalPaymentOrder" style="max-width:1180px" onclick="event.stopPropagation()">
+  <div class="modal wide" id="modalPaymentOrder" style="max-width:1240px" onclick="event.stopPropagation()">
     <div class="modal-header">
-      <span class="modal-title" id="modalPaymentOrderTitle">新建付款申请</span>
+      <span class="modal-title" id="modalPaymentOrderTitle">新建付款单</span>
       <button type="button" class="modal-close" onclick="closeModal()">✕</button>
     </div>
     <div class="modal-body" id="modalPaymentOrderBody" style="max-height:76vh;overflow:auto"></div>
     <div class="modal-footer">
       <button type="button" class="btn btn-secondary" onclick="closeModal()">取消</button>
       <button type="button" class="btn btn-secondary" id="poPreviewBtn" onclick="paymentOrderPreviewSelected()" disabled>预览</button>
-      <button type="button" class="btn btn-primary" id="poConfirmBtn" onclick="paymentOrderConfirmSave()" disabled>确认保存并标记已支付</button>
+      <button type="button" class="btn btn-primary" id="poConfirmBtn" onclick="paymentOrderConfirmSave()" disabled>保存</button>
     </div>
   </div>
 
@@ -986,7 +1000,7 @@
   <div class="toast-container" id="toastContainer"></div>
 
   <script src="disable-number-input-wheel.js?v=2"></script>
-  <script src="app.js?v=20260624-inv-ob-thumb"></script>
+  <script src="app.js?v=20260709-import-preview"></script>
   <script src="activity-quotes.js?v=20260605-aq-list-summary"></script>
 </body>
 </html>

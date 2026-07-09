@@ -13,6 +13,7 @@ const express = require('express');
 const router = express.Router();
 const db = require('../config/database');
 const { ensureDictTables } = require('../dict/ensureDictTables');
+const { syncDictEntryNameReferences } = require('../dict/syncDictNameReferences');
 
 router.use(async (req, res, next) => {
   try {
@@ -327,6 +328,9 @@ router.put('/:id', async (req, res) => {
   try {
     const id = parseInt(req.params.id, 10);
     if (!Number.isFinite(id)) return res.status(400).json({ error: '无效 id' });
+    const [beforeRows] = await db.query('SELECT * FROM dict_entries WHERE id = ?', [id]);
+    if (!beforeRows.length) return res.status(404).json({ error: '记录不存在' });
+    const beforeEntry = beforeRows[0];
     const body = req.body || {};
     const sets = [];
     const params = [];
@@ -354,7 +358,20 @@ router.put('/:id', async (req, res) => {
     await db.query(`UPDATE dict_entries SET ${sets.join(', ')} WHERE id = ?`, params);
     const [rows] = await db.query('SELECT * FROM dict_entries WHERE id = ?', [id]);
     if (!rows.length) return res.status(404).json({ error: '记录不存在' });
-    res.json(mapRow(rows[0]));
+    const afterEntry = rows[0];
+    let nameSync = { total: 0, byTable: {}, newName: '' };
+    try {
+      nameSync = await syncDictEntryNameReferences(db, beforeEntry, afterEntry);
+      if (nameSync.total > 0) {
+        console.log(
+          `字典 #${id} 改名已同步业务记录 ${nameSync.total} 条 → ${nameSync.newName}`,
+          nameSync.byTable
+        );
+      }
+    } catch (syncErr) {
+      console.error(`字典 #${id} 业务名称同步失败（字典已保存）:`, syncErr);
+    }
+    res.json({ ...mapRow(afterEntry), name_sync: nameSync });
   } catch (e) {
     console.error('PUT /api/dict/:id 失败:', e);
     res.status(500).json({ error: e.message || '更新失败' });

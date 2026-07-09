@@ -33,6 +33,47 @@ async function ensureInvItemsCommonColumn(db) {
   }
 }
 
+let _invItemsWineTagEnsured = false;
+let _invItemsWineTagEnsuring = null;
+/** 酒类统计标签：is_wine 标记参与用酒统计；wine_label 为统计归并名（避免名称/规格字段不一致） */
+async function ensureInvItemsWineTagColumns(db) {
+  if (_invItemsWineTagEnsured) return;
+  if (_invItemsWineTagEnsuring) return _invItemsWineTagEnsuring;
+  _invItemsWineTagEnsuring = (async () => {
+    try {
+      const [tc] = await db.query(
+        `SELECT COUNT(*) AS c FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'inv_items'`
+      );
+      if (!Number(tc[0].c)) return;
+      if (!(await columnExistsQuery(db, 'inv_items', 'is_wine'))) {
+        try {
+          await db.query('ALTER TABLE inv_items ADD COLUMN is_wine TINYINT(1) NOT NULL DEFAULT 0');
+        } catch (e) {
+          if (!(e && (e.code === 'ER_DUP_FIELDNAME' || /Duplicate column name/i.test(String(e.message || ''))))) {
+            throw e;
+          }
+        }
+      }
+      if (!(await columnExistsQuery(db, 'inv_items', 'wine_label'))) {
+        try {
+          await db.query('ALTER TABLE inv_items ADD COLUMN wine_label VARCHAR(200) NULL AFTER is_wine');
+        } catch (e) {
+          if (!(e && (e.code === 'ER_DUP_FIELDNAME' || /Duplicate column name/i.test(String(e.message || ''))))) {
+            throw e;
+          }
+        }
+      }
+      _invItemsWineTagEnsured = true;
+    } catch (e) {
+      console.error('inv_items 酒类标签列补列失败:', e);
+      throw e;
+    } finally {
+      _invItemsWineTagEnsuring = null;
+    }
+  })();
+  return _invItemsWineTagEnsuring;
+}
+
 let _invItemsStatsOverrideEnsured = false;
 async function ensureInvItemsStatsOverrideColumns(db) {
   if (_invItemsStatsOverrideEnsured) return;
@@ -122,6 +163,78 @@ async function ensureInvReturnLinesEmptyBottleItemIdColumn(db) {
     _invReturnLinesEmptyBottleItemIdEnsured = true;
   } catch (e) {
     console.error('inv_return_lines.empty_bottle_item_id 补列失败:', e);
+    throw e;
+  }
+}
+
+let _invReturnBatchesInboundWarehouseEnsured = false;
+async function ensureInvReturnBatchesInboundWarehouseColumn(db) {
+  if (_invReturnBatchesInboundWarehouseEnsured) return;
+  try {
+    const [tc] = await db.query(
+      `SELECT COUNT(*) AS c FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'inv_return_batches'`
+    );
+    if (!Number(tc[0].c)) return;
+    if (!(await columnExistsQuery(db, 'inv_return_batches', 'inbound_warehouse_id'))) {
+      try {
+        await db.query('ALTER TABLE inv_return_batches ADD COLUMN inbound_warehouse_id INT NULL AFTER return_date');
+      } catch (e) {
+        if (!(e && (e.code === 'ER_DUP_FIELDNAME' || /Duplicate column name/i.test(String(e.message || ''))))) {
+          throw e;
+        }
+      }
+    }
+    _invReturnBatchesInboundWarehouseEnsured = true;
+  } catch (e) {
+    console.error('inv_return_batches.inbound_warehouse_id 补列失败:', e);
+    throw e;
+  }
+}
+
+let _invReturnLinesReturnItemIdEnsured = false;
+async function ensureInvReturnLinesReturnItemIdColumn(db) {
+  if (_invReturnLinesReturnItemIdEnsured) return;
+  try {
+    const [tc] = await db.query(
+      `SELECT COUNT(*) AS c FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'inv_return_lines'`
+    );
+    if (!Number(tc[0].c)) return;
+    if (!(await columnExistsQuery(db, 'inv_return_lines', 'return_item_id'))) {
+      try {
+        await db.query('ALTER TABLE inv_return_lines ADD COLUMN return_item_id INT NULL AFTER outbound_line_id');
+      } catch (e) {
+        if (!(e && (e.code === 'ER_DUP_FIELDNAME' || /Duplicate column name/i.test(String(e.message || ''))))) {
+          throw e;
+        }
+      }
+    }
+    _invReturnLinesReturnItemIdEnsured = true;
+  } catch (e) {
+    console.error('inv_return_lines.return_item_id 补列失败:', e);
+    throw e;
+  }
+}
+
+let _invReturnLinesQtyConsumedEnsured = false;
+async function ensureInvReturnLinesQtyConsumedColumn(db) {
+  if (_invReturnLinesQtyConsumedEnsured) return;
+  try {
+    const [tc] = await db.query(
+      `SELECT COUNT(*) AS c FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'inv_return_lines'`
+    );
+    if (!Number(tc[0].c)) return;
+    if (!(await columnExistsQuery(db, 'inv_return_lines', 'qty_consumed'))) {
+      try {
+        await db.query('ALTER TABLE inv_return_lines ADD COLUMN qty_consumed INT NOT NULL DEFAULT 0 AFTER qty_damaged');
+      } catch (e) {
+        if (!(e && (e.code === 'ER_DUP_FIELDNAME' || /Duplicate column name/i.test(String(e.message || ''))))) {
+          throw e;
+        }
+      }
+    }
+    _invReturnLinesQtyConsumedEnsured = true;
+  } catch (e) {
+    console.error('inv_return_lines.qty_consumed 补列失败:', e);
     throw e;
   }
 }
@@ -227,14 +340,45 @@ async function ensureInvOutboundActivityDateColumn(db) {
   }
 }
 
+let _invOutboundLogisticsSupplierEnsured = false;
+async function ensureInvOutboundLogisticsSupplierColumn(db) {
+  if (_invOutboundLogisticsSupplierEnsured) return;
+  try {
+    const [tc] = await db.query(
+      `SELECT COUNT(*) AS c FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'inv_outbound_orders'`
+    );
+    if (!Number(tc[0].c)) return;
+    if (!(await columnExistsQuery(db, 'inv_outbound_orders', 'logistics_supplier'))) {
+      try {
+        await db.query(
+          "ALTER TABLE inv_outbound_orders ADD COLUMN logistics_supplier VARCHAR(120) NULL COMMENT '物流公司（字典供应商）' AFTER contact_phone"
+        );
+      } catch (e) {
+        if (!(e && (e.code === 'ER_DUP_FIELDNAME' || /Duplicate column name/i.test(String(e.message || ''))))) {
+          throw e;
+        }
+      }
+    }
+    _invOutboundLogisticsSupplierEnsured = true;
+  } catch (e) {
+    console.error('inv_outbound_orders.logistics_supplier 补列失败:', e);
+    throw e;
+  }
+}
+
 async function ensureInventoryTables(db) {
   await ensureInvItemsCommonColumn(db);
+  await ensureInvItemsWineTagColumns(db);
   await ensureInvItemsStatsOverrideColumns(db);
   await ensureInvReturnLinesCustomerKeepColumn(db);
   await ensureInvReturnLinesEmptyRecoveredColumn(db);
   await ensureInvReturnLinesEmptyBottleItemIdColumn(db);
+  await ensureInvReturnBatchesInboundWarehouseColumn(db);
+  await ensureInvReturnLinesReturnItemIdColumn(db);
+  await ensureInvReturnLinesQtyConsumedColumn(db);
   await ensureInvOutboundTrackingColumn(db);
   await ensureInvOutboundActivityDateColumn(db);
+  await ensureInvOutboundLogisticsSupplierColumn(db);
   await ensureInvWarehousesCityColumn(db);
   await ensureInvWarehousesRemarksColumn(db);
   if (_ensured) return;
@@ -300,6 +444,7 @@ async function ensureInventoryTables(db) {
         recipient_address VARCHAR(500),
         contact_name VARCHAR(100),
         contact_phone VARCHAR(50),
+        logistics_supplier VARCHAR(120) NULL COMMENT '物流公司（字典供应商）',
         logistics_method VARCHAR(80),
         tracking_number VARCHAR(100) NULL,
         status ENUM('shipped','closed') NOT NULL DEFAULT 'shipped',
@@ -330,10 +475,12 @@ async function ensureInventoryTables(db) {
         id INT PRIMARY KEY AUTO_INCREMENT,
         outbound_order_id INT NOT NULL,
         return_date DATE NOT NULL,
+        inbound_warehouse_id INT NULL,
         operator VARCHAR(100),
         remarks TEXT,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        CONSTRAINT fk_inv_rb_ob FOREIGN KEY (outbound_order_id) REFERENCES inv_outbound_orders(id) ON DELETE CASCADE
+        CONSTRAINT fk_inv_rb_ob FOREIGN KEY (outbound_order_id) REFERENCES inv_outbound_orders(id) ON DELETE CASCADE,
+        CONSTRAINT fk_inv_rb_inbound_wh FOREIGN KEY (inbound_warehouse_id) REFERENCES inv_warehouses(id)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
     `);
     await db.query(`
@@ -341,14 +488,17 @@ async function ensureInventoryTables(db) {
         id INT PRIMARY KEY AUTO_INCREMENT,
         batch_id INT NOT NULL,
         outbound_line_id INT NOT NULL,
+        return_item_id INT NULL,
         qty_return INT NOT NULL DEFAULT 0,
         qty_lost INT NOT NULL DEFAULT 0,
         qty_damaged INT NOT NULL DEFAULT 0,
+        qty_consumed INT NOT NULL DEFAULT 0,
         qty_customer_keep INT NOT NULL DEFAULT 0,
         qty_empty_recovered INT NOT NULL DEFAULT 0,
         empty_bottle_item_id INT NULL,
         CONSTRAINT fk_inv_rl_batch FOREIGN KEY (batch_id) REFERENCES inv_return_batches(id) ON DELETE CASCADE,
-        CONSTRAINT fk_inv_rl_ol FOREIGN KEY (outbound_line_id) REFERENCES inv_outbound_lines(id) ON DELETE CASCADE
+        CONSTRAINT fk_inv_rl_ol FOREIGN KEY (outbound_line_id) REFERENCES inv_outbound_lines(id) ON DELETE CASCADE,
+        CONSTRAINT fk_inv_rl_ret_item FOREIGN KEY (return_item_id) REFERENCES inv_items(id)
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
     `);
     await db.query(`

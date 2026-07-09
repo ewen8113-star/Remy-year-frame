@@ -7,6 +7,10 @@ const URLResolver = require('pdfmake/js/URLResolver').default;
 const pdfVirtualFs = require('pdfmake/js/virtual-fs').default;
 const robotoVfsMap = require('pdfmake/build/vfs_fonts.js');
 const cnVfsMap = require('pdfmake-support-chinese-fonts/vfs_fonts').pdfMake.vfs;
+const {
+  projectCodeHasDateSuffix,
+  repairProjectCodeDate,
+} = require('../lib/projectCode');
 
 /**
  * 仓库显示名（与前端 invWarehouseFullLabel 保持一致）。
@@ -42,6 +46,7 @@ function ensureInventoryPdfVfs() {
 const router = express.Router();
 const db = require('../config/database');
 const { ensureInventoryTables } = require('../inventory/ensureInventoryTables');
+const { writeWineUsageStatsExcel } = require('../inventory/buildWineUsageStatsExcel');
 const { ensureWineCatalog } = require('../wine/ensureWineCatalog');
 const { todayYmd, formatYmd, formatDateTimeSecond, beijingParts } = require('../lib/businessTime');
 
@@ -65,7 +70,7 @@ function parseReturnDateInput(raw) {
 
 function serializeOrderDetailForJson(detail) {
   if (!detail) return detail;
-  const order = { ...detail.order };
+  const order = applyActivityProjectCodeToOrder({ ...detail.order });
   if (order.activity_date) order.activity_date = jsonYmd(order.activity_date);
   const batches = (detail.batches || []).map((b) => ({
     ...b,
@@ -73,6 +78,55 @@ function serializeOrderDetailForJson(detail) {
     created_at: formatDateTimeSecond(b.created_at) || b.created_at,
   }));
   return { ...detail, order, batches };
+}
+
+/** 归还登记行已登记数量合计（与结清判定一致） */
+const RETURN_LINE_ACCOUNTED_SUM_SQL =
+  'qty_return + qty_lost + qty_damaged + COALESCE(qty_consumed, 0) + qty_customer_keep + qty_empty_recovered';
+const RETURN_LINE_ACCOUNTED_SUM_RL_SQL =
+  'rl.qty_return + rl.qty_lost + rl.qty_damaged + COALESCE(rl.qty_consumed, 0) + rl.qty_customer_keep + rl.qty_empty_recovered';
+
+async function queryOutboundReturnRemain(dbOrConn, orderId) {
+  const [rows] = await dbOrConn.query(
+    `
+    SELECT ol.id AS outbound_line_id, ol.quantity AS shipped, it.name AS item_name,
+      COALESCE((
+        SELECT SUM(${RETURN_LINE_ACCOUNTED_SUM_SQL})
+        FROM inv_return_lines rl WHERE rl.outbound_line_id = ol.id
+      ), 0) AS accounted
+    FROM inv_outbound_lines ol
+    JOIN inv_items it ON it.id = ol.item_id
+    WHERE ol.order_id = ?
+  `,
+    [orderId]
+  );
+  let qtyUnaccounted = 0;
+  const pendingLines = [];
+  (rows || []).forEach((r) => {
+    const shipped = Number(r.shipped) || 0;
+    const accounted = Number(r.accounted) || 0;
+    const remaining = Math.max(0, shipped - accounted);
+    if (remaining > 0) {
+      qtyUnaccounted += remaining;
+      pendingLines.push({
+        outbound_line_id: r.outbound_line_id,
+        item_name: r.item_name,
+        shipped,
+        accounted,
+        remaining,
+      });
+    }
+  });
+  return { qty_unaccounted: qtyUnaccounted, pending_return_lines: pendingLines };
+}
+
+function attachOutboundReturnRemain(order, remain) {
+  if (!order || !remain) return order;
+  return {
+    ...order,
+    qty_unaccounted: remain.qty_unaccounted,
+    pending_return_lines: remain.pending_return_lines,
+  };
 }
 
 router.use(async (req, res, next) => {
@@ -209,8 +263,15 @@ function parseImageUrls(row) {
     const j = typeof row.image_urls === 'string' ? JSON.parse(row.image_urls) : row.image_urls;
     return Array.isArray(j) ? j : [];
   } catch {
+    const s = String(row.image_urls || '').trim();
+    if (s.startsWith('/') || s.startsWith('http://') || s.startsWith('https://')) return [s];
     return [];
   }
+}
+
+/** 写入 inv_items.image_urls 前统一为合法 JSON 数组字符串 */
+function serializeImageUrlsForDb(raw) {
+  return JSON.stringify(parseImageUrls({ image_urls: raw }));
 }
 
 function normKeyPart(v) {
@@ -263,9 +324,367 @@ async function ensureEmptyBottleItem(conn, sourceItem) {
   return Number(ret.insertId);
 }
 
+async function ensureReturnItemInWarehouse(conn, sourceItem, targetWarehouseId) {
+  const whId = Number(targetWarehouseId);
+  const name = String(sourceItem?.name || '').trim();
+  const dimensions = sourceItem?.dimensions == null ? null : String(sourceItem.dimensions);
+  if (!Number.isFinite(whId) || whId <= 0 || !name) {
+    throw new Error('归还入库物料识别失败');
+  }
+  const [exists] = await conn.query(
+    'SELECT id FROM inv_items WHERE inv_warehouse_id = ? AND name = ? AND COALESCE(dimensions, \'\') = COALESCE(?, \'\') LIMIT 1',
+    [whId, name, dimensions]
+  );
+  if (exists.length) return Number(exists[0].id);
+
+  const [ret] = await conn.query(
+    `INSERT INTO inv_items (
+      inv_warehouse_id, name, description, dimensions, initial_quantity, quantity_on_hand, alert_below, image_urls, is_common, is_wine, wine_label
+    ) VALUES (?, ?, ?, ?, 0, 0, ?, ?, ?, ?, ?)`,
+    [
+      whId,
+      name,
+      sourceItem?.description || null,
+      dimensions,
+      sourceItem?.alert_below == null ? null : Number(sourceItem.alert_below),
+      serializeImageUrlsForDb(sourceItem?.image_urls),
+      sourceItem?.is_common ? 1 : 0,
+      sourceItem?.is_wine ? 1 : 0,
+      sourceItem?.wine_label || null,
+    ]
+  );
+  return Number(ret.insertId);
+}
+
 function wineCatalogSpecLine(row) {
   const v = String(row?.volume_label || '').trim();
   return v || '';
+}
+
+/** 酒类统计归并名：目录入库默认「名称 + 容量」 */
+function defaultWineLabelFromCatalog(row) {
+  const name = String(row?.name || '').trim();
+  const spec = wineCatalogSpecLine(row);
+  if (!name) return '';
+  return spec ? `${name} ${spec}` : name;
+}
+
+/** 出库统计用酒名：优先 wine_label，否则物料名称 */
+function wineStatLabelFromItem(row) {
+  const lbl = String(row?.wine_label || '').trim();
+  if (lbl) return lbl;
+  return String(row?.name || '').trim() || '—';
+}
+
+/** 规格展示统一为小写容量写法（700ML → 700ml） */
+function normalizeVolumeDisplay(spec) {
+  const s = String(spec || '').trim();
+  if (!s) return '';
+  return s.replace(/\s+/g, '').replace(/ML/g, 'ml').replace(/毫升/g, 'ml');
+}
+
+/** 从物料规格或统计名中解析容量展示（如 350ml、700ml、1L） */
+function wineVolumeSpecFromRow(dimensions, wineLabel) {
+  const d = String(dimensions || '').trim();
+  if (d) {
+    const ml = d.match(/\d+(?:\.\d+)?\s*ml/i);
+    if (ml) return normalizeVolumeDisplay(ml[0]);
+    const liter = d.match(/\d+(?:\.\d+)?\s*(?:l|L|升)/i);
+    if (liter) return normalizeVolumeDisplay(liter[0]);
+    if (/毫升/.test(d)) {
+      const m = d.match(/\d+(?:\.\d+)?\s*毫升/);
+      if (m) return normalizeVolumeDisplay(m[0].replace(/毫升/g, 'ml'));
+    }
+    if (/\d+\s*ml/i.test(d)) return normalizeVolumeDisplay(d.match(/\d+\s*ml/i)[0]);
+    if (d.length <= 32 && /\d/.test(d) && /ml|升|L/i.test(d)) return normalizeVolumeDisplay(d);
+  }
+  const lbl = String(wineLabel || '').trim();
+  const tail =
+    lbl.match(/(\d+(?:\.\d+)?\s*(?:ml|mL|ML|毫升))\s*$/i) ||
+    lbl.match(/(\d+(?:\.\d+)?\s*(?:l|L|升))\s*$/i);
+  if (tail) return normalizeVolumeDisplay(tail[1]);
+  return '';
+}
+
+/**
+ * 用酒统计酒品列固定顺序（按关键词匹配酒类统计名；表头展示完整名称，不裁剪简称）。
+ * hints：归一化后须全部包含；excludeHints：任一词命中则排除（用于区分 XO 与凯珊 XO 等）。
+ */
+const WINE_USAGE_FIXED_COLUMN_ORDER = [
+  { hints: ['vsop'], volume: '375ml' },
+  { hints: ['vsop'], volume: '700ml' },
+  { hints: ['club'], volume: '350ml' },
+  { hints: ['club'], volume: '700ml' },
+  {
+    hints: ['xo'],
+    volume: '350ml',
+    excludeHints: [
+      '凯珊',
+      'oct',
+      'octomore',
+      '波夏',
+      'portcharlotte',
+      '植物',
+      'botanist',
+      '迈夏',
+      'tamnavulin',
+      '君度',
+      'cointreau',
+      '布赫拉迪',
+      'bruichladdich',
+      '大麦',
+      '古卓',
+      'classic',
+      'barley',
+    ],
+  },
+  {
+    hints: ['xo'],
+    volume: '700ml',
+    excludeHints: [
+      '凯珊',
+      'oct',
+      'octomore',
+      '波夏',
+      'portcharlotte',
+      '植物',
+      'botanist',
+      '迈夏',
+      'tamnavulin',
+      '君度',
+      'cointreau',
+      '布赫拉迪',
+      'bruichladdich',
+      '大麦',
+      '古卓',
+      'classic',
+      'barley',
+    ],
+  },
+  { hints: ['君度'], volume: '350ml' },
+  { hints: ['君度'], volume: '700ml' },
+  { hints: ['经典大麦'], volume: '200ml' },
+  { hints: ['经典大麦'], volume: '700ml' },
+  { hints: ['12年'], volume: '700ml', excludeHints: ['15年', '18年', '2013', '2012'] },
+  { hints: ['15年'], volume: '700ml', excludeHints: ['12年', '18年', '2013', '2012'] },
+  { hints: ['18年'], volume: '700ml', excludeHints: ['12年', '15年', '2013', '2012'] },
+  { hints: ['大麦2013', '2013'], volume: '700ml' },
+  { hints: ['古卓2012', '2012'], volume: '700ml' },
+  { hints: ['波夏'], volume: '500ml' },
+  { hints: ['波夏'], volume: '700ml' },
+  { hints: ['oct', '15.1'], volume: '700ml' },
+  { hints: ['oct', '15.2'], volume: '700ml' },
+  { hints: ['oct', '15.3'], volume: '700ml' },
+  { hints: ['植物学家'], volume: '350ml' },
+  { hints: ['植物学家'], volume: '700ml' },
+  { hints: ['凯珊禧年'], volume: '700ml' },
+  { hints: ['凯珊波本'], volume: '700ml' },
+  { hints: ['凯珊', 'xo'], volume: '700ml' },
+  { hints: ['迈夏尔'], volume: '700ml' },
+];
+
+function normalizeWineMatchKey(s) {
+  return String(s || '')
+    .toLowerCase()
+    .replace(/\s+/g, '')
+    .replace(/\./g, '')
+    .replace(/-/g, '');
+}
+
+function normalizeWineMatchBlob(wine) {
+  const vol = normalizeVolumeDisplay(wine.volume) || '';
+  return normalizeWineMatchKey(`${wine.label || ''} ${vol}`);
+}
+
+function wineMatchesUsageColumnSlot(wine, slot) {
+  const blob = normalizeWineMatchBlob(wine);
+  const vol = normalizeVolumeDisplay(wine.volume);
+  const slotVol = normalizeVolumeDisplay(slot.volume);
+  if (slotVol && vol !== slotVol) return false;
+  for (const h of slot.hints || []) {
+    if (!blob.includes(normalizeWineMatchKey(h))) return false;
+  }
+  for (const ex of slot.excludeHints || []) {
+    if (blob.includes(normalizeWineMatchKey(ex))) return false;
+  }
+  return true;
+}
+
+function wineUsageEntryFromLabel(label, dimensions, total = 0) {
+  const lbl = String(label || '').trim();
+  if (!lbl) return null;
+  const volume =
+    normalizeVolumeDisplay(wineVolumeSpecFromRow(dimensions, lbl)) ||
+    normalizeVolumeDisplay(wineVolumeSpecFromRow(null, lbl)) ||
+    null;
+  return { label: lbl, displayName: lbl, volume, total: Number(total) || 0 };
+}
+
+/** 物料 + 酒品目录：为零用量列提供完整酒类统计名 */
+async function fetchWineRegistryForUsageStats(conn) {
+  await ensureWineCatalog(conn);
+  const [[itemRows], [catalogRows]] = await Promise.all([
+    conn.query(
+      `
+      SELECT COALESCE(NULLIF(TRIM(wine_label), ''), TRIM(name)) AS wl,
+             MAX(NULLIF(TRIM(dimensions), '')) AS dimensions
+      FROM inv_items
+      WHERE is_wine = 1
+      GROUP BY wl
+      `,
+    ),
+    conn.query('SELECT name, category, volume_label FROM wine_catalog ORDER BY sort_order, id'),
+  ]);
+  const byLabel = new Map();
+  (itemRows || []).forEach((r) => {
+    const entry = wineUsageEntryFromLabel(r.wl, r.dimensions, 0);
+    if (entry) byLabel.set(entry.label, entry);
+  });
+  (catalogRows || []).forEach((c) => {
+    const lbl = defaultWineLabelFromCatalog(c);
+    const entry = wineUsageEntryFromLabel(lbl, wineCatalogSpecLine(c), 0);
+    if (entry && !byLabel.has(entry.label)) byLabel.set(entry.label, entry);
+  });
+  return [...byLabel.values()];
+}
+
+/**
+ * 固定列顺序：每个槽位始终一列（含零用量）。
+ * 优先用本期有出库的酒；否则用仓库/目录登记名；仍无则占位（仅容量，便于对列）。
+ */
+function orderWinesForUsageStats(wines, registry = []) {
+  const list = Array.isArray(wines) ? wines : [];
+  const reg = Array.isArray(registry) ? registry : [];
+  const used = new Set();
+  const usedReg = new Set();
+  const ordered = [];
+
+  const takeMatch = (arr, usedSet, slot) => {
+    const idx = arr.findIndex((w, i) => !usedSet.has(i) && wineMatchesUsageColumnSlot(w, slot));
+    if (idx < 0) return null;
+    usedSet.add(idx);
+    return arr[idx];
+  };
+
+  for (const slot of WINE_USAGE_FIXED_COLUMN_ORDER) {
+    let w = takeMatch(list, used, slot);
+    if (!w) w = takeMatch(reg, usedReg, slot);
+    if (!w) {
+      const vol = normalizeVolumeDisplay(slot.volume) || null;
+      const hint = (slot.hints || []).join(' ');
+      ordered.push({
+        label: `__slot__${normalizeWineMatchKey(hint)}__${vol || ''}`,
+        displayName: hint ? `${hint} ${vol || ''}`.trim() : vol || '—',
+        volume: vol,
+        total: 0,
+        isPlaceholder: true,
+      });
+      continue;
+    }
+    ordered.push({
+      label: w.label,
+      displayName: w.displayName || w.label,
+      volume: w.volume || normalizeVolumeDisplay(slot.volume) || null,
+      total: Number(w.total) || 0,
+    });
+  }
+  list.forEach((w, i) => {
+    if (!used.has(i)) {
+      ordered.push({
+        label: w.label,
+        displayName: w.displayName || w.label,
+        volume: w.volume || null,
+        total: Number(w.total) || 0,
+      });
+    }
+  });
+  return ordered;
+}
+
+/** 各酒类统计名 → 仓库物料规格（出库聚合未带出规格时的兜底） */
+async function fetchWineLabelDimensionsLookup(conn) {
+  const [rows] = await conn.query(
+    `
+    SELECT COALESCE(NULLIF(TRIM(wine_label), ''), TRIM(name)) AS wl,
+           MAX(NULLIF(TRIM(dimensions), '')) AS dimensions
+    FROM inv_items
+    WHERE is_wine = 1
+    GROUP BY wl
+    `
+  );
+  const m = new Map();
+  (rows || []).forEach((r) => {
+    const wl = String(r.wl || '').trim();
+    const dim = r.dimensions != null ? String(r.dimensions).trim() : '';
+    if (!wl || !dim) return;
+    m.set(wl, dim);
+  });
+  return m;
+}
+
+/** 表头展示：统计名归并键 + 酒名 + 规格行 */
+function wineColumnDisplayMeta(wineLabel, dimensions) {
+  const label = String(wineLabel || '').trim() || '—';
+  const volume = wineVolumeSpecFromRow(dimensions, label);
+  let displayName = label;
+  if (volume) {
+    const vlow = volume.toLowerCase();
+    const low = label.toLowerCase();
+    if (low.endsWith(vlow)) {
+      displayName = label.slice(0, label.length - volume.length).trim();
+    } else {
+      const idx = label.lastIndexOf(volume);
+      if (idx > 0) displayName = label.slice(0, idx).trim();
+    }
+  }
+  return { label, displayName, volume: volume || null };
+}
+
+/** 仓库物料与酒品目录对齐键（与 /items/from-catalog 入库规格一致：仅 volume_label） */
+function invItemWineKey(name, dimensions) {
+  const n = String(name == null ? '' : name).trim();
+  const d = dimensions == null ? '' : String(dimensions).trim();
+  return `${n}\0${d}`;
+}
+
+/** 前端筛「酒」用的规格展示（品类 · 容量），用于识别规格写法不一致 */
+function wineCatalogSpecLineUi(row) {
+  const parts = [row.category, row.volume_label].filter((x) => String(x || '').trim());
+  return parts.length ? parts.join(' · ') : '';
+}
+
+/** 疑似酒类：含 数字+ml / 毫升，或名称含常见酒类词（排除空瓶库存行） */
+function isSuspectedWineItem(row) {
+  const name = String(row?.name || '');
+  if (/空瓶/.test(name)) return false;
+  const combined = `${name} ${row?.dimensions || ''} ${row?.description || ''}`;
+  if (/\d+\s*ml\b/i.test(combined)) return true;
+  if (/毫升/.test(combined)) return true;
+  if (
+    /(人头马|rémy|remy|vsop|xo|club|路易十三|干邑|cognac|特藏|香槟|威士忌|白兰地|利口|金酒)/i.test(
+      name
+    )
+  ) {
+    return true;
+  }
+  return false;
+}
+
+function classifyWineItemRow(item, catalogStrictKeys, catalogUiKeys, catalogNames) {
+  const key = invItemWineKey(item.name, item.dimensions);
+  const keyUi = invItemWineKey(item.name, wineCatalogSpecLineUi({ category: null, volume_label: item.dimensions }));
+  const nameTrim = String(item.name || '').trim();
+  const suspected = isSuspectedWineItem(item);
+  let catalogStatus = 'not_in_catalog';
+  if (catalogStrictKeys.has(key)) {
+    catalogStatus = 'catalog_ok';
+  } else if (catalogUiKeys.has(key)) {
+    catalogStatus = 'catalog_spec_mismatch';
+  } else if (catalogNames.has(nameTrim)) {
+    catalogStatus = 'catalog_name_only';
+  }
+  const needsReview = suspected && catalogStatus !== 'catalog_ok';
+  return { catalogStatus, suspected, needsReview };
 }
 
 /** MySQL 聚合 / mysql2 可能返回 string、bigint；统一为安全数字 */
@@ -358,6 +777,42 @@ async function resolveOutboundActivityId(conn, projectCodeRaw, activityIdRaw, ye
     throw err;
   }
   return rows[0].id;
+}
+
+/**
+ * 出库单保存用项目编号：已关联场次时与场次表一致；否则按活动日期补全 YYMMDD。
+ */
+async function canonicalOutboundProjectCode(conn, opts) {
+  const lm = opts.link_mode === 'standalone' ? 'standalone' : 'activity';
+  if (lm !== 'activity') return null;
+
+  const activityId =
+    opts.activity_id != null && String(opts.activity_id).trim() !== ''
+      ? parseInt(opts.activity_id, 10)
+      : null;
+  let actRow = null;
+  if (Number.isFinite(activityId)) {
+    const [acts] = await conn.query('SELECT project_code, date FROM activities WHERE id = ? LIMIT 1', [
+      activityId,
+    ]);
+    actRow = acts[0] || null;
+    const actPc = String(actRow?.project_code || '').trim();
+    if (actPc) return actPc;
+  }
+
+  let pc = String(opts.project_code || '').trim();
+  const repairDate = opts.activity_date || actRow?.date || null;
+  if (pc && repairDate && !projectCodeHasDateSuffix(pc)) {
+    pc = repairProjectCodeDate(pc, repairDate);
+  }
+  return pc || null;
+}
+
+function applyActivityProjectCodeToOrder(order) {
+  if (!order) return order;
+  const actPc = String(order.activity_project_code || '').trim();
+  if (actPc) order.project_code = actPc;
+  return order;
 }
 
 /** 入库单台账对用户展示：活动出库 → 项目编号 + 场次辅助信息；非活动 → 手动填写的用途 */
@@ -474,6 +929,140 @@ router.delete('/warehouses/:id', async (req, res) => {
   } catch (e) {
     console.error(e);
     res.status(500).json({ error: e.message || '删除失败' });
+  }
+});
+
+// ---------- 酒品对照排查（各仓物料 vs 酒品目录） ----------
+router.get('/wine-audit', async (req, res) => {
+  try {
+    await ensureWineCatalog(db);
+    const [catalogRows] = await db.query(
+      'SELECT id, brand, name, category, volume_label FROM wine_catalog ORDER BY brand, name, id'
+    );
+    const catalogStrictKeys = new Set();
+    const catalogUiKeys = new Set();
+    const catalogNames = new Set();
+    (catalogRows || []).forEach((c) => {
+      const name = String(c.name || '').trim();
+      if (name) catalogNames.add(name);
+      catalogStrictKeys.add(invItemWineKey(c.name, wineCatalogSpecLine(c)));
+      catalogUiKeys.add(invItemWineKey(c.name, wineCatalogSpecLineUi(c)));
+    });
+
+    const [itemRows] = await db.query(
+      `
+      SELECT i.id, i.inv_warehouse_id, i.name, i.dimensions, i.description, i.quantity_on_hand,
+             i.is_common, i.is_wine, i.wine_label,
+             w.region, w.label AS warehouse_label, w.city,
+             b.brand_code, b.brand_name
+      FROM inv_items i
+      JOIN inv_warehouses w ON w.id = i.inv_warehouse_id
+      LEFT JOIN brand_inventory b ON b.id = w.brand_id
+      ORDER BY b.brand_code, w.region, i.name, i.id
+      `
+    );
+
+    const whMap = new Map();
+    let needsReviewTotal = 0;
+    let specMismatchTotal = 0;
+    let catalogOkTotal = 0;
+    let suspectedTotal = 0;
+
+    for (const row of itemRows || []) {
+      const whId = Number(row.inv_warehouse_id);
+      if (!whMap.has(whId)) {
+        whMap.set(whId, {
+          warehouse_id: whId,
+          warehouse_label: formatWarehouseLabel(row.brand_code, row.region),
+          region: row.region,
+          brand_code: row.brand_code,
+          brand_name: row.brand_name,
+          city: row.city,
+          warehouse_custom_label: row.warehouse_label,
+          counts: {
+            items_total: 0,
+            suspected: 0,
+            catalog_ok: 0,
+            needs_review: 0,
+            spec_mismatch: 0,
+          },
+          needs_review: [],
+          spec_mismatch: [],
+        });
+      }
+      const bucket = whMap.get(whId);
+      bucket.counts.items_total += 1;
+      const cls = classifyWineItemRow(row, catalogStrictKeys, catalogUiKeys, catalogNames);
+      if (cls.suspected) {
+        bucket.counts.suspected += 1;
+        suspectedTotal += 1;
+      }
+      if (cls.catalogStatus === 'catalog_ok') {
+        bucket.counts.catalog_ok += 1;
+        catalogOkTotal += 1;
+      }
+      const entry = {
+        id: row.id,
+        name: row.name,
+        dimensions: row.dimensions,
+        description: row.description,
+        quantity_on_hand: sqlAggNum(row.quantity_on_hand),
+        is_common: Number(row.is_common) === 1,
+        is_wine: Number(row.is_wine) === 1,
+        wine_label: row.wine_label || null,
+        catalog_status: cls.catalogStatus,
+        suspected: cls.suspected,
+        needs_review: cls.needsReview,
+        catalog_status_label:
+          cls.catalogStatus === 'catalog_ok'
+            ? '已与目录一致'
+            : cls.catalogStatus === 'catalog_spec_mismatch'
+              ? '名称规格与目录不一致'
+              : cls.catalogStatus === 'catalog_name_only'
+                ? '名称在目录、规格未对齐'
+                : '未在酒品目录',
+      };
+      if (cls.needsReview) {
+        bucket.needs_review.push(entry);
+        bucket.counts.needs_review += 1;
+        needsReviewTotal += 1;
+      }
+      if (
+        cls.catalogStatus === 'catalog_spec_mismatch' ||
+        cls.catalogStatus === 'catalog_name_only'
+      ) {
+        bucket.spec_mismatch.push(entry);
+        bucket.counts.spec_mismatch += 1;
+        specMismatchTotal += 1;
+      }
+    }
+
+    res.json({
+      data: {
+        summary: {
+          catalog_count: catalogRows.length,
+          warehouse_count: whMap.size,
+          item_count: itemRows.length,
+          suspected_count: suspectedTotal,
+          catalog_ok_count: catalogOkTotal,
+          needs_review_count: needsReviewTotal,
+          spec_mismatch_count: specMismatchTotal,
+        },
+        rules: {
+          catalog_match:
+            '从酒品目录「添加酒品」入库时，规格字段仅保存目录中的容量（volume_label）；仓库筛「酒」若用「品类·容量」可能对不齐。',
+          suspected:
+            '名称/规格/说明含「数字+ml」或「毫升」，或名称含常见酒类词；名称含「空瓶」的库存行不计入疑似酒。',
+        },
+        warehouses: [...whMap.values()].filter(
+          (w) => w.counts.needs_review > 0 || w.counts.spec_mismatch > 0 || w.counts.suspected > 0
+        ),
+        warehouses_all: [...whMap.values()],
+      },
+    });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: e.message || '酒品对照排查失败' });
   }
 });
 
@@ -820,6 +1409,8 @@ router.post('/items', async (req, res) => {
       alert_below,
       image_urls,
       is_common,
+      is_wine,
+      wine_label,
     } = req.body;
     const whId = parseInt(inv_warehouse_id, 10);
     const initQ = Math.max(0, parseInt(initial_quantity, 10) || 0);
@@ -829,9 +1420,11 @@ router.post('/items', async (req, res) => {
     let urls = image_urls;
     if (urls != null && !Array.isArray(urls)) urls = [];
     const common = Boolean(is_common);
+    const wineFlag = Boolean(is_wine);
+    const wl = String(wine_label || '').trim() || null;
     const [result] = await db.query(
-      `INSERT INTO inv_items (inv_warehouse_id, name, description, dimensions, initial_quantity, quantity_on_hand, alert_below, image_urls, is_common)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO inv_items (inv_warehouse_id, name, description, dimensions, initial_quantity, quantity_on_hand, alert_below, image_urls, is_common, is_wine, wine_label)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         whId,
         String(name).trim(),
@@ -842,6 +1435,8 @@ router.post('/items', async (req, res) => {
         alert_below != null && alert_below !== '' ? parseInt(alert_below, 10) : null,
         JSON.stringify(urls || []),
         common ? 1 : 0,
+        wineFlag ? 1 : 0,
+        wl,
       ]
     );
     const [rows] = await db.query('SELECT * FROM inv_items WHERE id = ?', [result.insertId]);
@@ -910,9 +1505,10 @@ router.post('/items/from-catalog', async (req, res) => {
       } catch (_) {
         urls = [];
       }
+      const wineLbl = defaultWineLabelFromCatalog(c);
       await db.query(
-        `INSERT INTO inv_items (inv_warehouse_id, name, description, dimensions, initial_quantity, quantity_on_hand, alert_below, image_urls, is_common)
-         VALUES (?, ?, ?, ?, ?, ?, NULL, ?, 0)`,
+        `INSERT INTO inv_items (inv_warehouse_id, name, description, dimensions, initial_quantity, quantity_on_hand, alert_below, image_urls, is_common, is_wine, wine_label)
+         VALUES (?, ?, ?, ?, ?, ?, NULL, ?, 0, 1, ?)`,
         [
           whId,
           String(c.name || '').trim(),
@@ -921,6 +1517,7 @@ router.post('/items/from-catalog', async (req, res) => {
           qty,
           qty,
           JSON.stringify(urls),
+          wineLbl || null,
         ],
       );
       inserted += 1;
@@ -1171,6 +1768,8 @@ router.put('/items/:id', async (req, res) => {
       alert_below,
       image_urls,
       is_common,
+      is_wine,
+      wine_label,
       quantity_on_hand,
       stats_damaged_override,
       stats_lost_override,
@@ -1208,6 +1807,15 @@ router.put('/items/:id', async (req, res) => {
     if (is_common !== undefined) {
       patches.push('is_common = ?');
       vals.push(Boolean(is_common) ? 1 : 0);
+    }
+    if (is_wine !== undefined) {
+      patches.push('is_wine = ?');
+      vals.push(Boolean(is_wine) ? 1 : 0);
+    }
+    if (wine_label !== undefined) {
+      const wl = String(wine_label || '').trim();
+      patches.push('wine_label = ?');
+      vals.push(wl || null);
     }
     if (stats_damaged_override !== undefined) {
       if (stats_damaged_override === null || stats_damaged_override === '') {
@@ -1317,6 +1925,7 @@ async function loadOrderDetail(orderId) {
     `
     SELECT o.*,
            wh.region, wh.brand_id, bi.brand_code, bi.brand_name,
+           act.project_code AS activity_project_code,
            act.activity_date AS activity_date_link,
            ayf.year AS activity_year_label
     FROM inv_outbound_orders o
@@ -1346,7 +1955,14 @@ async function loadOrderDetail(orderId) {
     [orderId]
   );
   const [batches] = await db.query(
-    'SELECT * FROM inv_return_batches WHERE outbound_order_id = ? ORDER BY id DESC',
+    `
+    SELECT rb.*, wh.region AS inbound_region, bi.brand_code AS inbound_brand_code, bi.brand_name AS inbound_brand_name
+    FROM inv_return_batches rb
+    LEFT JOIN inv_warehouses wh ON wh.id = rb.inbound_warehouse_id
+    LEFT JOIN brand_inventory bi ON bi.id = wh.brand_id
+    WHERE rb.outbound_order_id = ?
+    ORDER BY rb.id DESC
+  `,
     [orderId]
   );
   const batchIds = batches.map((b) => b.id);
@@ -1381,6 +1997,7 @@ router.post('/outbound', async (req, res) => {
       recipient_address,
       contact_name,
       contact_phone,
+      logistics_supplier,
       logistics_method,
       tracking_number,
       remarks,
@@ -1426,24 +2043,34 @@ router.post('/outbound', async (req, res) => {
     }
     if (!headerWhId) throw new Error('无法识别仓库，请检查出库明细');
 
+    const storedProjectCode = await canonicalOutboundProjectCode(conn, {
+      link_mode: lm,
+      project_code,
+      activity_id: resolvedActivityId,
+      activity_date: activityDateDb,
+    });
+
     const [result] = await conn.query(
       `
       INSERT INTO inv_outbound_orders (
         inv_warehouse_id, activity_id, link_mode, project_code, purpose,
-        recipient_city, recipient_address, contact_name, contact_phone, logistics_method, tracking_number,
+        recipient_city, recipient_address, contact_name, contact_phone, logistics_supplier, logistics_method, tracking_number,
         status, shipped_at, activity_date, operator, remarks
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'shipped', ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'shipped', ?, ?, ?, ?)
     `,
       [
         headerWhId,
         resolvedActivityId,
         lm,
-        lm === 'activity' ? String(project_code).trim() : null,
+        storedProjectCode,
         lm === 'standalone' ? String(purpose).trim() : null,
         recipient_city || null,
         recipient_address || null,
         contact_name || null,
         contact_phone || null,
+        logistics_supplier != null && String(logistics_supplier).trim() !== ''
+          ? String(logistics_supplier).trim()
+          : null,
         logistics_method || null,
         trackingNumber,
         shippedAtDb,
@@ -1576,17 +2203,25 @@ router.get('/outbound', async (req, res) => {
     // 没填则 fallback 到关联活动 act.activity_date（兼容老数据）；
     // 同时保留 act.activity_date 作为联动展示字段。
     let sql = `
-      SELECT o.id, o.activity_id, o.project_code, o.purpose, o.link_mode, o.status, o.shipped_at, o.recipient_city,
-             o.contact_name, o.contact_phone, o.recipient_address, o.remarks,
+      SELECT o.id, o.activity_id,
+             COALESCE(NULLIF(TRIM(act.project_code), ''), NULLIF(TRIM(o.project_code), '')) AS project_code,
+             o.purpose, o.link_mode, o.status, o.shipped_at, o.recipient_city,
+             o.contact_name, o.contact_phone, o.logistics_supplier, o.recipient_address, o.remarks,
              o.logistics_method, o.tracking_number, o.created_at,
              wh.region, bi.brand_code,
-             COALESCE(o.activity_date, act.activity_date) AS activity_date,
+             COALESCE(o.activity_date, act.date, act.activity_date) AS activity_date,
              act.city AS activity_city,
              (SELECT COUNT(*) FROM inv_outbound_lines ol WHERE ol.order_id = o.id) AS line_count,
              (SELECT GROUP_CONCAT(CONCAT_WS(' ', it.name, CONCAT('×', ol2.quantity), NULLIF(it.dimensions, '')) ORDER BY it.name SEPARATOR ' / ')
                 FROM inv_outbound_lines ol2
                 JOIN inv_items it ON it.id = ol2.item_id
-                WHERE ol2.order_id = o.id) AS items_summary
+                WHERE ol2.order_id = o.id) AS items_summary,
+             (SELECT COUNT(*) FROM inv_return_batches rb WHERE rb.outbound_order_id = o.id) AS return_batch_count,
+             (SELECT COALESCE(SUM(GREATEST(0, ol.quantity - COALESCE((
+                SELECT SUM(${RETURN_LINE_ACCOUNTED_SUM_SQL})
+                FROM inv_return_lines rl WHERE rl.outbound_line_id = ol.id
+              ), 0))), 0)
+              FROM inv_outbound_lines ol WHERE ol.order_id = o.id) AS qty_unaccounted
       FROM inv_outbound_orders o
       JOIN inv_warehouses wh ON wh.id = o.inv_warehouse_id
       JOIN brand_inventory bi ON bi.id = wh.brand_id
@@ -1627,6 +2262,62 @@ router.get('/outbound', async (req, res) => {
   } catch (e) {
     console.error(e);
     res.status(500).json({ error: e.message || '加载失败' });
+  }
+});
+
+/** 将出库单 project_code 与关联场次对齐，并补全缺 YYMMDD 的编号 */
+router.post('/outbound/repair-project-codes', async (req, res) => {
+  try {
+    const yfRaw = req.body?.yearFrameId ?? req.body?.year_frame_id ?? req.query?.yearFrameId;
+    const yfId = parseInt(yfRaw, 10);
+    const yfClause = Number.isFinite(yfId) ? ' AND act.year_frame_id = ?' : '';
+    const yfParams = Number.isFinite(yfId) ? [yfId] : [];
+
+    const [syncR] = await db.query(
+      `
+      UPDATE inv_outbound_orders o
+      INNER JOIN activities act ON act.id = o.activity_id
+      SET o.project_code = act.project_code
+      WHERE TRIM(COALESCE(act.project_code, '')) <> ''
+        AND (o.project_code IS NULL OR TRIM(o.project_code) <> TRIM(act.project_code))
+        ${yfClause}
+    `,
+      yfParams
+    );
+    const synced = Number(syncR?.affectedRows || 0);
+
+    let selSql = `
+      SELECT o.id, o.project_code, o.activity_id,
+             COALESCE(o.activity_date, act.date) AS repair_date
+      FROM inv_outbound_orders o
+      LEFT JOIN activities act ON act.id = o.activity_id
+      WHERE (o.link_mode = 'activity' OR o.activity_id IS NOT NULL)
+        AND TRIM(COALESCE(o.project_code, '')) <> ''
+        AND o.project_code NOT REGEXP '^[^ ]+ [0-9]{6}'
+    `;
+    const selParams = [];
+    if (Number.isFinite(yfId)) {
+      selSql += ' AND (act.year_frame_id = ? OR (o.activity_id IS NULL AND o.id IN (SELECT o2.id FROM inv_outbound_orders o2 INNER JOIN activities a2 ON a2.project_code = o2.project_code WHERE a2.year_frame_id = ?)))';
+      selParams.push(yfId, yfId);
+    }
+    const [rows] = await db.query(selSql, selParams);
+    let repaired = 0;
+    for (const row of rows) {
+      const next = repairProjectCodeDate(row.project_code, row.repair_date);
+      if (!next || next === row.project_code || !projectCodeHasDateSuffix(next)) continue;
+      await db.query('UPDATE inv_outbound_orders SET project_code = ? WHERE id = ?', [next, row.id]);
+      repaired += 1;
+    }
+
+    res.json({
+      synced,
+      repaired,
+      scanned: rows.length,
+      message: `出库单：已与场次同步 ${synced} 条，补全日期 ${repaired} 条`,
+    });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: e.message || '修复失败' });
   }
 });
 
@@ -1770,6 +2461,7 @@ router.get('/inbound-receipts', async (req, res) => {
         COALESCE(agg.sum_qty_customer_keep, 0) AS sum_qty_customer_keep,
         COALESCE(agg.sum_qty_lost, 0) AS sum_qty_lost,
         COALESCE(agg.sum_qty_damaged, 0) AS sum_qty_damaged,
+        COALESCE(agg.sum_qty_consumed, 0) AS sum_qty_consumed,
         (SELECT GROUP_CONCAT(
                   CONCAT_WS(' ', it.name,
                     CONCAT('×',
@@ -1778,6 +2470,7 @@ router.get('/inbound-receipts', async (req, res) => {
                       + COALESCE(rl.qty_customer_keep,0)
                       + COALESCE(rl.qty_lost,0)
                       + COALESCE(rl.qty_damaged,0)
+                      + COALESCE(rl.qty_consumed,0)
                     ),
                     NULLIF(it.dimensions, '')
                   )
@@ -1798,7 +2491,8 @@ router.get('/inbound-receipts', async (req, res) => {
           SUM(qty_empty_recovered) AS sum_qty_empty_recovered,
           SUM(qty_customer_keep) AS sum_qty_customer_keep,
           SUM(qty_lost) AS sum_qty_lost,
-          SUM(qty_damaged) AS sum_qty_damaged
+          SUM(qty_damaged) AS sum_qty_damaged,
+          SUM(qty_consumed) AS sum_qty_consumed
         FROM inv_return_lines
         GROUP BY batch_id
       ) agg ON agg.batch_id = rb.id
@@ -1882,6 +2576,7 @@ router.get('/inbound-receipts/:batchId', async (req, res) => {
         rl.qty_return,
         rl.qty_lost,
         rl.qty_damaged,
+        rl.qty_consumed,
         rl.qty_customer_keep,
         rl.qty_empty_recovered,
         ol.quantity AS outbound_qty,
@@ -1921,6 +2616,7 @@ router.put('/outbound/:id', async (req, res) => {
       recipient_address,
       contact_name,
       contact_phone,
+      logistics_supplier,
       logistics_method,
       tracking_number,
       remarks,
@@ -1999,24 +2695,34 @@ router.put('/outbound/:id', async (req, res) => {
     }
     if (!headerWhId) throw new Error('无法识别仓库，请检查出库明细');
 
+    const storedProjectCodePut = await canonicalOutboundProjectCode(conn, {
+      link_mode: lm,
+      project_code,
+      activity_id: resolvedActivityIdPut,
+      activity_date: activityDatePut,
+    });
+
     await conn.query(
       `
       UPDATE inv_outbound_orders SET
         inv_warehouse_id = ?, activity_id = ?, link_mode = ?, project_code = ?, purpose = ?,
         recipient_city = ?, recipient_address = ?, contact_name = ?, contact_phone = ?,
-        logistics_method = ?, tracking_number = ?, remarks = ?, shipped_at = ?, activity_date = ?, operator = ?
+        logistics_supplier = ?, logistics_method = ?, tracking_number = ?, remarks = ?, shipped_at = ?, activity_date = ?, operator = ?
       WHERE id = ?
     `,
       [
         headerWhId,
         resolvedActivityIdPut,
         lm,
-        lm === 'activity' ? String(project_code).trim() : null,
+        storedProjectCodePut,
         lm === 'standalone' ? String(purpose).trim() : null,
         recipient_city || null,
         recipient_address || null,
         contact_name || null,
         contact_phone || null,
+        logistics_supplier != null && String(logistics_supplier).trim() !== ''
+          ? String(logistics_supplier).trim()
+          : null,
         logistics_method || null,
         trackingNumber,
         remarks || null,
@@ -2087,7 +2793,7 @@ router.delete('/outbound/:id', async (req, res) => {
 
     const [retRows] = await conn.query(
       `
-      SELECT rl.qty_return, rl.qty_empty_recovered, rl.empty_bottle_item_id, ol.item_id
+      SELECT rl.qty_return, rl.qty_empty_recovered, rl.empty_bottle_item_id, rl.return_item_id, ol.item_id
       FROM inv_return_lines rl
       INNER JOIN inv_return_batches rb ON rb.id = rl.batch_id
       INNER JOIN inv_outbound_lines ol ON ol.id = rl.outbound_line_id
@@ -2097,7 +2803,7 @@ router.delete('/outbound/:id', async (req, res) => {
     );
     const itemCache = new Map();
     for (const row of retRows) {
-      const itemId = parseInt(row.item_id, 10);
+      const itemId = parseInt(row.return_item_id, 10) || parseInt(row.item_id, 10);
       if (!Number.isFinite(itemId)) continue;
       const qr = Math.max(0, parseInt(row.qty_return, 10) || 0);
       const qe = Math.max(0, parseInt(row.qty_empty_recovered, 10) || 0);
@@ -2221,7 +2927,7 @@ router.post('/outbound/:id/returns', async (req, res) => {
   const conn = await db.getConnection();
   try {
     const orderId = parseInt(req.params.id, 10);
-    const { return_date, remarks, lines } = req.body;
+    const { return_date, remarks, lines, inbound_warehouse_id } = req.body;
     const op = (req.session && req.session.user && req.session.user.username) || '';
 
     if (!Number.isFinite(orderId) || !Array.isArray(lines) || !lines.length) {
@@ -2234,21 +2940,30 @@ router.post('/outbound/:id/returns', async (req, res) => {
     const [ords] = await conn.query('SELECT id, status, inv_warehouse_id FROM inv_outbound_orders WHERE id = ? FOR UPDATE', [orderId]);
     if (!ords.length) throw new Error('单据不存在');
     if (ords[0].status === 'closed') throw new Error('该单已结清');
+    const inputInboundWhId = parseInt(inbound_warehouse_id, 10);
+    // 批次级 inbound_warehouse_id 仅作台账备注；实际库存按各行物料所属出库仓归还
+    const batchInboundWhId =
+      Number.isFinite(inputInboundWhId) && inputInboundWhId > 0 ? inputInboundWhId : null;
+    if (batchInboundWhId) {
+      const [inboundWhRows] = await conn.query('SELECT id FROM inv_warehouses WHERE id = ? LIMIT 1', [batchInboundWhId]);
+      if (!inboundWhRows.length) throw new Error('归还入库仓库不存在');
+    }
 
     const hasQty = lines.some(
       (x) =>
         (parseInt(x.qty_return, 10) || 0) +
           (parseInt(x.qty_lost, 10) || 0) +
           (parseInt(x.qty_damaged, 10) || 0) +
+          (parseInt(x.qty_consumed, 10) || 0) +
           (parseInt(x.qty_customer_keep, 10) || 0) +
           (parseInt(x.qty_empty_recovered, 10) || 0) >
         0
     );
-    if (!hasQty) throw new Error('请至少在一行填写归还、丢失、损坏、空瓶回收或留给客户数量');
+    if (!hasQty) throw new Error('请至少在一行填写归还、丢失、损坏、消耗、空瓶回收或留给客户数量');
 
     const [batchIns] = await conn.query(
-      'INSERT INTO inv_return_batches (outbound_order_id, return_date, operator, remarks) VALUES (?, ?, ?, ?)',
-      [orderId, rd, op, remarks || null]
+      'INSERT INTO inv_return_batches (outbound_order_id, return_date, inbound_warehouse_id, operator, remarks) VALUES (?, ?, ?, ?, ?)',
+      [orderId, rd, batchInboundWhId, op, remarks || null]
     );
     const batchId = batchIns.insertId;
 
@@ -2257,12 +2972,16 @@ router.post('/outbound/:id/returns', async (req, res) => {
       const qr = Math.max(0, parseInt(ln.qty_return, 10) || 0);
       const ql = Math.max(0, parseInt(ln.qty_lost, 10) || 0);
       const qd = Math.max(0, parseInt(ln.qty_damaged, 10) || 0);
+      const qc = Math.max(0, parseInt(ln.qty_consumed, 10) || 0);
       const qk = Math.max(0, parseInt(ln.qty_customer_keep, 10) || 0);
       const qe = Math.max(0, parseInt(ln.qty_empty_recovered, 10) || 0);
-      if (qr + ql + qd + qk + qe === 0) continue;
+      if (qr + ql + qd + qc + qk + qe === 0) continue;
 
       const [olRows] = await conn.query(
-        `SELECT ol.id, ol.order_id, ol.item_id, ol.quantity, it.inv_warehouse_id, it.name, it.dimensions
+        `SELECT
+           ol.id, ol.order_id, ol.item_id, ol.quantity,
+           it.inv_warehouse_id, it.name, it.description, it.dimensions,
+           it.alert_below, it.image_urls, it.is_common, it.is_wine, it.wine_label
          FROM inv_outbound_lines ol
          JOIN inv_items it ON it.id = ol.item_id
          WHERE ol.id = ? FOR UPDATE`,
@@ -2272,7 +2991,7 @@ router.post('/outbound/:id/returns', async (req, res) => {
       const shipped = Number(olRows[0].quantity);
       const [prevRows] = await conn.query(
         `
-        SELECT COALESCE(SUM(rl.qty_return + rl.qty_lost + rl.qty_damaged + rl.qty_customer_keep + rl.qty_empty_recovered), 0) AS s
+        SELECT COALESCE(SUM(${RETURN_LINE_ACCOUNTED_SUM_RL_SQL}), 0) AS s
         FROM inv_return_lines rl
         JOIN inv_return_batches rb ON rb.id = rl.batch_id
         WHERE rl.outbound_line_id = ? AND rb.id <> ?
@@ -2280,8 +2999,8 @@ router.post('/outbound/:id/returns', async (req, res) => {
         [olId, batchId]
       );
       const already = Number(prevRows[0].s);
-      if (qr + ql + qd + qk + qe + already > shipped) {
-        throw new Error(`明细行 #${olId} 归还+丢失+损坏+留客+空瓶回收 超过出库数量`);
+      if (qr + ql + qd + qc + qk + qe + already > shipped) {
+        throw new Error(`明细行 #${olId} 归还+丢失+损坏+消耗+留客+空瓶回收 超过出库数量`);
       }
 
       let emptyBottleItemId = null;
@@ -2289,14 +3008,33 @@ router.post('/outbound/:id/returns', async (req, res) => {
         emptyBottleItemId = await ensureEmptyBottleItem(conn, olRows[0]);
       }
 
+      let returnItemId = Number(olRows[0].item_id);
+      if (qr > 0) {
+        const sourceWhId = Number(olRows[0].inv_warehouse_id);
+        const lineOverrideWhId = parseInt(ln.inbound_warehouse_id, 10);
+        const targetWhId =
+          Number.isFinite(lineOverrideWhId) && lineOverrideWhId > 0
+            ? lineOverrideWhId
+            : Number.isFinite(batchInboundWhId) && batchInboundWhId > 0
+              ? batchInboundWhId
+              : sourceWhId;
+        if (!Number.isFinite(targetWhId) || targetWhId <= 0) {
+          throw new Error(`明细行 #${olId} 无法识别原出库仓库`);
+        }
+        const [targetWhRows] = await conn.query('SELECT id FROM inv_warehouses WHERE id = ? LIMIT 1', [targetWhId]);
+        if (!targetWhRows.length) throw new Error(`明细行 #${olId} 归还入库仓库不存在`);
+        if (targetWhId !== sourceWhId) {
+          returnItemId = await ensureReturnItemInWarehouse(conn, olRows[0], targetWhId);
+        }
+      }
+
       await conn.query(
-        'INSERT INTO inv_return_lines (batch_id, outbound_line_id, qty_return, qty_lost, qty_damaged, qty_customer_keep, qty_empty_recovered, empty_bottle_item_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-        [batchId, olId, qr, ql, qd, qk, qe, emptyBottleItemId]
+        'INSERT INTO inv_return_lines (batch_id, outbound_line_id, return_item_id, qty_return, qty_lost, qty_damaged, qty_consumed, qty_customer_keep, qty_empty_recovered, empty_bottle_item_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        [batchId, olId, returnItemId, qr, ql, qd, qc, qk, qe, emptyBottleItemId]
       );
 
       if (qr > 0) {
-        // 归还数量应回补到原物料库存（与出库扣减相反）
-        await conn.query('UPDATE inv_items SET quantity_on_hand = quantity_on_hand + ? WHERE id = ?', [qr, olRows[0].item_id]);
+        await conn.query('UPDATE inv_items SET quantity_on_hand = quantity_on_hand + ? WHERE id = ?', [qr, returnItemId]);
       }
       if (qe > 0 && emptyBottleItemId) {
         await conn.query('UPDATE inv_items SET quantity_on_hand = quantity_on_hand + ? WHERE id = ?', [qe, emptyBottleItemId]);
@@ -2307,7 +3045,7 @@ router.post('/outbound/:id/returns', async (req, res) => {
     let allClosed = true;
     for (const ol of linesOrder) {
       const [sumRow] = await conn.query(
-        'SELECT COALESCE(SUM(qty_return + qty_lost + qty_damaged + qty_customer_keep + qty_empty_recovered), 0) AS s FROM inv_return_lines WHERE outbound_line_id = ?',
+        `SELECT COALESCE(SUM(${RETURN_LINE_ACCOUNTED_SUM_SQL}), 0) AS s FROM inv_return_lines WHERE outbound_line_id = ?`,
         [ol.id]
       );
       const t = Number(sumRow[0].s);
@@ -2319,6 +3057,8 @@ router.post('/outbound/:id/returns', async (req, res) => {
 
     await conn.commit();
     const detail = await loadOrderDetail(orderId);
+    const remain = await queryOutboundReturnRemain(db, orderId);
+    if (detail && detail.order) detail.order = attachOutboundReturnRemain(detail.order, remain);
     res.json(serializeOrderDetailForJson(detail));
   } catch (e) {
     await conn.rollback();
@@ -2326,6 +3066,235 @@ router.post('/outbound/:id/returns', async (req, res) => {
     res.status(500).json({ error: e.message || '归还失败' });
   } finally {
     conn.release();
+  }
+});
+
+/**
+ * 用酒统计：按场次汇总出库单中带「酒类」标签的物料数量。
+ * 归并键为 inv_items.wine_label（空则用名称），避免规格字段写法不一致导致统计偏差。
+ */
+async function buildWineUsageStats(query) {
+  const yfRaw = query.yearFrameId ?? query.year_frame_id;
+  const yfId = parseInt(yfRaw, 10);
+  if (!Number.isFinite(yfId)) {
+    const err = new Error('请选择年度');
+    err.status = 400;
+    throw err;
+  }
+  /** 与字典 activity_region 取值一致（含西南区、东区-婚宴等），不用仓库 INV_REGIONS 白名单 */
+  const region = String(query.region || '').trim() || null;
+  const belonging = String(query.belonging || '').trim() || null;
+  const projectRaw = String(query.project_code || query.q || query.search || '').trim();
+  const projectTerms = projectRaw ? projectRaw.split(/\s+/).filter(Boolean) : [];
+  const dateFrom = parseActivityDateInput(query.date_from || query.dateFrom);
+  const dateTo = parseActivityDateInput(query.date_to || query.dateTo);
+  const monthRange = parseMonthRangeForSql(query.month);
+
+  let sql = `
+    SELECT
+      COALESCE(act1.id, act2.id) AS activity_id,
+      COALESCE(act1.region, act2.region) AS region,
+      COALESCE(NULLIF(TRIM(act1.project_code), ''), NULLIF(TRIM(act2.project_code), ''), NULLIF(TRIM(o.project_code), '')) AS project_code,
+      COALESCE(act1.belonging, act2.belonging) AS belonging,
+      COALESCE(o.activity_date, act1.date, act2.date) AS activity_date,
+      COALESCE(NULLIF(TRIM(i.wine_label), ''), TRIM(i.name)) AS wine_label,
+      MAX(NULLIF(TRIM(i.dimensions), '')) AS item_dimensions,
+      SUM(ol.quantity) AS qty
+    FROM inv_outbound_lines ol
+    INNER JOIN inv_outbound_orders o ON o.id = ol.order_id
+    INNER JOIN inv_items i ON i.id = ol.item_id AND i.is_wine = 1
+    LEFT JOIN activities act1 ON act1.id = o.activity_id
+    LEFT JOIN activities act2 ON act2.id IS NULL
+      AND o.activity_id IS NULL
+      AND TRIM(COALESCE(o.project_code, '')) <> ''
+      AND act2.project_code = o.project_code
+      AND act2.year_frame_id = ?
+    WHERE COALESCE(act1.id, act2.id) IS NOT NULL
+      AND COALESCE(act1.year_frame_id, act2.year_frame_id) = ?
+  `;
+  const params = [yfId, yfId];
+
+  if (region) {
+    sql += ' AND COALESCE(act1.region, act2.region) = ?';
+    params.push(region);
+  }
+  if (belonging) {
+    sql += ' AND COALESCE(act1.belonging, act2.belonging) = ?';
+    params.push(belonging);
+  }
+  if (projectTerms.length) {
+    const projExpr =
+      'COALESCE(NULLIF(TRIM(act1.project_code), \'\'), NULLIF(TRIM(act2.project_code), \'\'), NULLIF(TRIM(o.project_code), \'\'))';
+    projectTerms.forEach(() => {
+      sql += ` AND ${projExpr} LIKE ?`;
+    });
+    projectTerms.forEach((term) => params.push(`%${term}%`));
+  }
+  if (dateFrom) {
+    sql += ' AND COALESCE(o.activity_date, act1.date, act2.date) >= ?';
+    params.push(dateFrom);
+  }
+  if (dateTo) {
+    sql += ' AND COALESCE(o.activity_date, act1.date, act2.date) <= ?';
+    params.push(dateTo);
+  }
+  if (monthRange) {
+    sql += ' AND COALESCE(o.activity_date, act1.date, act2.date) >= ? AND COALESCE(o.activity_date, act1.date, act2.date) < ?';
+    params.push(monthRange[0].slice(0, 10), monthRange[1].slice(0, 10));
+  }
+
+  sql += `
+    GROUP BY
+      COALESCE(act1.id, act2.id),
+      COALESCE(act1.region, act2.region),
+      COALESCE(NULLIF(TRIM(act1.project_code), ''), NULLIF(TRIM(act2.project_code), ''), NULLIF(TRIM(o.project_code), '')),
+      COALESCE(act1.belonging, act2.belonging),
+      COALESCE(o.activity_date, act1.date, act2.date),
+      COALESCE(NULLIF(TRIM(i.wine_label), ''), TRIM(i.name))
+    ORDER BY activity_date DESC, project_code, wine_label
+  `;
+
+  const [[aggRows], dimByWineLabel, wineRegistry] = await Promise.all([
+    db.query(sql, params),
+    fetchWineLabelDimensionsLookup(db),
+    fetchWineRegistryForUsageStats(db),
+  ]);
+  const wineMetaMap = new Map();
+  const rowMap = new Map();
+
+  for (const r of aggRows || []) {
+    const wl = String(r.wine_label || '').trim() || '—';
+    const qty = sqlAggNum(r.qty);
+    if (!wineMetaMap.has(wl)) {
+      wineMetaMap.set(wl, { total: 0, specQty: new Map(), sampleDimensions: null });
+    }
+    const wm = wineMetaMap.get(wl);
+    wm.total += qty;
+    const spec = wineVolumeSpecFromRow(r.item_dimensions, wl);
+    if (spec) wm.specQty.set(spec, (wm.specQty.get(spec) || 0) + qty);
+    if (!wm.sampleDimensions && r.item_dimensions) wm.sampleDimensions = r.item_dimensions;
+
+    const actId = Number(r.activity_id);
+    if (!rowMap.has(actId)) {
+      rowMap.set(actId, {
+        activity_id: actId,
+        region: r.region || '—',
+        project_code: String(r.project_code || '').trim() || '—',
+        belonging: r.belonging || '—',
+        activity_date: jsonYmd(r.activity_date),
+        quantities: {},
+      });
+    }
+    const row = rowMap.get(actId);
+    row.quantities[wl] = (row.quantities[wl] || 0) + qty;
+  }
+
+  const wines = [...wineMetaMap.entries()]
+    .map(([label, wm]) => {
+      let dominantSpec = '';
+      let bestQ = -1;
+      wm.specQty.forEach((q, spec) => {
+        if (q > bestQ) {
+          bestQ = q;
+          dominantSpec = spec;
+        }
+      });
+      const dimsHint =
+        dominantSpec ||
+        wm.sampleDimensions ||
+        dimByWineLabel.get(label) ||
+        null;
+      const volume =
+        normalizeVolumeDisplay(wineVolumeSpecFromRow(dimsHint, label)) ||
+        normalizeVolumeDisplay(dominantSpec) ||
+        normalizeVolumeDisplay(wineVolumeSpecFromRow(dimByWineLabel.get(label), label)) ||
+        null;
+      return {
+        label,
+        displayName: label,
+        volume,
+        total: wm.total,
+      };
+    });
+
+  const winesOrdered = orderWinesForUsageStats(wines, wineRegistry);
+
+  const rows = [...rowMap.values()].sort((a, b) => {
+    const da = a.activity_date || '';
+    const db = b.activity_date || '';
+    if (da !== db) return db.localeCompare(da);
+    return String(a.project_code).localeCompare(String(b.project_code), 'zh');
+  });
+
+  return {
+    filters: {
+      year_frame_id: yfId,
+      region,
+      belonging,
+      project_code: projectRaw || null,
+      date_from: dateFrom,
+      date_to: dateTo,
+      month: monthRange ? String(query.month || '').trim() : null,
+    },
+    wines: winesOrdered,
+    rows,
+    summary: {
+      session_count: rows.length,
+      wine_kind_count: winesOrdered.filter((w) => w.total > 0).length,
+      wine_column_count: winesOrdered.length,
+      total_bottles: winesOrdered.reduce((s, w) => s + w.total, 0),
+    },
+  };
+}
+
+router.get('/wine-usage-stats', async (req, res) => {
+  try {
+    const data = await buildWineUsageStats(req.query);
+    res.json({ data });
+  } catch (e) {
+    const code = e.status || 500;
+    if (code >= 500) console.error(e);
+    res.status(code).json({ error: e.message || '用酒统计加载失败' });
+  }
+});
+
+/** 从酒品目录对齐的物料批量标记酒类并写入统计标签 */
+router.post('/items/backfill-wine-tags', async (req, res) => {
+  try {
+    await ensureWineCatalog(db);
+    const [catalogRows] = await db.query(
+      'SELECT brand, name, category, volume_label FROM wine_catalog'
+    );
+    const keyToLabel = new Map();
+    (catalogRows || []).forEach((c) => {
+      keyToLabel.set(invItemWineKey(c.name, wineCatalogSpecLine(c)), defaultWineLabelFromCatalog(c));
+    });
+    const [items] = await db.query(
+      'SELECT id, name, dimensions FROM inv_items WHERE is_wine = 0 OR wine_label IS NULL OR wine_label = \'\''
+    );
+    let updated = 0;
+    for (const it of items || []) {
+      const key = invItemWineKey(it.name, it.dimensions);
+      const lbl = keyToLabel.get(key);
+      if (!lbl) continue;
+      await db.query('UPDATE inv_items SET is_wine = 1, wine_label = ? WHERE id = ?', [lbl, it.id]);
+      updated += 1;
+    }
+    res.json({ ok: true, updated, catalog_keys: keyToLabel.size });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: e.message || '批量标记失败' });
+  }
+});
+
+router.get('/wine-usage-stats/excel', async (req, res) => {
+  try {
+    const data = await buildWineUsageStats(req.query);
+    await writeWineUsageStatsExcel(res, data);
+  } catch (e) {
+    const code = e.status || 500;
+    if (code >= 500) console.error(e);
+    if (!res.headersSent) res.status(code).json({ error: e.message || 'Excel 导出失败' });
   }
 });
 
@@ -2375,7 +3344,7 @@ router.get('/outbound/:id/pdf', async (req, res) => {
         { text: formatWarehouseLabel(ln.line_brand_code, ln.line_region), style: 'tdCenter' },
         { text: String(ln.quantity || ''), style: 'tdCenter' },
         { text: String(ln.item_dimensions || '—'), style: 'tdLeft' },
-        { text: String(ln.line_note || '—'), style: 'tdCenter' },
+        { text: String(ln.line_note || '—'), style: 'tdLeft' },
       ]);
     });
 
@@ -2410,7 +3379,7 @@ router.get('/outbound/:id/pdf', async (req, res) => {
         { text: '物品明细', style: 'h2' },
         {
           table: {
-            widths: ['8%', '32%', '14%', '8%', '28%', '10%'],
+            widths: ['8%', '30%', '14%', '8%', '12%', '28%'],
             headerRows: 1,
             body: lineTableBody,
           },
