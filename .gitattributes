@@ -1,0 +1,13 @@
+# GitHub Linguist language statistics
+# These files are references, prototypes, generated data, or local assets.
+# They should stay in the repo when useful, but should not decide the repo language.
+"HarmonyOS UI/**" linguist-vendored
+prototypes/** linguist-documentation
+posters/** linguist-documentation
+"Date Backup/**" linguist-generated
+backups/** linguist-generated
+imports/** linguist-generated
+tmp-binlog* linguist-generated
+*.sql linguist-generated
+*.doc linguist-documentation
+*.docx linguist-documentation

@@ -1,0 +1,83 @@
+/* 场次记录与虚拟场次基础样式 */
+/* 场次列表：状态为「延期」时整行高亮，便于执行同事扫视 */
+.data-table tbody tr.activity-row-deferred {
+  background: linear-gradient(90deg, rgba(245, 158, 11, 0.26) 0%, rgba(245, 158, 11, 0.1) 55%, rgba(245, 158, 11, 0.04) 100%);
+  box-shadow: inset 3px 0 0 0 rgba(217, 119, 6, 0.95);
+}
+[data-theme="dark"] .data-table tbody tr.activity-row-deferred {
+  background: linear-gradient(90deg, rgba(245, 158, 11, 0.22) 0%, rgba(245, 158, 11, 0.08) 60%, rgba(245, 158, 11, 0.03) 100%);
+  box-shadow: inset 3px 0 0 0 rgba(250, 204, 21, 0.85);
+}
+.data-table tbody tr.activity-row-deferred td {
+  border-color: rgba(245, 158, 11, 0.22);
+}
+
+/* 新建/编辑活动弹窗：说明与字段提示 */
+.modal-activity-form { padding-top: 2px; }
+.modal-activity-lead {
+  margin: 0 0 14px;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--text-muted);
+}
+#modalActivity .modal-activity-form .form-label {
+  text-transform: none;
+  letter-spacing: 0.02em;
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+.form-hint {
+  display: block;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--text-muted);
+  margin-top: 3px;
+}
+
+/* 活动日期：收紧 WebKit 下年 / 月 / 日 与分隔符之间的空隙 */
+#modalActivity input[type='date'].activity-form-date {
+  letter-spacing: 0;
+  font-variant-numeric: tabular-nums;
+}
+#modalActivity input[type='date'].activity-form-date::-webkit-datetime-edit {
+  padding: 0;
+}
+#modalActivity input[type='date'].activity-form-date::-webkit-datetime-edit-fields-wrapper {
+  padding: 0 0 0 1px;
+}
+#modalActivity input[type='date'].activity-form-date::-webkit-datetime-edit-text {
+  padding: 0 0.1em;
+}
+#modalActivity input[type='date'].activity-form-date::-webkit-datetime-edit-year-field,
+#modalActivity input[type='date'].activity-form-date::-webkit-datetime-edit-month-field,
+#modalActivity input[type='date'].activity-form-date::-webkit-datetime-edit-day-field {
+  padding: 0 0.06em;
+}
+
+/* 场次记录：表格纵向滚动时表头固定 */
+.act-table-scroll-wrap {
+  max-height: min(72vh, calc(100vh - 220px));
+  overflow: auto;
+  position: relative;
+}
+
+.act-table-sticky-head thead th {
+  position: sticky;
+  top: 0;
+  z-index: 4;
+  background: var(--bg-input);
+  box-shadow: 0 1px 0 var(--border);
+}
+
+/* 场次记录：无云相册链接时「云相册」按钮灰显且不可点（与可打开场次对比） */
+button.btn-cloud-album-muted:disabled,
+button.btn-secondary.btn-sm.btn-cloud-album-muted:disabled {
+  opacity: 0.48;
+  cursor: not-allowed;
+  filter: grayscale(0.45);
+  color: var(--text-secondary);
+  border-color: var(--border);
+  background: var(--bg-input);
+  pointer-events: none;
+}

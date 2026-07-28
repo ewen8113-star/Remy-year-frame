@@ -2,6 +2,9 @@
 # 人头马年框项目管理系统 - Cursor Rules
 # ============================================
 
+> 维护本项目之前，必须先完整阅读根目录 `CODE_DEVELOPMENT_GUIDELINES.md`。
+> 若本文件中的旧结构说明与该规范冲突，以 `CODE_DEVELOPMENT_GUIDELINES.md` 和当前代码为准。
+
 ## 项目概述
 
 人头马年框项目管理系统（Rémy Martin Year-Frame），用于管理品牌年度活动、仓储、物流、报销、酒品库存等全链路数据。
@@ -27,7 +30,7 @@ remy-year-frame/
 │   ├── server.js                  # 入口，端口 3088，监听 0.0.0.0
 │   ├── config/database.js         # mysql2 连接池，读 .env
 │   ├── middleware/auth.js         # requireAuth / requireRole / requireWriteAccess
-│   ├── routes/                    # API 路由（每个业务域一个文件）
+│   ├── routes/                    # API 路由入口（复杂业务挂载对应域子路由）
 │   │   ├── activity.js            # 活动场次 CRUD
 │   │   ├── warehouse.js           # 仓储记录
 │   │   ├── logistics.js           # 物流记录
@@ -46,12 +49,16 @@ remy-year-frame/
 │   │   ├── user.js                # 用户管理
 │   │   └── lookup.js              # 下拉选项管理
 │   ├── scripts/                   # 数据库迁移 & 一次性脚本
-│   ├── inventory/ensureInventoryTables.js
-│   └── wine/ensureWineCatalog.js
+│   ├── inventory/                # 库存子路由与业务辅助函数
+│   ├── quotation/                # 报价子路由与导出逻辑
+│   ├── reimbursement/            # 付款申请子路由与导出逻辑
+│   └── <domain>/                 # 其他已拆分业务域
 ├── public/
 │   ├── index.html                 # SPA 主页（侧边栏导航，所有模块内嵌）
-│   ├── app.js                     # 前端主逻辑（所有模块的 JS）
-│   ├── style.css                  # 全局样式
+│   ├── app*.js                    # 前端启动、认证与导航逻辑（按顺序加载）
+│   ├── modules/                   # 页面模块及对应 part 文件
+│   ├── styles/                    # 基础、组件和业务域样式
+│   ├── style.css                  # 旧兼容入口，不再存放实际样式
 │   ├── login.html / login.js      # 登录页
 │   ├── register.html / register.js # 注册页
 │   ├── version.json               # 前端版本号
@@ -81,11 +88,12 @@ remy-year-frame/
 ### 前端（原生 HTML/JS/CSS）
 
 - 无框架、无构建工具、无 npm 依赖
-- 所有页面逻辑集中在 `public/app.js`，按模块用注释分区
-- 页面结构在 `public/index.html`，侧边栏导航切换不同模块的 section
+- 应用启动与导航在 `public/app*.js`，页面逻辑在 `public/modules/` 的拆分文件
+- 页面结构在 `public/index.html`，侧边栏通过 `navigate(page)` 动态渲染模块
+- 经典脚本依赖加载顺序；新增 `part` 文件必须在 `public/index.html` 按定义先、使用后加载
 - 请求 API 用 `fetch()`，带凭证 `credentials: 'same-origin'`
 - 不引入 React / Vue / jQuery / Tailwind 等第三方前端库
-- CSS 在 `public/style.css`，使用 CSS 变量管理品牌色
+- CSS 位于 `public/styles/`；`public/style.css` 仅保留旧兼容入口
 
 ### 数据库
 

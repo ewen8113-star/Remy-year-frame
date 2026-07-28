@@ -14,3 +14,9 @@ Quote/
 backups/
 *.docx
 *.doc
+logs/
+posters/
+tmp-binlog*.txt
+src/scripts/extractReimbBinlogRows.js
+src/scripts/restoreLiHongyanMerge20260706.js
+src/scripts/restoreReimbursementsLiHongyan20260602.js

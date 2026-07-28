@@ -1,0 +1,107 @@
+/* 物流成本页面与物流详情样式 */
+/* 物流成本：表格纵向滚动时表头固定 */
+.log-table-scroll-wrap {
+  max-height: min(72vh, calc(100vh - 300px));
+  overflow: auto;
+  position: relative;
+}
+
+.log-table-sticky-head thead th {
+  position: sticky;
+  top: 0;
+  z-index: 4;
+  background: var(--bg-input);
+  box-shadow: 0 1px 0 var(--border);
+}
+
+.log-table-sticky-head tbody tr.log-table-row:hover {
+  background: color-mix(in srgb, var(--accent-soft) 38%, transparent);
+}
+
+.logistics-ship-detail-grid .logistics-cost-detail-card,
+.inv-ob-head-fixed .activity-detail-grid .logistics-cost-detail-card {
+  grid-column: 1 / -1;
+}
+
+.logistics-ship-detail-grid .activity-detail-card,
+.inv-ob-head-fixed .logistics-ship-detail-grid .activity-detail-card {
+  padding: 10px 12px;
+}
+
+.logistics-ship-detail-grid .activity-detail-card h4,
+.logistics-cost-compact h4 {
+  margin-bottom: 6px;
+  padding-bottom: 6px;
+}
+
+.logistics-ship-detail-grid .activity-detail-row {
+  padding: 4px 0;
+  grid-template-columns: 68px minmax(0, 1fr);
+  gap: 4px 10px;
+}
+
+.logistics-cost-compact-table {
+  font-size: 12px;
+}
+
+.logistics-cost-compact-head,
+.logistics-cost-compact-row {
+  display: grid;
+  grid-template-columns: 44px minmax(56px, 0.9fr) minmax(72px, 1fr) minmax(72px, 1fr);
+  gap: 6px 10px;
+  align-items: center;
+  padding: 4px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.logistics-cost-compact-head {
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 600;
+  padding-top: 0;
+}
+
+.logistics-cost-compact-row:last-of-type {
+  border-bottom: none;
+}
+
+.logistics-cost-compact-label {
+  font-weight: 650;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.logistics-cost-compact-summary {
+  display: grid;
+  grid-template-columns: 44px auto minmax(0, 1fr);
+  gap: 6px 10px;
+  align-items: center;
+  padding: 6px 0 2px;
+  margin-top: 2px;
+  border-top: 1px solid var(--border);
+}
+
+.logistics-cost-compact-total {
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.logistics-cost-compact-payee {
+  font-size: 12px;
+  color: var(--text-primary);
+  text-align: right;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.logistics-ship-detail-footer,
+.inv-ob-detail-footer.logistics-ship-detail-footer {
+  flex-shrink: 0;
+  margin-top: 8px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}

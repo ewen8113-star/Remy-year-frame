@@ -1,0 +1,110 @@
+/* 登录 / 注册页样式 */
+/* ===== 登录 / 注册页（独立全屏，不依赖 data-theme）===== */
+body.auth-page-body {
+  display: block;
+  overflow-x: hidden;
+  overflow-y: auto;
+  min-height: 100vh;
+  margin: 0;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', 'Noto Sans SC', sans-serif;
+  background: linear-gradient(135deg, #1e40af 0%, #3b82f6 50%, #f59e0b 100%);
+  background-attachment: fixed;
+}
+
+body.auth-page-body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  background: radial-gradient(circle at 20% 30%, rgba(255, 255, 255, 0.15) 0%, transparent 55%),
+    radial-gradient(circle at 80% 70%, rgba(255, 255, 255, 0.08) 0%, transparent 50%);
+}
+
+.auth-page-shell {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  box-sizing: border-box;
+}
+
+.auth-glass-card {
+  width: min(420px, 100%);
+  padding: 28px;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.95);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
+}
+
+.auth-glass-card .card-title {
+  font-size: 24px;
+  font-weight: 700;
+  color: #0f172a;
+  margin-bottom: 6px;
+}
+
+.auth-glass-card .card-sub {
+  font-size: 13px;
+  color: #64748b;
+  margin-bottom: 18px;
+}
+
+.auth-glass-card .form-label {
+  text-transform: none;
+  letter-spacing: 0.02em;
+  font-weight: 600;
+  color: #475569;
+  font-size: 13px;
+}
+
+.auth-glass-card .form-control {
+  background: #fff;
+  border: 2px solid #e2e8f0;
+  border-radius: 12px;
+  padding: 14px 16px;
+  min-height: 48px;
+  font-size: 14px;
+}
+
+.auth-glass-card .form-control:focus {
+  outline: none;
+  border-color: #3b82f6;
+  box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.1);
+}
+
+.auth-glass-card .btn-primary {
+  width: 100%;
+  min-height: 48px;
+  padding: 14px;
+  border-radius: var(--radius-btn);
+  background: linear-gradient(135deg, #1e40af 0%, #3b82f6 100%);
+  box-shadow: 0 4px 15px rgba(30, 64, 175, 0.3);
+  font-weight: 600;
+  border: none;
+  color: #fff;
+}
+
+.auth-glass-card .btn-primary:hover {
+  background: linear-gradient(135deg, #1e3a8a 0%, #2563eb 100%);
+  box-shadow: 0 8px 25px rgba(30, 64, 175, 0.4);
+  transform: translateY(-2px);
+}
+
+.auth-glass-card a {
+  color: #1e40af;
+  font-weight: 500;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .auth-glass-card .btn-primary:hover {
+    transform: none;
+  }
+}

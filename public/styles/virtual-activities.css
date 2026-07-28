@@ -1,0 +1,30 @@
+/* 虚拟场次页面样式 */
+/* 虚拟场次：表头锁定防抖（修复滚动时轻微上窜） */
+.virtual-activities-table {
+  border-collapse: separate;
+  border-spacing: 0;
+}
+
+.virtual-activities-table thead th {
+  position: sticky !important;
+  top: 0 !important;
+  z-index: 20 !important;
+  background: var(--bg-input) !important;
+  box-shadow: 0 1px 0 var(--border) !important;
+  transform: translateZ(0);
+  backface-visibility: hidden;
+}
+
+/* 虚拟场次：改为随页面滚动时固定表头（不依赖表格内滚动） */
+.virtual-act-table-wrap {
+  max-height: none !important;
+  overflow: visible !important;
+}
+
+.virtual-activities-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 8;
+  background: var(--bg-input);
+  box-shadow: 0 1px 0 var(--border);
+}
