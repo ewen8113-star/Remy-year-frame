@@ -18,6 +18,7 @@ const routeNames = [
   'quotation',
   'reconcile',
   'reimbursement',
+  'system',
   'user',
   'warehouse',
   'wine',

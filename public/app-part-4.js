@@ -12,12 +12,10 @@ function updateYearFrameHint(activityCount) {
 // ===== 导航 =====
 function navigate(page) {
   if (page === 'dashboard' && !hasWriteAccess()) {
-    showToast('仅管理员可查看数据看板', 'warning');
     page = 'activities';
   }
   if (page === 'users' && !canManageUsers()) {
-    showToast('仅管理员可访问用户管理', 'warning');
-    return;
+    page = 'activities';
   }
   if (page === 'wine') {
     inventoryPageState.stockMasterView = 'wine';

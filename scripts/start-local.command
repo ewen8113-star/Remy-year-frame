@@ -20,6 +20,11 @@ if curl -fsS "$HEALTH_URL" >/dev/null 2>&1; then
   exit 0
 fi
 
+if command -v git >/dev/null 2>&1 && [ -d .git ]; then
+  git fetch origin >/dev/null 2>&1 || true
+  git pull --ff-only >/dev/null 2>&1 || true
+fi
+
 if command -v pm2 >/dev/null 2>&1; then
   echo "使用 PM2 启动常驻服务..."
   npm run service:start

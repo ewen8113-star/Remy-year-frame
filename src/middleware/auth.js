@@ -57,6 +57,10 @@ function isOperatorAllowedWrite(req) {
 function requireWriteAccess(req, res, next) {
   const method = String(req.method || '').toUpperCase();
   if (method === 'GET' || method === 'HEAD' || method === 'OPTIONS') return next();
+  const paths = requestPathCandidates(req);
+  const hit = (re) => paths.some((u) => re.test(u));
+  // 登录/注册/登出/改密不得被写权限拦住，否则普通同事会表现为「打不开系统」
+  if (hit(/\/auth(\/|$)/) || hit(/\/health$/)) return next();
   if (isOperatorAllowedWrite(req)) {
     return requireRole('admin', 'operator')(req, res, next);
   }

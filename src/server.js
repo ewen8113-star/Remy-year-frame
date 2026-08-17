@@ -28,6 +28,7 @@ const dictRoutes = require('./routes/dict');
 const quotationRoutes = require('./routes/quotation');
 const authRoutes = require('./routes/auth');
 const userRoutes = require('./routes/user');
+const systemRoutes = require('./routes/system');
 const reconcileRoutes = require('./routes/reconcile');
 const { mountLookupRoutes } = require('./routes/lookup');
 const { requireAuth, requireWriteAccess } = require('./middleware/auth');
@@ -74,6 +75,7 @@ app.use('/api', (req, res, next) => {
 });
 app.use('/api', (req, res, next) => {
   if (req.path === '/health') return next();
+  if (req.path === '/auth' || String(req.path || '').startsWith('/auth/')) return next();
   return requireAuth(req, res, next);
 });
 app.use('/api', requireWriteAccess);
@@ -114,6 +116,8 @@ console.log('注册 quotations 路由（活动报价）');
 app.use('/api/quotations', quotationRoutes);
 console.log('注册 users 路由');
 app.use('/api/users', userRoutes);
+console.log('注册 system 路由');
+app.use('/api/system', systemRoutes);
 console.log('注册 reconcile 路由');
 app.use('/api/reconcile', reconcileRoutes);
 console.log('注册 lookups 路由（app 级 /api/lookups）');

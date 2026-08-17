@@ -130,7 +130,8 @@ function applyRoleUiGuards() {
       '[onclick*="invCancelEditItem"]',
     ];
     document.querySelectorAll(selectors.join(',')).forEach((el) => {
-      if (canRegisterReimbursement() && isReimbursementRegistrationControl(el)) return;
+      const canReimb = typeof canRegisterReimbursement === 'function' && canRegisterReimbursement();
+      if (canReimb && isReimbursementRegistrationControl(el)) return;
       el.style.display = 'none';
     });
     document.querySelectorAll('.inv-admin-only').forEach((el) => {
@@ -163,6 +164,25 @@ async function logout() {
     // ignore
   }
   if (typeof window !== 'undefined') window.location.href = '/login.html';
+}
+
+async function reloadLocalService() {
+  if (typeof hasWriteAccess === 'function' && !hasWriteAccess()) {
+    showToast('仅管理员可同步并重启本机服务', 'warning');
+    return;
+  }
+  if (!confirm('将拉取最新代码并自动重启本机服务。\n大约几秒后请刷新页面；同事同样刷新即可。')) return;
+  try {
+    const ret = await api('POST', '/system/reload', { pull: true });
+    const gitErr = ret && ret.data && ret.data.git && ret.data.git.ok === false ? ret.data.git.error : '';
+    if (gitErr) showToast(`代码更新有提示：${gitErr}，仍将重启服务`, 'warning');
+    else showToast('正在重启本机服务，请稍候自动刷新…', 'success');
+    setTimeout(() => {
+      if (typeof window !== 'undefined') window.location.reload();
+    }, 2500);
+  } catch (err) {
+    showToast(err.message || '重启失败', 'error');
+  }
 }
 
 function openChangePasswordModal() {
