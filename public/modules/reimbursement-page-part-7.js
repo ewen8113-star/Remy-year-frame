@@ -203,7 +203,7 @@ function reimbursementBuildPaymentOrderItemsDetailHtml(order) {
 }
 
 function reimbursementBuildPaymentOrderPayBarHtml(orderId, isPaid) {
-  if (isPaid) return '';
+  if (isPaid || !hasWriteAccess()) return '';
   const oid = Number(orderId);
   return `<div class="reimb-po-pay-bar" onclick="event.stopPropagation()">
     <span class="reimb-po-pay-hint">确认支付后，付款单移入「已支付」，关联成本同步更新</span>
@@ -255,9 +255,9 @@ function reimbursementBuildPaymentOrdersTableHtml(ordersFiltered) {
       <td style="max-width:220px;overflow:hidden;text-overflow:ellipsis" title="${escapeHtml(o.remarks || '')}">${escapeHtml(o.remarks || '—')}</td>
       <td onclick="event.stopPropagation()" style="white-space:nowrap">
         <div class="reimbursement-row-actions">
-          ${!isPaid ? `<button type="button" class="btn btn-primary btn-sm" onclick="event.stopPropagation();paymentOrderSubmitPay(${oid})">支付</button>` : ''}
+          ${hasWriteAccess() && !isPaid ? `<button type="button" class="btn btn-primary btn-sm" onclick="event.stopPropagation();paymentOrderSubmitPay(${oid})">支付</button>` : ''}
           <button type="button" class="btn btn-secondary btn-sm" onclick="event.stopPropagation();paymentOrderViewDetail(${oid})">预览</button>
-          <button type="button" class="btn btn-danger btn-sm" onclick="event.stopPropagation();paymentOrderDelete(${oid}, '${escapeHtml(o.order_no || `#${o.id}`)}')">删除</button>
+          ${hasWriteAccess() ? `<button type="button" class="btn btn-danger btn-sm" onclick="event.stopPropagation();paymentOrderDelete(${oid}, '${escapeHtml(o.order_no || `#${o.id}`)}')">删除</button>` : ''}
         </div>
       </td>
     </tr>${detailHtml}`;

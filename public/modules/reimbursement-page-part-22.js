@@ -1,8 +1,8 @@
 async function onReimbursementImportFileSelected(ev) {
   const file = ev.target && ev.target.files && ev.target.files[0];
   if (!file) return;
-  if (!hasWriteAccess()) {
-    showToast('仅管理员可导入', 'warning');
+  if (!canRegisterReimbursement()) {
+    showToast('当前账号无权导入报销', 'warning');
     return;
   }
   if (!currentYearFrameId) {

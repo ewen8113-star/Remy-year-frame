@@ -29,9 +29,37 @@ function requireRole(...roles) {
   };
 }
 
+function requestPathCandidates(req) {
+  const strip = (u) => String(u || '').split('?')[0];
+  return [
+    strip(req.originalUrl),
+    strip(req.url),
+    String(req.path || ''),
+    `${req.baseUrl || ''}${req.path || ''}`,
+  ];
+}
+
+/**
+ * operator 可写范围：报销成本登记（含导入/合并/状态），以及保存报销时回写个人收款方。
+ * 同时匹配 originalUrl 与挂载后的 path，避免 Express 中间件路径剥离导致误判。
+ */
+function isOperatorAllowedWrite(req) {
+  const method = String(req.method || '').toUpperCase();
+  const paths = requestPathCandidates(req);
+  const hit = (re) => paths.some((u) => re.test(u));
+  if (hit(/\/reimbursements(\/|$)/)) return true;
+  if (method === 'POST' && hit(/\/dict\/\d+\/touch$/)) return true;
+  if (method === 'PUT' && hit(/\/dict\/\d+$/)) return true;
+  if (method === 'POST' && hit(/\/dict\/?$/)) return true;
+  return false;
+}
+
 function requireWriteAccess(req, res, next) {
   const method = String(req.method || '').toUpperCase();
   if (method === 'GET' || method === 'HEAD' || method === 'OPTIONS') return next();
+  if (isOperatorAllowedWrite(req)) {
+    return requireRole('admin', 'operator')(req, res, next);
+  }
   return requireRole('admin')(req, res, next);
 }
 

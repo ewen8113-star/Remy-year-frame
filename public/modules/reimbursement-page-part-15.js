@@ -1,6 +1,6 @@
 async function saveReimbursementForm() {
-  if (!hasWriteAccess()) {
-    showToast('仅管理员可保存', 'warning');
+  if (!canRegisterReimbursement()) {
+    showToast('当前账号无权保存报销', 'warning');
     return;
   }
   const rid = document.getElementById('reimbRecordId')?.value?.trim();
@@ -179,8 +179,8 @@ async function saveReimbursementForm() {
 }
 
 async function deleteReimbursementRecord(id) {
-  if (!hasWriteAccess()) {
-    showToast('仅管理员可删除', 'warning');
+  if (!canRegisterReimbursement()) {
+    showToast('当前账号无权删除报销', 'warning');
     return;
   }
   if (!confirm('确定删除该条报销？')) return;
@@ -197,8 +197,8 @@ async function deleteReimbursementRecord(id) {
 }
 
 async function reimbursementUnmergeRecord(id) {
-  if (!hasWriteAccess()) {
-    showToast('仅管理员可撤销合并', 'warning');
+  if (!canRegisterReimbursement()) {
+    showToast('当前账号无权撤销合并', 'warning');
     return;
   }
   const nid = Number(id);

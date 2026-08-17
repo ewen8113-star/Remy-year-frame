@@ -64,8 +64,18 @@ function hasWriteAccess() {
   return currentUserRole === 'admin';
 }
 
+function canRegisterReimbursement() {
+  const role = String(currentUserRole || '').trim().toLowerCase();
+  return role === 'admin' || role === 'operator';
+}
+
 function canManageUsers() {
   return currentUserRole === 'admin';
+}
+
+function isReimbursementRegistrationControl(el) {
+  const oc = String(el && el.getAttribute ? el.getAttribute('onclick') : '');
+  return /showReimbursement(?:Modal|Form)|saveReimbursementForm|deleteReimbursementRecord|reimbAppend(?:Invoice|Detail)Row|reimbRemove(?:Invoice|Detail)Row|reimbursement(?:MergeSelected|UnmergeRecord|SaveClaimStatus|DetailEdit|DetailDelete|DetailUnmerge|EditById)|triggerReimbursementImport|onReimbursementImportFileSelected|reimbursementImportConfirm/.test(oc);
 }
 
 function renderAuthUser() {
@@ -101,6 +111,9 @@ function applyRoleUiGuards() {
       '[onclick*="reimbRemoveInvoiceRow"]',
       '[onclick*="reimbAppendDetailRow"]',
       '[onclick*="reimbRemoveDetailRow"]',
+      '[onclick*="paymentOrderConfirmSave"]',
+      '[onclick*="paymentOrderSubmitPay"]',
+      '[onclick*="paymentOrderDelete"]',
       '[onclick*="materialAppendCustomRow"]',
       '[onclick*="propRepairAppendCustomRow"]',
       '[onclick*="delete"]',
@@ -117,6 +130,7 @@ function applyRoleUiGuards() {
       '[onclick*="invCancelEditItem"]',
     ];
     document.querySelectorAll(selectors.join(',')).forEach((el) => {
+      if (canRegisterReimbursement() && isReimbursementRegistrationControl(el)) return;
       el.style.display = 'none';
     });
     document.querySelectorAll('.inv-admin-only').forEach((el) => {

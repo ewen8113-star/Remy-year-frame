@@ -15,16 +15,16 @@ function reimbursementRenderListDom(tableOnly = false) {
         </div>
         <span class="reimb-tool-divider" aria-hidden="true"></span>
         <div class="reimb-tool-group reimb-tool-group--actions">
-          <button type="button" class="btn reimb-tool-btn reimb-tool-btn--action" onclick="showReimbursementForm(null)">
+          ${canRegisterReimbursement() ? `<button type="button" class="btn reimb-tool-btn reimb-tool-btn--action" onclick="showReimbursementForm(null)">
             <i data-lucide="plus" class="reimb-tool-btn-icon" aria-hidden="true"></i>报销登记
           </button>
           <button type="button" class="btn reimb-tool-btn reimb-tool-btn--action" onclick="triggerReimbursementImport()" title="从 Excel 报销单导入（盛融/个人报销表）">
             <i data-lucide="upload" class="reimb-tool-btn-icon" aria-hidden="true"></i>报销导入
           </button>
-          <input type="file" id="reimbImportFile" accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel" style="display:none" onchange="onReimbursementImportFileSelected(event)">
-          <button type="button" class="btn reimb-tool-btn reimb-tool-btn--action" onclick="showCorporatePaymentTodo()">
+          <input type="file" id="reimbImportFile" accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel" style="display:none" onchange="onReimbursementImportFileSelected(event)">` : ''}
+          ${hasWriteAccess() ? `<button type="button" class="btn reimb-tool-btn reimb-tool-btn--action" onclick="showCorporatePaymentTodo()">
             <i data-lucide="file-text" class="reimb-tool-btn-icon" aria-hidden="true"></i>新建付款单
-          </button>
+          </button>` : ''}
         </div>
         <input type="text" class="form-control" id="reimbListFilter" placeholder="${isStats ? '筛选：收款方 / 项目编号 / 备注' : '筛选：收款方 / 品牌 / 项目编号 / 城市 / 备注'}" style="max-width:360px;margin-left:auto;${vm.view === 'payment_orders' ? 'visibility:hidden' : ''}"
           value="${fi}"

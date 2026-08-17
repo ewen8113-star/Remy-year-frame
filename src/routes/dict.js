@@ -6,7 +6,8 @@
  *   - lookup_options：单值枚举（value+label），用于 select 下拉
  *   - dict_entries：多字段复用实体（联系人/供应商/收款人），用于业务表单一键填充
  *
- * 权限：GET 仅登录；POST/PUT/DELETE 由 server.js 的 requireWriteAccess 控制（admin）。
+ * 权限：GET 仅登录；写操作由 server.js 的 requireWriteAccess 控制。
+ * admin 可维护全部字典；operator 仅可新建/更新 personal_payee（报销登记回写收款方），以及 touch 使用计数。
  */
 
 const express = require('express');
@@ -138,12 +139,24 @@ function sanitizeBody(body) {
   return { category, name, short_label, tags, remarks, pinned, is_active, content };
 }
 
+function isOperatorSession(req) {
+  return String(req.session?.user?.role || '').trim().toLowerCase() === 'operator';
+}
+
+function operatorDictWriteForbidden(req, category) {
+  if (!isOperatorSession(req)) return false;
+  return String(category || '').trim() !== 'personal_payee';
+}
+
 /** POST /api/dict —— 新建 */
 router.post('/', async (req, res) => {
   try {
     const v = sanitizeBody(req.body || {});
     if (!v.category) return res.status(400).json({ error: 'category 不能为空' });
     if (!v.name) return res.status(400).json({ error: 'name 不能为空' });
+    if (operatorDictWriteForbidden(req, v.category)) {
+      return res.status(403).json({ error: '普通用户仅可维护个人收款方' });
+    }
     const op = (req.session && req.session.user && req.session.user.username) || '';
     const [r] = await db.query(
       `INSERT INTO dict_entries (category, name, short_label, content, tags, pinned, is_active, remarks, created_by)
@@ -167,6 +180,13 @@ router.put('/:id', async (req, res) => {
     if (!beforeRows.length) return res.status(404).json({ error: '记录不存在' });
     const beforeEntry = beforeRows[0];
     const body = req.body || {};
+    const nextCategory = body.category !== undefined ? String(body.category).trim() : beforeEntry.category;
+    if (
+      operatorDictWriteForbidden(req, beforeEntry.category)
+      || operatorDictWriteForbidden(req, nextCategory)
+    ) {
+      return res.status(403).json({ error: '普通用户仅可维护个人收款方' });
+    }
     const sets = [];
     const params = [];
     if (body.category !== undefined) { sets.push('category = ?'); params.push(String(body.category).trim()); }

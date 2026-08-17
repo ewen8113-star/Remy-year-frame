@@ -1,8 +1,8 @@
 async function reimbursementSaveClaimStatus() {
   const id = reimbursementDetailState.id;
   if (!id) return;
-  if (!hasWriteAccess()) {
-    showToast('仅管理员可修改状态', 'warning');
+  if (!canRegisterReimbursement()) {
+    showToast('当前账号无权修改报销状态', 'warning');
     return;
   }
   const claim_status = document.getElementById('reimbDetailClaimStatus')?.value || 'draft';
@@ -173,13 +173,23 @@ function buildReimbursementDetailModalHtml(record) {
 function detailModalSyncFooter() {
   const pdfBtn = document.getElementById('reimbDetailPdfBtn');
   const unmergeBtn = document.getElementById('reimbDetailUnmergeBtn');
+  const editBtn = document.getElementById('reimbDetailEditBtn');
+  const deleteBtn = document.getElementById('reimbDetailDeleteBtn');
   const showReimb = detailModalContext === 'reimbursement';
   if (pdfBtn) pdfBtn.style.display = showReimb ? 'inline-flex' : 'none';
   if (unmergeBtn) {
     const r = reimbursementDetailState.record;
-    const canUnmerge = showReimb && hasWriteAccess() && reimbCanUnmerge(r);
+    const canUnmerge = showReimb && canRegisterReimbursement() && reimbCanUnmerge(r);
     unmergeBtn.style.display = canUnmerge ? 'inline-flex' : 'none';
     unmergeBtn.disabled = !canUnmerge;
+  }
+  if (editBtn) {
+    const canEdit = showReimb ? canRegisterReimbursement() : hasWriteAccess();
+    editBtn.style.display = canEdit ? 'inline-flex' : 'none';
+  }
+  if (deleteBtn) {
+    const canDel = showReimb ? canRegisterReimbursement() : hasWriteAccess();
+    deleteBtn.style.display = canDel ? 'inline-flex' : 'none';
   }
 }
 

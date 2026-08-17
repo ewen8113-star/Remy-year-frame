@@ -61,6 +61,7 @@ docs/                      维护说明和优化记录
 
 - `/api/health` 和 `/api/auth/*` 之外的接口默认需要登录。
 - 写请求受 `requireWriteAccess` 保护，不能绕过权限中间件。
+- `operator` 可登记报销（含导入/合并及个人收款方回写）；付款单、库存主数据、用户与字典管理等写操作仍仅 `admin`。
 - 管理员专属操作继续使用现有角色检查。
 - 不修改 Session Cookie 的 `httpOnly`、`sameSite`、生产环境 `secure` 语义。
 - 不在日志、响应或前端代码中输出密码、哈希、Session ID、数据库密码。

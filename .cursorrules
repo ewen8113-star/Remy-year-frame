@@ -81,7 +81,7 @@ remy-year-frame/
 - 错误处理：每个路由 handler 用 try/catch，catch 里 `res.status(500).json({ error: ... })`
 - 新增路由需在 `server.js` 中 `require` 并 `app.use('/api/xxx', routes)`
 - 所有 /api/* 路由（除 /api/auth 和 /api/health）自动经过 `requireAuth` 中间件
-- 写操作（POST/PUT/DELETE）自动经过 `requireWriteAccess`，要求 admin 角色
+- 写操作（POST/PUT/DELETE）自动经过 `requireWriteAccess`：默认要求 admin；operator 可登记/维护报销（含导入、合并）及回写个人收款方
 - GET 请求无需 admin 权限，只要登录即可
 - 不使用 TypeScript、不使用 ORM、不使用 async/await 以外的并发模式
 

@@ -126,8 +126,8 @@ function reimbursementToggleSelectAll(checked) {
  *  - 收款方、申请类型（个人/对公）、成本板块一致
  */
 async function reimbursementMergeSelected() {
-  if (!hasWriteAccess()) {
-    showToast('仅管理员可合并记录', 'warning');
+  if (!canRegisterReimbursement()) {
+    showToast('当前账号无权合并报销记录', 'warning');
     return;
   }
   if (!reimbursementPageState.selectedIds) reimbursementPageState.selectedIds = new Set();
