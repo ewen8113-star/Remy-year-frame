@@ -237,6 +237,7 @@ function reimbAppendDetailRow(row = null) {
   body.insertAdjacentHTML('beforeend', reimbDetailRowHtml(row, body.querySelectorAll('.reimb-detail-row').length));
   reimbRenumberDetailRows();
   reimbUpdateDetailTotals();
+  reimbDetailFindRefresh();
 }
 
 function reimbRemoveDetailRow(btn) {
@@ -248,6 +249,7 @@ function reimbRemoveDetailRow(btn) {
   }
   reimbRenumberDetailRows();
   reimbUpdateDetailTotals();
+  reimbDetailFindRefresh();
 }
 
 function reimbRenumberDetailRows() {
@@ -262,4 +264,157 @@ function reimbDetailBlockChanged(sel) {
   const cat = row?.querySelector?.('.reimb-line-category');
   if (!cat) return;
   cat.innerHTML = reimbCategoryOptionsHtml(sel.value, '');
+  reimbDetailFindRefresh();
+}
+
+/** 费用明细 Ctrl+F：整行可见字段查找状态 */
+const reimbDetailFindState = { query: '', matches: [], index: -1 };
+
+function reimbDetailRowSearchText(row) {
+  if (!row) return '';
+  const parts = [];
+  row.querySelectorAll('input, select, textarea').forEach((el) => {
+    if (el.tagName === 'SELECT') {
+      const opt = el.options[el.selectedIndex];
+      parts.push(opt ? String(opt.textContent || '') : '');
+    } else {
+      parts.push(String(el.value || ''));
+    }
+  });
+  row.querySelectorAll('.reimb-row-no, .reimb-line-subtotal').forEach((el) => {
+    parts.push(String(el.textContent || ''));
+  });
+  return parts.join(' ').replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
+function reimbDetailFindCollectMatches(query) {
+  const q = String(query || '').trim().toLowerCase();
+  const rows = Array.from(document.querySelectorAll('#reimbDetailRows .reimb-detail-row'));
+  if (!q) return [];
+  return rows.filter((row) => reimbDetailRowSearchText(row).includes(q));
+}
+
+function reimbDetailFindUpdateCount() {
+  const el = document.getElementById('reimbDetailFindCount');
+  if (!el) return;
+  const { query, matches, index } = reimbDetailFindState;
+  if (!String(query || '').trim()) {
+    el.hidden = true;
+    el.textContent = '0 / 0';
+    el.classList.remove('is-empty');
+    return;
+  }
+  el.hidden = false;
+  if (!matches.length) {
+    el.textContent = '无匹配';
+    el.classList.add('is-empty');
+    return;
+  }
+  el.classList.remove('is-empty');
+  el.textContent = `${index + 1} / ${matches.length}`;
+}
+
+function reimbDetailFindApplyHighlight(scrollToCurrent) {
+  document.querySelectorAll('#reimbDetailRows .reimb-detail-row').forEach((row) => {
+    row.classList.remove('reimb-detail-row--find-match', 'reimb-detail-row--find-current');
+  });
+  const { matches, index } = reimbDetailFindState;
+  matches.forEach((row, i) => {
+    row.classList.add('reimb-detail-row--find-match');
+    if (i === index) row.classList.add('reimb-detail-row--find-current');
+  });
+  reimbDetailFindUpdateCount();
+  if (!scrollToCurrent || index < 0 || !matches[index]) return;
+  const current = matches[index];
+  try {
+    current.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  } catch (_) {
+    current.scrollIntoView();
+  }
+}
+
+function reimbDetailFindRun(query, { resetIndex = true, scroll = true } = {}) {
+  reimbDetailFindState.query = String(query || '');
+  reimbDetailFindState.matches = reimbDetailFindCollectMatches(reimbDetailFindState.query);
+  if (!reimbDetailFindState.matches.length) {
+    reimbDetailFindState.index = -1;
+  } else if (resetIndex || reimbDetailFindState.index < 0) {
+    reimbDetailFindState.index = 0;
+  } else if (reimbDetailFindState.index >= reimbDetailFindState.matches.length) {
+    reimbDetailFindState.index = 0;
+  }
+  reimbDetailFindApplyHighlight(scroll && reimbDetailFindState.index >= 0);
+}
+
+function reimbDetailFindOnInput(value) {
+  reimbDetailFindRun(value, { resetIndex: true, scroll: true });
+}
+
+function reimbDetailFindStep(delta) {
+  const q = document.getElementById('reimbDetailFind')?.value;
+  const prev = reimbDetailFindState.matches[reimbDetailFindState.index] || null;
+  const queryChanged = String(q || '').trim() !== String(reimbDetailFindState.query || '').trim();
+  reimbDetailFindState.query = String(q || '');
+  reimbDetailFindState.matches = reimbDetailFindCollectMatches(q);
+  if (!reimbDetailFindState.matches.length) {
+    reimbDetailFindState.index = -1;
+    reimbDetailFindApplyHighlight(false);
+    return;
+  }
+  if (queryChanged || reimbDetailFindState.index < 0) {
+    reimbDetailFindState.index = 0;
+  } else {
+    let idx = prev ? reimbDetailFindState.matches.indexOf(prev) : reimbDetailFindState.index;
+    if (idx < 0) idx = 0;
+    else idx = (idx + delta + reimbDetailFindState.matches.length) % reimbDetailFindState.matches.length;
+    reimbDetailFindState.index = idx;
+  }
+  reimbDetailFindApplyHighlight(true);
+}
+
+function reimbDetailFindNext() {
+  reimbDetailFindStep(1);
+}
+
+function reimbDetailFindPrev() {
+  reimbDetailFindStep(-1);
+}
+
+function reimbDetailFindKeydown(ev) {
+  if (!ev) return;
+  if (ev.key === 'Enter') {
+    ev.preventDefault();
+    if (ev.shiftKey) reimbDetailFindPrev();
+    else reimbDetailFindNext();
+    return;
+  }
+  if (ev.key === 'Escape') {
+    ev.preventDefault();
+    const input = document.getElementById('reimbDetailFind');
+    if (input) input.value = '';
+    reimbDetailFindRun('', { resetIndex: true, scroll: false });
+  }
+}
+
+function reimbDetailFindRefresh() {
+  const input = document.getElementById('reimbDetailFind');
+  if (!input || !String(input.value || '').trim()) {
+    reimbDetailFindState.query = '';
+    reimbDetailFindState.matches = [];
+    reimbDetailFindState.index = -1;
+    reimbDetailFindApplyHighlight(false);
+    return;
+  }
+  const prevRow = reimbDetailFindState.matches[reimbDetailFindState.index] || null;
+  reimbDetailFindState.query = input.value;
+  reimbDetailFindState.matches = reimbDetailFindCollectMatches(input.value);
+  if (!reimbDetailFindState.matches.length) {
+    reimbDetailFindState.index = -1;
+  } else if (prevRow) {
+    const kept = reimbDetailFindState.matches.indexOf(prevRow);
+    reimbDetailFindState.index = kept >= 0 ? kept : 0;
+  } else {
+    reimbDetailFindState.index = 0;
+  }
+  reimbDetailFindApplyHighlight(false);
 }

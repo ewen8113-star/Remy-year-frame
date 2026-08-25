@@ -8,6 +8,8 @@ const {
   buildCompareActivityFilters,
   buildWarehouseFilters,
   mapTrendRowsToActivityByMonth,
+  normalizeDateOnly,
+  parseCsv,
   queryFullCostBreakdown,
   queryWithoutPgFlags,
   ratio,

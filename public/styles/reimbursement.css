@@ -1531,6 +1531,7 @@
 .reimb-detail-section .reimb-detail-section-head {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 10px;
   margin-bottom: 6px;
 }
@@ -1543,6 +1544,60 @@
   font-size: 12px;
   color: var(--text-muted);
   margin-right: auto;
+}
+
+.reimb-detail-find {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+.reimb-detail-find-input {
+  width: min(220px, 36vw);
+  min-width: 140px;
+  height: 32px;
+  padding: 0 10px;
+  font-size: 13px;
+}
+
+.reimb-detail-find-input:hover {
+  border-color: var(--border-hover);
+}
+
+.reimb-detail-find-input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+  outline: none;
+}
+
+.reimb-detail-find-count {
+  flex: 0 0 auto;
+  min-width: 3.5em;
+  font-size: 12px;
+  color: var(--text-secondary);
+  text-align: center;
+  white-space: nowrap;
+}
+
+.reimb-detail-find-count.is-empty {
+  color: var(--danger, #c0392b);
+}
+
+.reimb-detail-find-nav {
+  min-width: 32px;
+  padding: 0 8px;
+  line-height: 1;
+}
+
+#reimbDetailRows .reimb-detail-row.reimb-detail-row--find-match > td {
+  background: color-mix(in srgb, var(--accent-soft) 55%, transparent);
+}
+
+#reimbDetailRows .reimb-detail-row.reimb-detail-row--find-current > td {
+  background: color-mix(in srgb, var(--accent) 22%, var(--bg-card));
+  box-shadow: inset 3px 0 0 var(--accent);
 }
 
 .reimb-option-row,

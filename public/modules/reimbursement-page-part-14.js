@@ -180,6 +180,15 @@ async function showReimbursementForm(record) {
           <div class="reimb-detail-section-head">
             <span class="form-label" style="margin:0">费用明细</span>
             <span class="reimb-detail-hint">每行可独立选择品牌；空品牌按「内部」入账</span>
+            <div class="reimb-detail-find" role="search" aria-label="费用明细查找">
+              <input type="search" class="form-control form-control-sm reimb-detail-find-input" id="reimbDetailFind"
+                placeholder="查找明细（Enter 下一条）" autocomplete="off"
+                oninput="reimbDetailFindOnInput(this.value)"
+                onkeydown="reimbDetailFindKeydown(event)">
+              <span class="reimb-detail-find-count" id="reimbDetailFindCount" hidden>0 / 0</span>
+              <button type="button" class="btn btn-secondary btn-sm reimb-detail-find-nav" onclick="reimbDetailFindPrev()" title="上一条（Shift+Enter）" aria-label="上一条匹配">↑</button>
+              <button type="button" class="btn btn-secondary btn-sm reimb-detail-find-nav" onclick="reimbDetailFindNext()" title="下一条（Enter）" aria-label="下一条匹配">↓</button>
+            </div>
             <button type="button" class="btn btn-secondary btn-sm" onclick="reimbAppendDetailRow(null)">添加一行</button>
           </div>
           <div class="reimb-detail-table-wrap reimb-detail-table-wrap--compact">
@@ -253,6 +262,10 @@ async function showReimbursementForm(record) {
   reimbUpdateDetailTotals();
   reimbPaymentMethodChanged();
   await reimbPayeePartyTypeChanged(payeeVal);
+  reimbDetailFindState.query = '';
+  reimbDetailFindState.matches = [];
+  reimbDetailFindState.index = -1;
+  reimbDetailFindUpdateCount();
   renderLucideIcons();
   try {
     host.scrollIntoView({ behavior: 'smooth', block: 'start' });
