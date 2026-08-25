@@ -1,0 +1,2058 @@
+/* 付款申请 / 报销登记页面样式：从 style.css 机械拆分，保持原选择器与视觉规则。 */
+
+/* 付款申请：筛选与待付款列表 */
+.payment-order-wizard {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+.payment-order-wizard-label {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-right: 2px;
+  white-space: nowrap;
+}
+
+.payment-order-filter-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+}
+
+.payment-order-filter-grid {
+  display: grid;
+  gap: 8px;
+  align-items: end;
+}
+.payment-order-filter-grid--primary {
+  grid-template-columns: minmax(160px, 1.4fr) minmax(150px, 1fr) minmax(120px, 0.9fr) minmax(100px, 0.8fr) minmax(140px, 1fr);
+}
+.payment-order-filter-grid--secondary {
+  grid-template-columns: minmax(150px, 1fr) minmax(150px, 1fr) auto;
+}
+.payment-order-filter-grid .form-control { min-width: 0; width: 100%; }
+.payment-order-filter-btn { white-space: nowrap; }
+.payment-order-filter-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+.po-filter-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.po-filter-label {
+  font-size: 12px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.payment-order-filter-hint {
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.45;
+}
+
+.payment-order-ym-cell {
+  font-size: 12px;
+  white-space: nowrap;
+  color: var(--text-secondary);
+}
+
+.payment-order-meta-grid {
+  display: grid;
+  grid-template-columns: minmax(180px, 220px) minmax(220px, 1fr);
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.reimb-po-row,
+.reimb-po-group-row {
+  cursor: pointer;
+}
+.reimb-po-row:hover,
+.reimb-po-group-row:hover {
+  background: var(--bg-hover, rgba(0, 0, 0, 0.03));
+}
+.reimb-po-group-row--open td {
+  background: color-mix(in srgb, var(--accent) 8%, var(--bg-input));
+  border-bottom-color: color-mix(in srgb, var(--accent) 25%, var(--border));
+}
+.reimb-po-nested-banner td {
+  padding: 0 !important;
+  background: color-mix(in srgb, var(--accent) 6%, var(--bg-elevated));
+  border-bottom: none;
+}
+.reimb-po-nested-banner-inner {
+  padding: 6px 12px 6px 28px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent);
+  border-left: 3px solid var(--accent);
+  margin: 0 8px;
+}
+.reimb-po-nested-end td {
+  padding: 0 !important;
+  height: 6px;
+  background: var(--bg-elevated);
+  border-bottom: 2px solid color-mix(in srgb, var(--accent) 20%, var(--border));
+}
+.reimb-list-row--nested td {
+  background: var(--bg-elevated);
+  font-size: 12px;
+  border-left: 3px solid color-mix(in srgb, var(--accent) 35%, transparent);
+}
+.reimb-list-row--nested td:first-child {
+  padding-left: 20px;
+}
+.reimb-list-row--nested .reimbursement-list-code {
+  color: var(--text-secondary);
+}
+.reimb-po-group-row td {
+  background: var(--bg-input);
+  font-weight: 500;
+}
+.reimb-po-row--open td {
+  background: var(--bg-elevated);
+  border-bottom-color: transparent;
+}
+.reimb-po-detail-row > td {
+  padding: 0 !important;
+  vertical-align: top;
+  background: var(--bg-elevated);
+  border-bottom: 1px solid var(--border);
+}
+.reimb-po-detail {
+  display: flex;
+  flex-direction: column;
+  max-height: min(56vh, 500px);
+  margin: 0 8px 12px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+.reimb-po-detail-head {
+  flex-shrink: 0;
+  padding: 10px 16px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-input);
+}
+.reimb-po-detail-meta .amount {
+  color: var(--accent);
+  font-weight: 700;
+}
+.reimb-po-detail-scroll {
+  flex: 1 1 auto;
+  min-height: 120px;
+  overflow: auto;
+  padding: 0;
+}
+.reimb-po-detail-table {
+  width: 100%;
+  font-size: 13px;
+  border-collapse: separate;
+  border-spacing: 0;
+}
+.reimb-po-detail-table th,
+.reimb-po-detail-table td {
+  padding: 8px 12px;
+  vertical-align: middle;
+}
+.reimb-po-detail-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  background: var(--bg-elevated);
+  box-shadow: 0 1px 0 var(--border);
+}
+.reimb-po-pc-cell {
+  max-width: 220px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 12px;
+}
+.reimb-po-desc-cell {
+  max-width: 240px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.reimb-po-table-scroll {
+  max-height: min(72vh, calc(100vh - 220px));
+  overflow: auto;
+  padding-bottom: 16px;
+}
+.reimb-po-table {
+  border-collapse: separate;
+  border-spacing: 0;
+}
+.reimb-po-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  background: var(--bg-input);
+  box-shadow: 0 1px 0 var(--border);
+}
+.reimb-po-detail-empty {
+  padding: 16px;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+.reimb-po-pay-bar {
+  flex-shrink: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-input);
+}
+.reimb-po-pay-hint {
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.45;
+  flex: 1 1 200px;
+  min-width: 0;
+}
+.reimb-po-pay-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  flex-shrink: 0;
+}
+.reimb-po-pay-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  margin: 0;
+}
+.reimb-po-pay-label {
+  white-space: nowrap;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+.reimb-po-pay-field .form-control {
+  width: 156px;
+  min-height: 34px;
+}
+
+.activity-detail-row--clickable {
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  transition: background 0.15s ease;
+}
+.activity-detail-row--expanded {
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+}
+.activity-detail-row--clickable:hover {
+  background: var(--bg-hover, rgba(0, 0, 0, 0.04));
+}
+.cost-source-hint {
+  font-size: 10px;
+  color: var(--text-muted);
+  margin-left: 4px;
+}
+.cost-source-panel {
+  margin: 4px 0 8px 12px;
+  padding: 8px 10px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+}
+.cost-source-line {
+  display: grid;
+  grid-template-columns: 1fr 1fr auto;
+  gap: 8px;
+  padding: 4px 0;
+  border-bottom: 1px dashed var(--border);
+}
+.cost-source-line:last-child {
+  border-bottom: none;
+}
+.cost-source-label {
+  color: var(--text-secondary);
+}
+.cost-source-payee {
+  color: var(--text-primary);
+}
+.cost-source-amt {
+  font-weight: 600;
+  text-align: right;
+}
+
+.po-inline-field {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.po-inline-field .po-inline-label {
+  font-size: 12px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  flex: 0 0 auto;
+}
+.po-inline-field .form-control {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.po-inline-field--grow { flex: 1 1 auto; }
+
+.payment-order-table-wrap {
+  max-height: min(42vh, 420px);
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.payment-order-table {
+  width: 100%;
+  min-width: 920px;
+  table-layout: fixed;
+}
+
+.payment-order-table th,
+.payment-order-table td {
+  padding: 8px 10px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: middle;
+}
+
+/* 列宽：复选 / 录账日期 / 归属月 / 板块 / 收款方 / 品牌 / 项目编号 / 金额 */
+.payment-order-table th:nth-child(1),
+.payment-order-table td:nth-child(1) {
+  width: 40px;
+  text-align: center;
+  padding: 8px 6px;
+}
+.payment-order-table th:nth-child(2),
+.payment-order-table td:nth-child(2) { width: 76px; }
+.payment-order-table th:nth-child(3),
+.payment-order-table td:nth-child(3) { width: 84px; }
+.payment-order-table th:nth-child(4),
+.payment-order-table td:nth-child(4) { width: 88px; }
+.payment-order-table th:nth-child(5),
+.payment-order-table td:nth-child(5) { width: 22%; min-width: 160px; }
+.payment-order-table th:nth-child(6),
+.payment-order-table td:nth-child(6) { width: 68px; }
+.payment-order-table th:nth-child(7),
+.payment-order-table td:nth-child(7) { width: 24%; min-width: 140px; }
+.payment-order-table th:nth-child(8),
+.payment-order-table td:nth-child(8) { width: 108px; text-align: right; }
+
+.payment-order-pc-cell {
+  font-size: 12px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+}
+
+.payment-order-brand-cell {
+  text-align: center;
+}
+
+.payment-order-amount-cell {
+  font-variant-numeric: tabular-nums;
+}
+
+.payment-order-check {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--accent);
+  cursor: pointer;
+  margin: 0;
+}
+
+.inv-row-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+@media (max-width: 1200px) {
+  .payment-order-filter-grid--primary {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+  .payment-order-filter-grid--secondary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .payment-order-filter-actions {
+    grid-column: 1 / -1;
+    justify-content: flex-start;
+  }
+}
+@media (max-width: 720px) {
+  .payment-order-filter-grid--primary,
+  .payment-order-filter-grid--secondary {
+    grid-template-columns: 1fr;
+  }
+  .payment-order-meta-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* 成本登记：与场次记录保持一致的紧凑列表 */
+/* 活动成本：无成本 — 方案 A 轻量描边文字胶囊（normal / hover / pressed / focus） */
+.cost-no-cost-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 52px;
+  min-height: 32px;
+  padding: 6px 10px;
+  margin: 0 auto;
+  box-sizing: border-box;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.2;
+  letter-spacing: 0.02em;
+  color: var(--text-secondary, #666);
+  background: transparent;
+  border: 1px solid var(--border, #e5e5e5);
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease, transform 0.12s ease;
+}
+.cost-no-cost-pill:hover {
+  color: var(--text-primary, #1a1a1a);
+  background: var(--bg-input, rgba(0, 0, 0, 0.04));
+  border-color: var(--border-strong, #d0d0d0);
+}
+.cost-no-cost-pill:active {
+  transform: scale(0.97);
+  background: var(--bg-elevated, #f0f0f0);
+}
+.cost-no-cost-pill:focus-visible {
+  outline: 2px solid var(--accent, #007aff);
+  outline-offset: 2px;
+}
+
+.reimbursement-page {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.reimbursement-toolbar {
+  margin-bottom: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+
+.reimbursement-list-panel {
+  border-radius: var(--radius);
+}
+
+.reimbursement-list-wrap {
+  overflow-x: auto;
+  overflow-y: visible;
+  -webkit-overflow-scrolling: touch;
+  max-width: 100%;
+  border-radius: 0 0 var(--radius) var(--radius);
+}
+
+.reimbursement-registration-table {
+  width: max-content;
+  min-width: 100%;
+  table-layout: auto;
+}
+
+.reimbursement-list-wrap thead th {
+  padding: 10px 12px;
+}
+
+.reimbursement-list-wrap tbody td {
+  padding: 10px 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.reimbursement-list-wrap tbody td.reimbursement-list-code {
+  overflow: visible;
+  text-overflow: clip;
+  white-space: nowrap;
+  min-width: 220px;
+  max-width: none;
+  font-size: 11px;
+  font-family: 'SF Mono', 'Consolas', monospace;
+  color: var(--text-primary);
+}
+
+.reimbursement-list-wrap thead th:nth-child(5) {
+  min-width: 220px;
+}
+
+.reimbursement-registration-table th:nth-child(1),
+.reimbursement-registration-table td:nth-child(1) { width: 36px; min-width: 36px; }
+.reimbursement-registration-table th:nth-child(2),
+.reimbursement-registration-table td:nth-child(2) { min-width: 52px; }
+.reimbursement-registration-table th:nth-child(3),
+.reimbursement-registration-table td:nth-child(3) { min-width: 72px; }
+.reimbursement-registration-table th:nth-child(4),
+.reimbursement-registration-table td:nth-child(4) { min-width: 72px; }
+.reimbursement-registration-table th:nth-child(6),
+.reimbursement-registration-table td:nth-child(6) { min-width: 64px; }
+.reimbursement-registration-table th:nth-child(7),
+.reimbursement-registration-table td:nth-child(7) { min-width: 88px; }
+.reimbursement-registration-table th:nth-child(8),
+.reimbursement-registration-table td:nth-child(8) { min-width: 64px; }
+.reimbursement-registration-table th:nth-child(9),
+.reimbursement-registration-table td:nth-child(9) { min-width: 72px; }
+.reimbursement-registration-table th:nth-child(10),
+.reimbursement-registration-table td:nth-child(10) { min-width: 64px; }
+.reimbursement-registration-table th:nth-child(11),
+.reimbursement-registration-table td:nth-child(11) { min-width: 120px; max-width: 200px; }
+
+.reimbursement-registration-table th:nth-child(12),
+.reimbursement-registration-table td:nth-child(12) {
+  width: 248px;
+  min-width: 248px;
+  max-width: 248px;
+  overflow: visible;
+  text-overflow: clip;
+  padding-left: 10px;
+  padding-right: 12px;
+  position: sticky;
+  right: 0;
+  z-index: 2;
+  background: var(--bg-card, #fff);
+  box-shadow: -6px 0 10px -6px rgba(15, 23, 42, 0.12);
+}
+
+.reimbursement-registration-table thead th:nth-child(12) {
+  z-index: 3;
+  background: var(--bg-input, #f8fafc);
+}
+
+.reimbursement-registration-table tbody tr.reimb-list-row:hover td:nth-child(12) {
+  background: var(--bg-input);
+}
+
+.reimbursement-registration-table tbody tr.reimb-list-row--selected td:nth-child(12) {
+  background: color-mix(in srgb, var(--accent, #2563eb) 8%, var(--bg-card, #fff));
+}
+
+.reimbursement-registration-table tbody tr.reimb-list-row--selected:hover td:nth-child(12) {
+  background: color-mix(in srgb, var(--accent, #2563eb) 14%, var(--bg-card, #fff));
+}
+
+.reimbursement-list-remarks {
+  white-space: normal !important;
+  line-height: 1.35;
+  word-break: break-word;
+}
+
+.reimbursement-table-compact th,
+.reimbursement-table-compact td {
+  padding: 6px 8px;
+  font-size: 13px;
+}
+
+.reimbursement-registration-table tbody tr.reimb-list-row:hover td {
+  background: var(--bg-input);
+}
+
+.reimbursement-registration-table tbody tr.reimb-list-row:hover .reimbursement-list-payee,
+.reimbursement-registration-table tbody tr.reimb-list-row:hover .reimbursement-list-remarks {
+  color: var(--text-primary);
+}
+
+.reimbursement-registration-table .reimb-select-cell {
+  padding-left: 8px;
+  padding-right: 4px;
+}
+
+.reimbursement-registration-table .reimb-select-cell input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+  accent-color: var(--accent, #2563eb);
+}
+
+.reimbursement-registration-table .reimb-select-cell input[type="checkbox"]:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.reimbursement-registration-table tbody tr.reimb-list-row--selected td {
+  background: color-mix(in srgb, var(--accent, #2563eb) 8%, var(--bg-card, #fff));
+}
+
+.reimbursement-registration-table tbody tr.reimb-list-row--selected:hover td {
+  background: color-mix(in srgb, var(--accent, #2563eb) 14%, var(--bg-card, #fff));
+}
+
+.reimbursement-row-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.reimbursement-row-actions .btn {
+  min-height: 28px !important;
+  padding: 0 10px !important;
+  border-radius: 8px !important;
+  font-size: 12px !important;
+  flex: 0 0 auto;
+}
+
+/* ===== 付款申请详情弹窗 ===== */
+#modalReimbDetail.modal.wide {
+  max-width: min(1240px, 96vw);
+  width: min(1240px, 96vw);
+}
+
+.reimb-detail-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  font-size: 13px;
+  color: var(--text-primary);
+}
+
+.reimb-detail-hero {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px 18px;
+  padding: 14px 16px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+
+.reimb-detail-hero-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+}
+
+/* 标签固定宽度按最长文案「费用合计（含税）」预留，避免换行拉高 hero */
+.reimb-detail-hero-row .reimb-detail-label {
+  flex: 0 0 8.5em;
+  max-width: 8.5em;
+  font-size: 12px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+  line-height: 1.45;
+}
+
+.reimb-detail-hero-row .reimb-detail-value {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-weight: 600;
+  color: var(--text-primary);
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  line-height: 1.45;
+}
+
+.reimb-detail-hero-row .reimb-detail-value.amount-pos { color: var(--accent); }
+.reimb-detail-hero-row .reimb-detail-value.amount-neg { color: var(--danger); }
+
+.reimb-detail-section-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-secondary);
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  margin: 0 0 6px;
+}
+
+.reimb-detail-section {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 12px 14px;
+  background: color-mix(in srgb, var(--bg-input) 35%, var(--bg-card) 65%);
+}
+.reimb-detail-merge-hint {
+  margin: 0 0 10px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+.reimb-ro-pc {
+  max-width: 220px;
+  font-size: 12px;
+  word-break: break-all;
+}
+
+.reimb-detail-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  table-layout: auto;
+}
+
+.reimb-detail-table th,
+.reimb-detail-table td {
+  border-bottom: 1px solid var(--border);
+  padding: 7px 8px;
+  text-align: left;
+  vertical-align: top;
+  line-height: 1.5;
+}
+
+.reimb-detail-table thead th {
+  background: var(--bg-input);
+  font-weight: 600;
+  color: var(--text-secondary);
+  font-size: 11.5px;
+  white-space: nowrap;
+}
+
+.reimb-detail-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.reimb-detail-table td.reimb-detail-amount {
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.reimb-detail-table td.reimb-detail-c {
+  text-align: center;
+  white-space: nowrap;
+}
+
+.reimb-detail-empty {
+  color: var(--text-muted);
+  font-size: 12px;
+  padding: 12px 0;
+  text-align: center;
+}
+
+/* ===== 只读详情表（付款申请 / 物料采购共用）=====
+   设计目标（ui-ux-pro-max §6 truncation-strategy / §5 horizontal-scroll）：
+   - 单元格内容默认不换行
+   - 超出 modal 宽度时整张表横向滚动（不会撑破弹窗）
+   - 列宽按内容紧凑，长字段（发票号码、备注、描述）有上限并可省略 + tooltip */
+.reimb-ro-scroll {
+  width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--bg-primary) 70%, var(--bg-card) 30%);
+}
+
+.reimb-ro-table {
+  width: 100%;
+  min-width: auto;
+  border-collapse: collapse;
+  font-size: 12px;
+  table-layout: auto;
+}
+
+.reimb-ro-table th,
+.reimb-ro-table td {
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  vertical-align: middle;
+  white-space: nowrap;
+  line-height: 1.45;
+}
+
+.reimb-ro-table thead th {
+  background: var(--bg-input);
+  font-weight: 600;
+  color: var(--text-secondary);
+  font-size: 11.5px;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+.reimb-ro-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.reimb-ro-table tbody tr:hover td {
+  background: var(--bg-card-hover, rgba(255, 255, 255, 0.04));
+}
+
+.reimb-ro-amount {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.reimb-ro-c {
+  text-align: center;
+}
+
+.reimb-ro-mono {
+  font-family: "SF Mono", Menlo, Consolas, monospace;
+  font-size: 11.5px;
+  color: var(--text-primary);
+}
+
+/* 「内容说明 / 备注」这种可能很长的列，给一个合理上限避免拉很宽；超出仍按 nowrap + ellipsis */
+.reimb-ro-table td.reimb-ro-wrap {
+  max-width: 280px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 物料采购列表整行 hover 反馈（§2 hover-vs-tap + tap-feedback） */
+.mp-list-row:hover td {
+  background: var(--bg-card-hover, rgba(255, 255, 255, 0.04));
+}
+
+.reimb-claim-status-edit {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  min-width: 140px;
+}
+.reimb-claim-status-edit .form-control-sm {
+  max-width: 168px;
+}
+
+.reimb-detail-footer {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.reimb-detail-footer-left,
+.reimb-detail-footer-right {
+  display: flex;
+  gap: 8px;
+}
+
+@media (max-width: 720px) {
+  .reimb-detail-hero { grid-template-columns: 1fr; }
+}
+
+/* ===== 报销申请：HarmonyOS 表单控件细化（内联面板） ===== */
+.reimb-project-field #reimbProjectCode {
+  padding-right: 12px !important;
+}
+
+.reimb-project-field #reimbProjectCode::-webkit-calendar-picker-indicator {
+  display: none !important;
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.reimb-top-grid {
+  grid-template-columns: 1fr 1fr 1fr 1fr;
+}
+
+.reimb-condition-grid {
+  grid-template-columns: minmax(180px, 1fr) minmax(360px, 2fr);
+  align-items: end;
+}
+
+/* ===== 付款申请：紧凑表单 + 顶部工具栏 ghost 按钮 ===== */
+.reimbursement-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--border);
+}
+
+.reimb-tool-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.reimb-tool-group--actions {
+  gap: 6px;
+}
+
+.reimb-tool-divider {
+  display: inline-block;
+  width: 1px;
+  height: 22px;
+  background: var(--border);
+  margin: 0 6px;
+  opacity: 0.7;
+}
+
+.reimbursement-toolbar .btn.reimb-tool-btn {
+  background: transparent !important;
+  color: var(--text-secondary) !important;
+  border: 1px solid transparent !important;
+  font-weight: 500 !important;
+  position: relative;
+  min-height: 36px !important;
+  padding: 0 14px !important;
+  border-radius: 10px !important;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  transition:
+    background-color var(--motion-base) var(--ease-out),
+    color var(--motion-base) var(--ease-out),
+    border-color var(--motion-base) var(--ease-out),
+    transform var(--motion-fast) var(--ease-out);
+}
+
+.reimbursement-toolbar .btn.reimb-tool-btn:hover,
+.reimbursement-toolbar .btn.reimb-tool-btn:focus-visible {
+  background: color-mix(in srgb, var(--accent-soft) 88%, transparent) !important;
+  color: var(--accent) !important;
+  border-color: color-mix(in srgb, var(--accent) 22%, transparent) !important;
+}
+
+.reimbursement-toolbar .btn.reimb-tool-btn:focus-visible {
+  outline: 3px solid color-mix(in srgb, var(--accent) 28%, transparent);
+  outline-offset: 2px;
+}
+
+.reimbursement-toolbar .btn.reimb-tool-btn:active {
+  transform: scale(0.985);
+  background: color-mix(in srgb, var(--accent-soft) 96%, transparent) !important;
+}
+
+.reimbursement-toolbar .btn.reimb-tool-btn[data-active='true'] {
+  color: var(--accent) !important;
+  font-weight: 650 !important;
+}
+
+.reimbursement-toolbar .btn.reimb-tool-btn--tab[data-active='true']::after {
+  content: '';
+  position: absolute;
+  left: 16%;
+  right: 16%;
+  bottom: -6px;
+  height: 3px;
+  border-radius: 3px 3px 0 0;
+  background: var(--accent);
+  transition: opacity var(--motion-base) var(--ease-out);
+}
+
+.reimb-tool-btn-icon {
+  width: 15px;
+  height: 15px;
+  flex: 0 0 auto;
+  stroke-width: 2;
+  color: currentColor;
+}
+
+/* 付款申请 · 费用统计 */
+.reimbursement-list-panel--stats {
+  padding: 0;
+}
+
+.reimb-stats-body-wrap {
+  padding: 16px 20px 20px;
+  background: var(--bg-card, var(--bg-secondary));
+  border-radius: var(--radius);
+}
+
+.reimb-stats-scope {
+  margin: 0 0 14px;
+  padding: 0 2px;
+  font-size: 13px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+.reimb-stats-filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 12px 16px;
+  margin-bottom: 14px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-input, var(--bg-secondary));
+}
+
+.reimb-stats-filter-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 140px;
+}
+
+.reimb-stats-filter-label {
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-weight: 500;
+}
+
+.reimb-stats-filter-control {
+  min-width: 148px;
+  max-width: 200px;
+}
+
+.reimb-stats-filter-field--project .reimb-stats-filter-control {
+  min-width: 200px;
+  max-width: 280px;
+}
+
+.reimb-stats-filter-clear {
+  margin-left: auto;
+  align-self: flex-end;
+}
+
+.reimb-stats-summary {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 18px;
+}
+
+.reimb-stats-card {
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg-primary);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  transition:
+    border-color var(--motion-base) var(--ease-out),
+    background-color var(--motion-base) var(--ease-out),
+    box-shadow var(--motion-base) var(--ease-out);
+}
+
+.reimb-stats-card:hover {
+  border-color: color-mix(in srgb, var(--accent) 22%, var(--border));
+  background: color-mix(in srgb, var(--accent-soft) 28%, var(--bg-primary));
+}
+
+.reimb-stats-card:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.reimb-stats-card--active {
+  border-color: color-mix(in srgb, var(--accent) 32%, var(--border));
+  background: color-mix(in srgb, var(--accent-soft) 48%, var(--bg-primary));
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.reimb-stats-card-label {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.reimb-stats-card-value {
+  font-size: 17px;
+  font-weight: 700;
+  line-height: 1.35;
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+.reimb-stats-detail {
+  margin-bottom: 18px;
+  padding: 14px 16px 12px;
+  border: 1px solid color-mix(in srgb, var(--accent) 20%, var(--border));
+  border-radius: 12px;
+  background: var(--bg-primary);
+}
+
+.reimb-stats-detail-title {
+  margin: 0 0 10px;
+  padding: 0 2px;
+  font-size: 14px;
+  font-weight: 650;
+  color: var(--text-primary);
+}
+
+.reimb-stats-detail-meta {
+  margin-left: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+
+.reimb-stats-detail-wrap {
+  max-height: min(52vh, 480px);
+  overflow: auto;
+}
+
+.reimb-stats-detail-table .reimb-stats-key {
+  max-width: 200px;
+}
+
+.reimb-stats-detail-table .reimb-stats-project-code {
+  max-width: 300px;
+}
+
+.reimb-stats-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.reimb-stats-block {
+  padding: 14px 16px 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg-primary);
+  min-width: 0;
+}
+
+.reimb-stats-block-title {
+  margin: 0 0 10px;
+  padding: 0 2px;
+  font-size: 14px;
+  font-weight: 650;
+  color: var(--text-primary);
+}
+
+.reimb-stats-block-hint {
+  margin-left: 8px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-muted);
+}
+
+.reimb-stats-project-row {
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.reimb-stats-project-row:hover {
+  background: color-mix(in srgb, var(--accent) 6%, var(--bg-primary));
+}
+
+.reimb-stats-project-row--open {
+  background: color-mix(in srgb, var(--accent) 8%, var(--bg-primary));
+}
+
+.reimb-stats-project-chevron {
+  display: inline-block;
+  width: 14px;
+  margin-right: 4px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.reimb-stats-project-code-cell {
+  font-weight: 500;
+}
+
+.reimb-stats-project-detail-row td {
+  padding: 0 !important;
+  border-top: none;
+  background: var(--bg-input);
+}
+
+.reimb-stats-project-detail {
+  padding: 8px 12px 12px 28px;
+}
+
+.reimb-stats-project-lines th,
+.reimb-stats-project-lines td {
+  padding: 8px 12px;
+  font-size: 12px;
+}
+
+.reimb-stats-project-lines thead th {
+  background: color-mix(in srgb, var(--bg-input) 70%, transparent);
+}
+
+.reimb-stats-block .table-wrapper {
+  margin: 0;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.reimb-stats-table th,
+.reimb-stats-table td {
+  padding: 10px 14px;
+}
+
+.reimb-stats-table thead th {
+  background: var(--bg-input);
+  font-size: 12px;
+}
+
+.reimb-stats-table .reimb-stats-key {
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.reimb-stats-table tfoot td {
+  font-weight: 700;
+  border-top: 2px solid var(--border);
+  background: color-mix(in srgb, var(--bg-input) 55%, transparent);
+}
+
+.reimb-stats-total {
+  color: var(--accent);
+  font-weight: 800;
+}
+
+.reimb-stats-empty {
+  padding: 20px 16px;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 13px;
+  border: 1px dashed var(--border);
+  border-radius: 10px;
+}
+
+.reimb-stats-empty-page {
+  padding: 40px 24px;
+}
+
+@media (max-width: 1200px) {
+  .reimb-stats-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .reimb-stats-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 720px) {
+  .reimb-stats-body-wrap {
+    padding-left: 14px;
+    padding-right: 14px;
+  }
+  .reimb-stats-summary {
+    grid-template-columns: 1fr;
+  }
+  .reimb-stats-filter-bar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .reimb-stats-filter-field,
+  .reimb-stats-filter-control {
+    min-width: 0;
+    max-width: none;
+    width: 100%;
+  }
+  .reimb-stats-filter-clear {
+    margin-left: 0;
+    width: 100%;
+  }
+}
+
+/* 紧凑表单：6 列网格 + span 修饰 */
+.reimb-top-grid--dense {
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 10px 12px;
+  align-items: end;
+}
+
+.reimb-top-grid--dense .form-group {
+  margin: 0;
+  min-width: 0;
+}
+
+.reimb-top-grid--dense .form-label {
+  font-size: 12px;
+  font-weight: 600;
+  margin-bottom: 4px;
+  color: var(--text-secondary);
+}
+
+.reimb-top-grid--dense .form-control {
+  height: 36px;
+  min-height: 36px;
+  line-height: 34px;
+  padding: 0 12px;
+  border-radius: 9px;
+  font-size: 13.5px;
+}
+
+.reimb-top-grid--dense select.form-control {
+  padding-right: 28px;
+}
+
+.reimb-top-grid--dense .reimb-form-hint {
+  margin: 6px 0 0;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--text-muted);
+}
+
+.reimb-span-2 { grid-column: span 2; }
+.reimb-span-3 { grid-column: span 3; }
+.reimb-payee-field { grid-column: span 1; min-width: 0; }
+.reimb-payee-info-field { grid-column: span 2; min-width: 0; }
+.reimb-pay-method-field { grid-column: span 1; min-width: 0; }
+.reimb-bank-field { grid-column: span 1; min-width: 0; }
+.reimb-payee-account-picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.reimb-payee-pick-btn {
+  max-width: 100%;
+  text-align: left;
+  white-space: normal;
+}
+
+.reimb-project-readonly {
+  font-size: 13px;
+  padding: 8px 12px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  color: var(--text-primary);
+}
+
+/* 成本归属紧凑横排 */
+.reimb-attr-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px 14px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--bg-input) 75%, transparent);
+}
+
+.reimb-attr-label {
+  font-size: 12px;
+  font-weight: 650;
+  color: var(--text-secondary);
+  letter-spacing: 0.01em;
+}
+
+.reimb-attr-options {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.reimb-attr-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  font-size: 12.5px;
+  color: var(--text-primary);
+  cursor: pointer;
+  transition: background-color var(--motion-base) var(--ease-out), border-color var(--motion-base) var(--ease-out), color var(--motion-base) var(--ease-out);
+}
+
+.reimb-attr-chip:hover {
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--border) 65%);
+}
+
+.reimb-attr-chip input[type='radio'] {
+  accent-color: var(--accent);
+  width: 14px;
+  height: 14px;
+}
+
+.reimb-attr-chip:has(input:checked) {
+  background: var(--accent-soft);
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border) 55%);
+}
+
+.reimb-attr-hint {
+  flex-basis: 100%;
+  margin: 2px 0 0;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+
+/* 条件选择紧凑 row */
+.reimb-option-row--compact {
+  min-height: 36px;
+  padding: 0 10px;
+  border-radius: 9px;
+  font-size: 12.5px;
+}
+
+@media (max-width: 1180px) {
+  .reimb-top-grid--dense {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+  .reimb-span-3 { grid-column: span 4; }
+  .reimb-span-2 { grid-column: span 2; }
+  .reimb-payee-info-field { grid-column: span 2; }
+}
+
+@media (max-width: 760px) {
+  .reimb-top-grid--dense {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .reimb-span-2,
+  .reimb-span-3 { grid-column: span 2; }
+  .reimb-payee-info-field { grid-column: span 2; }
+}
+
+/* ============ 付款申请：内联展开面板 ============ */
+.reimbursement-inline-host {
+  margin: 12px 0 14px;
+}
+
+.reimbursement-inline-host[hidden] {
+  display: none;
+}
+
+.reimb-inline-panel {
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--bg-card);
+  box-shadow: 0 8px 28px -22px rgba(15, 23, 42, 0.35);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.reimb-inline-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 16px 10px;
+  border-bottom: 1px solid var(--border);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--bg-card) 92%, var(--accent-soft) 8%), var(--bg-card));
+}
+
+.reimb-inline-title {
+  font-size: 15px;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+  color: var(--text-primary);
+}
+
+.reimb-inline-header .modal-close {
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 18px;
+  cursor: pointer;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  transition: background-color var(--motion-fast) var(--ease-out), color var(--motion-fast) var(--ease-out);
+}
+
+.reimb-inline-header .modal-close:hover {
+  background: var(--bg-input);
+  color: var(--text-primary);
+}
+
+.reimb-form-body {
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.reimb-form-basic-zone,
+.reimb-form-detail-zone {
+  padding: 14px 16px 12px;
+}
+
+.reimb-form-basic-zone {
+  background: color-mix(in srgb, var(--bg-input) 62%, var(--bg-card) 38%);
+  border-bottom: 1px solid var(--border);
+}
+
+.reimb-form-detail-zone {
+  background: var(--bg-card);
+}
+
+.reimb-form-zone-label {
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  color: var(--text-secondary);
+  margin-bottom: 10px;
+}
+
+.reimb-form-detail-zone .reimb-form-zone-label {
+  margin-bottom: 0;
+}
+
+.reimb-form-detail-zone > .reimb-detail-section {
+  margin-top: 0;
+}
+
+.reimb-form-basic-zone .reimb-top-grid--dense {
+  margin-top: 2px;
+}
+
+.reimb-inline-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 10px 16px 14px;
+  border-top: 1px solid var(--border);
+  background: color-mix(in srgb, var(--bg-card) 90%, var(--bg-input) 10%);
+}
+
+.reimb-detail-section .reimb-detail-section-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+
+.reimb-detail-section .reimb-detail-section-head .form-label {
+  margin: 0;
+}
+
+.reimb-detail-section .reimb-detail-section-head .reimb-detail-hint {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-right: auto;
+}
+
+.reimb-detail-find {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+.reimb-detail-find-input {
+  width: min(220px, 36vw);
+  min-width: 140px;
+  height: 32px;
+  padding: 0 10px;
+  font-size: 13px;
+}
+
+.reimb-detail-find-input:hover {
+  border-color: var(--border-hover);
+}
+
+.reimb-detail-find-input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+  outline: none;
+}
+
+.reimb-detail-find-count {
+  flex: 0 0 auto;
+  min-width: 3.5em;
+  font-size: 12px;
+  color: var(--text-secondary);
+  text-align: center;
+  white-space: nowrap;
+}
+
+.reimb-detail-find-count.is-empty {
+  color: var(--danger, #c0392b);
+}
+
+.reimb-detail-find-nav {
+  min-width: 32px;
+  padding: 0 8px;
+  line-height: 1;
+}
+
+#reimbDetailRows .reimb-detail-row.reimb-detail-row--find-match > td {
+  background: color-mix(in srgb, var(--accent-soft) 55%, transparent);
+}
+
+#reimbDetailRows .reimb-detail-row.reimb-detail-row--find-current > td {
+  background: color-mix(in srgb, var(--accent) 22%, var(--bg-card));
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.reimb-option-row,
+.reimb-advance-card,
+.reimb-pill-check {
+  min-height: 40px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-input);
+  transition:
+    border-color var(--motion-base) var(--ease-out),
+    background-color var(--motion-fast) var(--ease-out),
+    box-shadow var(--motion-base) var(--ease-out),
+    transform var(--motion-fast) var(--ease-out);
+}
+
+.reimb-option-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 12px;
+  font-size: 13px;
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+.reimb-option-row:hover,
+.reimb-advance-card:hover,
+.reimb-pill-check:hover {
+  border-color: var(--border-hover);
+  background: color-mix(in srgb, var(--bg-input) 88%, var(--accent-soft) 12%);
+}
+
+.reimb-option-row:active,
+.reimb-advance-card:active,
+.reimb-pill-check:active {
+  transform: scale(0.998);
+}
+
+.reimb-option-row input[type='checkbox'],
+.reimb-advance-card input[type='checkbox'],
+.reimb-pill-check input[type='checkbox'] {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 auto;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.reimb-option-row input[type='checkbox']:focus-visible,
+.reimb-advance-card input[type='checkbox']:focus-visible,
+.reimb-pill-check input[type='checkbox']:focus-visible {
+  outline: 3px solid var(--accent-soft);
+  outline-offset: 2px;
+}
+
+.reimb-detail-table-wrap {
+  max-height: min(48vh, 520px);
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--bg-primary) 72%, var(--bg-card) 28%);
+}
+
+.reimb-detail-table-wrap--compact {
+  max-height: min(56vh, 620px);
+}
+
+.reimb-detail-table {
+  min-width: 1520px;
+  border-collapse: separate;
+  border-spacing: 0;
+}
+
+.reimb-detail-table--compact {
+  min-width: 1640px;
+}
+
+.reimb-detail-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 6;
+  background: color-mix(in srgb, var(--bg-secondary) 88%, var(--bg-card) 12%);
+  color: var(--text-secondary);
+  font-weight: 650;
+  box-shadow: 0 1px 0 var(--border);
+}
+
+.reimb-detail-table tbody td {
+  vertical-align: middle;
+}
+
+.reimb-detail-table .form-control,
+.reimb-detail-table select.form-control,
+.reimb-detail-table input.form-control {
+  height: 40px !important;
+  min-height: 40px !important;
+  line-height: 38px !important;
+  border-radius: 10px !important;
+}
+
+.reimb-detail-table select.form-control {
+  padding-right: 30px !important;
+}
+
+.reimb-detail-table--compact thead th {
+  font-size: 11px;
+  padding: 6px 8px !important;
+  letter-spacing: 0.02em;
+}
+
+.reimb-detail-table--compact tbody td {
+  padding: 4px 6px !important;
+  font-size: 12.5px;
+}
+
+.reimb-detail-table--compact .form-control,
+.reimb-detail-table--compact select.form-control,
+.reimb-detail-table--compact input.form-control {
+  height: 30px !important;
+  min-height: 30px !important;
+  line-height: 28px !important;
+  font-size: 12.5px !important;
+  padding: 0 8px !important;
+  border-radius: 7px !important;
+}
+
+.reimb-detail-table--compact select.form-control {
+  padding-right: 24px !important;
+}
+
+.reimb-detail-table--compact .reimb-row-no {
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.reimb-detail-table--compact .reimb-col-cost-month {
+  min-width: 72px;
+  width: 72px;
+  max-width: 84px;
+}
+
+.reimb-detail-table--compact .reimb-line-subtotal {
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.reimb-detail-table--compact .btn.btn-sm {
+  min-height: 26px !important;
+  padding: 0 8px !important;
+  font-size: 12px !important;
+  border-radius: 7px !important;
+}
+
+.reimb-line-brand {
+  min-width: 152px;
+}
+
+/* —— 同步项目成本：勾选后隐藏「品牌」列 —— */
+.reimb-detail-table.no-brand-col th.reimb-col-brand,
+.reimb-detail-table.no-brand-col td.reimb-col-brand {
+  display: none;
+}
+
+/* —— 项目编号必填态：勾选「同步项目成本」时输入框高亮 + 错误时短暂提示 —— */
+.reimb-project-required {
+  border-color: var(--accent, #1677ff) !important;
+  box-shadow: 0 0 0 1px rgba(22, 119, 255, 0.18);
+}
+
+.reimb-project-required-error {
+  border-color: var(--danger, #ef4444) !important;
+  box-shadow: 0 0 0 2px rgba(239, 68, 68, 0.18);
+  animation: reimbProjectShake 0.42s ease-in-out;
+}
+
+@keyframes reimbProjectShake {
+  0%, 100% { transform: translateX(0); }
+  25% { transform: translateX(-4px); }
+  75% { transform: translateX(4px); }
+}
+
+.reimb-line-block {
+  min-width: 116px;
+}
+
+.reimb-line-category {
+  min-width: 156px;
+}
+
+.reimb-line-desc {
+  min-width: 180px;
+}
+
+.reimb-line-qty,
+.reimb-line-price {
+  min-width: 118px;
+}
+
+.reimb-line-invoice {
+  min-width: 86px;
+}
+
+.reimb-line-invoice-date {
+  min-width: 154px;
+}
+
+.reimb-line-invoice-no {
+  min-width: 228px;
+  font-variant-numeric: tabular-nums;
+}
+
+.reimb-line-applicant {
+  min-width: 132px;
+}
+
+.reimb-line-remarks {
+  min-width: 160px;
+}
+
+.reimb-line-subtotal {
+  min-width: 96px;
+  white-space: nowrap;
+}
+
+.reimb-pill-check {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-width: 78px;
+  padding: 0 10px;
+  color: var(--text-primary);
+  font-size: 13px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.reimb-pill-check:has(input:checked) {
+  border-color: color-mix(in srgb, var(--accent) 60%, var(--border) 40%);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.reimb-totals-row {
+  display: grid;
+  grid-template-columns: minmax(220px, 1.15fr) minmax(180px, 0.9fr) minmax(180px, 1fr) minmax(220px, 1.2fr);
+  gap: 12px;
+  align-items: stretch;
+  margin-top: 12px;
+}
+
+.reimb-advance-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  cursor: pointer;
+}
+
+.reimb-advance-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.reimb-advance-title {
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--text-primary);
+}
+
+.reimb-advance-sub {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.reimb-advance-amount {
+  margin: 0 !important;
+  min-width: 0;
+}
+
+.reimb-total-card {
+  min-height: 62px;
+  padding: 10px 12px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+
+.reimb-total-card-primary {
+  background: var(--accent-soft);
+  border-color: color-mix(in srgb, var(--accent) 20%, var(--border) 80%);
+}
+
+@media (max-width: 920px) {
+  .reimb-top-grid:not(.reimb-top-grid--dense),
+  .reimb-condition-grid,
+  .reimb-totals-row {
+    grid-template-columns: 1fr;
+  }
+}
+
+.modal .modal-header {
+  padding: 14px 16px 10px !important;
+}
+
+.modal .modal-body {
+  padding: 10px 16px !important;
+}
+
+.modal .modal-footer {
+  padding: 10px 16px 14px !important;
+  gap: 8px !important;
+}
+
+/* 报销 Excel 导入预览 */
+.reimb-import-preview-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.reimb-import-preview-loading {
+  color: var(--text-muted);
+  margin: 24px 0;
+  text-align: center;
+}
+
+.reimb-import-preview-options {
+  display: grid;
+  grid-template-columns: 1fr 1fr auto;
+  gap: 12px 16px;
+  align-items: end;
+  padding: 12px 14px;
+  border-radius: var(--radius-md, 8px);
+  background: var(--surface-secondary, #f5f6f8);
+  border: 1px solid var(--border-subtle, #e8eaed);
+}
+
+.reimb-import-preview-options .form-group {
+  margin: 0;
+}
+
+.reimb-import-preview-sync {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-bottom: 6px;
+  white-space: nowrap;
+}
+
+.reimb-import-preview-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.reimb-import-preview-summary strong {
+  color: var(--text-primary);
+}
+
+.reimb-import-preview-planned {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.reimb-import-planned-card {
+  padding: 10px 12px;
+  border-radius: var(--radius-md, 8px);
+  border: 1px solid var(--border-subtle, #e8eaed);
+  background: var(--surface-primary, #fff);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.reimb-import-preview-table-wrap {
+  overflow: auto;
+  border: 1px solid var(--border-subtle, #e8eaed);
+  border-radius: var(--radius-md, 8px);
+}
+
+.reimb-import-preview-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.reimb-import-preview-table th,
+.reimb-import-preview-table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border-subtle, #e8eaed);
+  text-align: left;
+  vertical-align: top;
+}
+
+.reimb-import-preview-table th {
+  position: sticky;
+  top: 0;
+  background: var(--surface-secondary, #f5f6f8);
+  font-weight: 600;
+  white-space: nowrap;
+  z-index: 1;
+}
+
+.reimb-import-preview-table tr.reimb-import-row--error td {
+  background: color-mix(in srgb, var(--danger, #e53935) 8%, transparent);
+}
+
+.reimb-import-preview-table tr.reimb-import-row--warn td {
+  background: color-mix(in srgb, var(--warning, #f59e0b) 10%, transparent);
+}
+
+.reimb-import-status {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.reimb-import-status--ok {
+  background: color-mix(in srgb, var(--success, #16a34a) 14%, transparent);
+  color: var(--success, #16a34a);
+}
+
+.reimb-import-status--warn {
+  background: color-mix(in srgb, var(--warning, #f59e0b) 16%, transparent);
+  color: var(--warning, #d97706);
+}
+
+.reimb-import-status--error {
+  background: color-mix(in srgb, var(--danger, #e53935) 14%, transparent);
+  color: var(--danger, #e53935);
+}
+
+.reimb-import-target--activity {
+  color: var(--accent, #2563eb);
+}
+
+.reimb-import-target--general {
+  color: var(--text-secondary);
+}
+
+@media (max-width: 900px) {
+  .reimb-import-preview-options {
+    grid-template-columns: 1fr;
+  }
+}

@@ -1,0 +1,331 @@
+/* HarmonyOS 紧凑化与最终覆盖层 */
+/* ===== HarmonyOS 全局紧凑化升级（v3）===== */
+:root {
+  --control-h: 40px;
+  --control-h-sm: 34px;
+  --control-radius: 10px;
+  --control-padding-x: 12px;
+  --form-grid-gap: 10px;
+  --modal-pad-x: 20px;
+  --modal-pad-y: 16px;
+}
+
+/* 页面主体密度 */
+.page-container {
+  padding: 20px;
+}
+
+.card,
+.chart-card {
+  padding: 16px;
+}
+
+.card-header {
+  margin-bottom: 12px;
+}
+
+.toolbar,
+.filter-bar {
+  gap: 8px;
+}
+
+/* 按钮体系 */
+.btn {
+  min-height: var(--control-h);
+  padding: 0 14px;
+  border-radius: var(--control-radius);
+  font-size: 13px;
+}
+
+.btn-sm {
+  min-height: var(--control-h-sm);
+  padding: 0 10px;
+}
+
+.btn-xs {
+  min-height: 28px;
+  padding: 0 8px;
+}
+
+/* 输入体系：统一到 HarmonyOS 紧凑输入高度 */
+.form-grid {
+  gap: var(--form-grid-gap);
+}
+
+.form-group {
+  gap: 4px;
+}
+
+.form-label {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: none;
+  letter-spacing: 0.02em;
+}
+
+.form-control,
+.search-input,
+.filter-select {
+  height: var(--control-h);
+  min-height: var(--control-h);
+  padding: 0 var(--control-padding-x);
+  border-radius: var(--control-radius);
+  font-size: 13px;
+  line-height: calc(var(--control-h) - 2px);
+}
+
+textarea.form-control {
+  height: auto;
+  min-height: 74px;
+  padding: 8px var(--control-padding-x);
+  line-height: 1.45;
+}
+
+select.form-control,
+.filter-select {
+  padding-right: 34px;
+}
+
+.search-input {
+  max-width: 260px;
+}
+
+/* light 主题下原先 48px 输入框过高，改为紧凑版本 */
+[data-theme="light"] .form-control,
+[data-theme="light"] .search-input,
+[data-theme="light"] .filter-select {
+  min-height: var(--control-h);
+  height: var(--control-h);
+  padding: 0 var(--control-padding-x);
+  border-width: 1px;
+  border-radius: var(--control-radius);
+}
+
+/* 弹窗体系 */
+.modal {
+  border-radius: 14px;
+}
+
+.modal-header {
+  padding: var(--modal-pad-y) var(--modal-pad-x) 12px;
+}
+
+.modal-body {
+  padding: 14px var(--modal-pad-x);
+}
+
+.modal-footer {
+  padding: 12px var(--modal-pad-x) var(--modal-pad-y);
+  gap: 8px;
+}
+
+.modal-title {
+  font-size: 15px;
+}
+
+.modal-close {
+  width: 24px;
+  height: 24px;
+}
+
+/* 表格密度 */
+thead th {
+  padding: 9px 12px;
+  font-size: 11px;
+}
+
+tbody td {
+  padding: 9px 12px;
+}
+
+/* 分页与切换控件 */
+.page-btn {
+  width: 30px;
+  height: 30px;
+}
+
+.year-btn {
+  min-height: 30px;
+  padding: 0;
+}
+
+/* 统计卡片更紧凑 */
+.stat-card {
+  padding: 14px 16px;
+}
+
+.stat-icon {
+  width: 32px;
+  height: 32px;
+  margin-bottom: 10px;
+}
+
+.stat-value {
+  font-size: 20px;
+}
+
+@media (max-width: 900px) {
+  .page-container {
+    padding: 14px;
+  }
+  .inv-master-sticky-head {
+    padding-left: 8px;
+    padding-right: 8px;
+  }
+  .inv-master-scroll-body {
+    max-height: calc(100vh - 290px);
+  }
+  .modal-header,
+  .modal-body,
+  .modal-footer {
+    padding-left: 14px;
+    padding-right: 14px;
+  }
+}
+
+/* ===== 强制覆盖层（解决旧规则优先级过高导致“看不出变化”）===== */
+.modal .form-grid {
+  gap: 8px !important;
+}
+
+.modal .form-group {
+  gap: 3px !important;
+}
+
+.modal .form-label {
+  font-size: 12px !important;
+  margin-bottom: 2px !important;
+}
+
+.modal .form-control,
+.modal .search-input,
+.modal .filter-select,
+.modal select.form-control,
+.modal input.form-control {
+  height: 36px !important;
+  min-height: 36px !important;
+  line-height: 34px !important;
+  padding: 0 10px !important;
+  border-radius: 9px !important;
+  font-size: 13px !important;
+}
+
+.modal textarea.form-control {
+  min-height: 64px !important;
+  height: auto !important;
+  line-height: 1.4 !important;
+  padding: 7px 10px !important;
+}
+
+.modal .btn {
+  min-height: 34px !important;
+  border-radius: 9px !important;
+  padding: 0 12px !important;
+}
+
+/* 活动弹窗进一步收紧（你截图这个就是它） */
+#modalActivity .modal-body {
+  padding-top: 8px !important;
+}
+
+#modalActivity .modal-activity-lead {
+  margin-bottom: 10px !important;
+  font-size: 12px !important;
+}
+
+/* 新建活动弹窗：三列对齐布局 */
+#modalActivity .activity-form-grid-3col {
+  grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+  gap: 10px 12px !important;
+  align-items: start !important;
+}
+
+#modalActivity .activity-form-grid-3col .form-group {
+  min-width: 0;
+}
+
+#modalActivity .activity-form-grid-3col .form-label {
+  min-height: 18px;
+  display: flex;
+  align-items: center;
+  line-height: 18px;
+}
+
+#modalActivity .activity-form-grid-3col .form-control {
+  width: 100%;
+}
+
+#modalActivity .activity-form-grid-3col .form-control,
+#modalActivity .activity-form-grid-3col select.form-control,
+#modalActivity .activity-form-grid-3col input.form-control {
+  height: 36px !important;
+  min-height: 36px !important;
+  line-height: 34px !important;
+}
+
+#modalActivity .activity-form-grid-3col .form-full {
+  grid-column: 1 / -1;
+}
+
+#modalActivity .activity-form-grid-3col .form-full > div {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+#modalActivity .activity-form-grid-3col .form-full > div .btn {
+  min-height: 36px !important;
+  height: 36px !important;
+}
+
+@media (max-width: 1180px) {
+  #modalActivity .activity-form-grid-3col {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  }
+}
+
+@media (max-width: 760px) {
+  #modalActivity .activity-form-grid-3col {
+    grid-template-columns: 1fr !important;
+  }
+}
+
+/* 虚拟场次弹窗：隐藏非核心字段 */
+#modalActivity.modal-activity--virtual .activity-field-virtual-hide {
+  display: none !important;
+}
+
+/* 虚拟场次页：按品牌预存统计 */
+.virtual-prepaid-strip {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 10px;
+  margin-bottom: 14px;
+}
+.virtual-prepaid-card {
+  padding: 12px 14px;
+  border-radius: var(--radius-md, 10px);
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+}
+.virtual-prepaid-card .vpc-label {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-bottom: 4px;
+}
+.virtual-prepaid-card .vpc-value {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+}
+.virtual-prepaid-card.virtual-prepaid-total {
+  border-color: var(--border-accent);
+  background: var(--accent-soft);
+}
+.virtual-page-hint {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-bottom: 12px;
+  line-height: 1.5;
+}

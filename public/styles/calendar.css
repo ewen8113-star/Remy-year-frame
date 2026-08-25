@@ -1,0 +1,50 @@
+/* 排期日历页面样式 */
+/* ===== 排期日历 ===== */
+.cal-page {
+  min-height: 0;
+}
+
+/* 滚动时固定：月份导航 + 星期表头 */
+.cal-sticky-head {
+  position: sticky;
+  top: 0;
+  z-index: 12;
+  background: var(--bg-primary);
+  padding-bottom: 8px;
+  margin-bottom: 4px;
+  box-shadow: 0 1px 0 var(--border);
+}
+
+[data-theme="dark"] .cal-sticky-head {
+  box-shadow: 0 1px 0 var(--border), 0 4px 12px rgba(0, 0, 0, 0.25);
+}
+
+.cal-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+
+.cal-toolbar-nav {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.cal-toolbar-title {
+  font-size: 18px;
+  font-weight: 700;
+  min-width: 120px;
+  text-align: center;
+  margin: 0;
+}
+
+.cal-toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}

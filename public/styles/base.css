@@ -1,0 +1,629 @@
+/* 全局主题变量、基础重置与交互基线 */
+/* ===== CSS 变量（默认 = 暗色；品牌色对齐《UI设计规范》：主色深蓝 + 强调金）===== */
+:root {
+  /* 规范色板（别名，供文档对照） */
+  --brand-primary: #1e40af;
+  --brand-primary-light: #3b82f6;
+  --brand-primary-dark: #1e3a8a;
+  --brand-accent: #f59e0b;
+  --brand-accent-light: #fbbf24;
+  --brand-slate-border: #e2e8f0;
+  --brand-slate-bg: #f1f5f9;
+
+  --bg-deep: #020203;
+  --bg-primary: #050506;
+  --bg-secondary: #0a0a0c;
+  --bg-card: rgba(255, 255, 255, 0.05);
+  --bg-card-hover: rgba(255, 255, 255, 0.08);
+  --bg-input: #0f0f12;
+  --bg-sidebar: #050506;
+  --border: rgba(255, 255, 255, 0.06);
+  --border-hover: rgba(255, 255, 255, 0.1);
+  --border-accent: rgba(59, 130, 246, 0.35);
+  --text-primary: #ededef;
+  --text-secondary: #8a8f98;
+  --text-muted: rgba(255, 255, 255, 0.45);
+  /* 暗色主题强调色改为亮蓝（与规范 Primary.light 一致），避免旧靛紫 */
+  --accent: #3b82f6;
+  --accent-hover: #60a5fa;
+  --accent-glow: rgba(59, 130, 246, 0.35);
+  --accent-soft: rgba(59, 130, 246, 0.18);
+  --success: #4ade80;
+  --success-soft: rgba(74, 222, 128, 0.12);
+  --warning: #fbbf24;
+  --warning-soft: rgba(251, 191, 36, 0.12);
+  --danger: #f87171;
+  --danger-soft: rgba(248, 113, 113, 0.12);
+  --blue: #60a5fa;
+  --blue-soft: rgba(96, 165, 250, 0.12);
+  /* 多层阴影：描边感 + 扩散 + 环境暗（accent 弱光在 hover 时由组件规则加强） */
+  --shadow-sm:
+    0 0 0 1px rgba(255, 255, 255, 0.06),
+    0 2px 20px rgba(0, 0, 0, 0.45),
+    0 0 40px rgba(0, 0, 0, 0.22);
+  --shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.08),
+    0 8px 40px rgba(0, 0, 0, 0.55),
+    0 0 80px rgba(59, 130, 246, 0.1);
+  --radius: 16px;
+  --radius-sm: 8px;
+  --radius-lg: 16px;
+  --radius-btn: 12px;
+  --sidebar-w: 220px;
+  --topbar-h: 60px;
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --transition: 0.22s var(--ease-out);
+  --motion-fast: 120ms;
+  --motion-base: 220ms;
+  --motion-slow: 320ms;
+  --focus-ring: 0 0 0 2px rgba(255, 255, 255, 0.92), 0 0 0 4px rgba(59, 130, 246, 0.36);
+}
+
+/* 亮色：UI 设计规范 — 深蓝主色 + 金色强调 + slate 边框 */
+[data-theme="light"] {
+  --bg-primary: #f8fafc;
+  --bg-secondary: #ffffff;
+  --bg-card: #ffffff;
+  --bg-card-hover: #f1f5f9;
+  --bg-input: #ffffff;
+  --bg-sidebar: #ffffff;
+  --border: #e2e8f0;
+  --border-hover: #cbd5e1;
+  --text-primary: #0f172a;
+  --text-secondary: #64748b;
+  --text-muted: #94a3b8;
+  --accent: #1e40af;
+  --accent-hover: #1e3a8a;
+  --accent-secondary: #f59e0b;
+  --accent-soft: rgba(30, 64, 175, 0.12);
+  --success: #10b981;
+  --success-soft: rgba(16, 185, 129, 0.14);
+  --warning: #f59e0b;
+  --warning-soft: rgba(245, 158, 11, 0.14);
+  --danger: #ef4444;
+  --danger-soft: rgba(239, 68, 68, 0.12);
+  --blue: #3b82f6;
+  --blue-soft: rgba(59, 130, 246, 0.12);
+  --shadow-sm: 0 4px 20px -2px rgba(30, 64, 175, 0.1);
+  --shadow: 0 10px 25px -5px rgba(30, 64, 175, 0.12), 0 8px 10px -6px rgba(30, 64, 175, 0.08);
+  --focus-ring: 0 0 0 2px rgba(255, 255, 255, 0.96), 0 0 0 4px rgba(30, 64, 175, 0.28);
+}
+
+[data-theme="light"] body {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', 'Noto Sans SC', sans-serif;
+  line-height: 1.6;
+}
+
+/* Corporate Trust：仅亮色下的排版与组件质感（暗色不变） */
+[data-theme="light"] .page-title {
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+[data-theme="light"] .sidebar {
+  box-shadow: 4px 0 24px -8px rgba(30, 64, 175, 0.06);
+}
+
+[data-theme="light"] .brand-info .brand-name {
+  letter-spacing: -0.02em;
+}
+
+[data-theme="light"] .nav-item:hover {
+  background: #f1f5f9;
+}
+
+[data-theme="light"] .nav-item.active {
+  background: rgba(30, 64, 175, 0.1);
+  color: var(--accent);
+}
+
+[data-theme="light"] .year-btn {
+  background: #f8fafc;
+  border-color: #e2e8f0;
+}
+
+[data-theme="light"] .year-btn:hover {
+  background: #f1f5f9;
+}
+
+[data-theme="light"] .theme-toggle-icon {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+}
+
+[data-theme="light"] .theme-toggle-icon:hover {
+  background: #eff6ff;
+  border-color: #93c5fd;
+}
+
+[data-theme="light"] .btn-primary {
+  background: linear-gradient(135deg, #1e40af 0%, #3b82f6 100%);
+  color: #fff;
+  border-radius: var(--radius-btn);
+  box-shadow: 0 4px 15px rgba(30, 64, 175, 0.3);
+}
+
+[data-theme="light"] .btn-primary:hover {
+  background: linear-gradient(135deg, #1e3a8a 0%, #2563eb 100%);
+  box-shadow: 0 8px 25px rgba(30, 64, 175, 0.4);
+  transform: translateY(-2px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-theme="light"] .btn-primary:hover,
+  [data-theme="light"] .card:hover,
+  [data-theme="light"] .chart-card:hover,
+  [data-theme="light"] .stat-card:hover {
+    transform: none;
+  }
+}
+
+[data-theme="light"] .btn-secondary {
+  background: #ffffff;
+  color: #334155;
+  border: 1px solid #e2e8f0;
+}
+
+[data-theme="light"] .btn-secondary:hover {
+  background: #f8fafc;
+  border-color: #cbd5e1;
+  color: #0f172a;
+}
+
+[data-theme="light"] .card,
+[data-theme="light"] .chart-card {
+  border-color: #f1f5f9;
+  box-shadow: var(--shadow-sm);
+  transition: border-color var(--transition), box-shadow var(--transition), transform var(--transition);
+}
+
+[data-theme="light"] .card:hover,
+[data-theme="light"] .chart-card:hover {
+  border-color: #3b82f6;
+  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.1);
+  transform: translateY(-4px);
+}
+
+[data-theme="light"] .stat-card {
+  border-color: #e2e8f0;
+  border-radius: 16px;
+  box-shadow: var(--shadow-sm);
+}
+
+[data-theme="light"] .stat-card:hover {
+  border-color: #3b82f6;
+  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.1);
+  transform: translateY(-4px);
+}
+
+[data-theme="light"] .table-wrapper {
+  border-color: #e2e8f0;
+  background: rgba(248, 250, 252, 0.72);
+  box-shadow: 0 8px 24px rgba(30, 64, 175, 0.05);
+}
+
+[data-theme="light"] thead {
+  background: #f8fafc;
+}
+
+[data-theme="light"] .group-title {
+  background: #f8fafc;
+}
+
+[data-theme="light"] .form-control,
+[data-theme="light"] .search-input,
+[data-theme="light"] .filter-select {
+  background: #ffffff;
+  border: 2px solid #e2e8f0;
+  border-radius: 12px;
+  min-height: 48px;
+  padding: 14px 16px;
+}
+
+[data-theme="light"] .form-control:focus,
+[data-theme="light"] .search-input:focus,
+[data-theme="light"] .filter-select:focus {
+  outline: none;
+  border-color: #3b82f6;
+  box-shadow: 0 0 0 2px #fff, 0 0 0 4px rgba(59, 130, 246, 0.15);
+}
+
+[data-theme="light"] .form-label {
+  color: #475569;
+  text-transform: none;
+  letter-spacing: 0.02em;
+  font-weight: 600;
+}
+
+[data-theme="light"] .modal {
+  box-shadow: 0 25px 50px -12px rgba(30, 64, 175, 0.15), 0 12px 24px -8px rgba(15, 23, 42, 0.1);
+  border-color: #e2e8f0;
+}
+
+[data-theme="light"] .modal-overlay {
+  background: rgba(15, 23, 42, 0.45);
+}
+
+[data-theme="light"] .year-badge {
+  background: rgba(30, 64, 175, 0.1);
+  color: var(--accent);
+}
+
+[data-theme="light"] .page-btn.active {
+  background: linear-gradient(135deg, #1e40af 0%, #3b82f6 100%);
+  border-color: transparent;
+}
+
+[data-theme="light"] .toast {
+  box-shadow: var(--shadow-sm);
+}
+
+[data-theme="light"] .top-bar {
+  position: sticky;
+  top: 0;
+  z-index: 40;
+  background: #ffffff;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+[data-theme="light"] .page-container {
+  background: linear-gradient(to bottom right, #f8fafc, #f1f5f9);
+  animation: uiPageFadeIn 0.45s ease;
+}
+
+[data-theme="light"] .btn-secondary {
+  border-radius: var(--radius-btn);
+}
+
+/* ===== Linear / Modern — 仅暗色（不改 [data-theme="light"] 块）===== */
+[data-theme="dark"] body {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  line-height: 1.6;
+  background-color: var(--bg-primary);
+  background-image:
+    radial-gradient(ellipse 120% 70% at 50% -25%, rgba(59, 130, 246, 0.2) 0%, transparent 52%),
+    radial-gradient(ellipse 55% 45% at 100% 15%, rgba(245, 158, 11, 0.09) 0%, transparent 50%),
+    radial-gradient(ellipse 50% 55% at 0% 55%, rgba(59, 130, 246, 0.09) 0%, transparent 48%),
+    radial-gradient(ellipse 80% 80% at 50% 100%, var(--bg-deep) 0%, var(--bg-primary) 55%);
+  background-attachment: fixed;
+}
+
+[data-theme="dark"] body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  opacity: 0.4;
+  background-image:
+    linear-gradient(rgba(255, 255, 255, 0.02) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.02) 1px, transparent 1px);
+  background-size: 64px 64px;
+  mask-image: radial-gradient(ellipse 85% 70% at 50% 35%, black 15%, transparent 72%);
+  -webkit-mask-image: radial-gradient(ellipse 85% 70% at 50% 35%, black 15%, transparent 72%);
+}
+
+[data-theme="dark"] body::after {
+  content: '';
+  position: fixed;
+  width: min(130vw, 1100px);
+  height: min(100vh, 820px);
+  left: 50%;
+  top: -18%;
+  transform: translateX(-50%);
+  pointer-events: none;
+  z-index: 0;
+  background: radial-gradient(ellipse at center, rgba(59, 130, 246, 0.28) 0%, transparent 65%);
+  filter: blur(72px);
+  opacity: 0.5;
+  animation: linearBlobDrift 16s ease-in-out infinite;
+}
+
+@keyframes linearBlobDrift {
+  0%, 100% {
+    transform: translateX(-50%) translateY(0) scale(1);
+    opacity: 0.48;
+  }
+  50% {
+    transform: translateX(-48%) translateY(22px) scale(1.04);
+    opacity: 0.58;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-theme="dark"] body::after {
+    animation: none;
+  }
+}
+
+/* 仅侧栏与主区叠在 body 伪元素之上；勿对 body 下所有子元素设 position，以免覆盖弹窗 fixed */
+[data-theme="dark"] body > aside,
+[data-theme="dark"] body > main {
+  z-index: 1;
+}
+
+[data-theme="dark"] .page-container {
+  background: transparent;
+}
+
+[data-theme="dark"] .page-title {
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+[data-theme="dark"] .sidebar {
+  background: rgba(5, 5, 6, 0.92);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  box-shadow: inset -1px 0 0 rgba(255, 255, 255, 0.04);
+}
+
+[data-theme="dark"] .main-content {
+  background: transparent;
+}
+
+[data-theme="dark"] .top-bar {
+  position: sticky;
+  top: 0;
+  z-index: 40;
+  background: rgba(10, 10, 12, 0.85);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border-bottom-color: rgba(255, 255, 255, 0.06);
+}
+
+[data-theme="dark"] .card,
+[data-theme="dark"] .chart-card,
+[data-theme="dark"] .stat-card {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.07) 0%, rgba(255, 255, 255, 0.025) 100%);
+  border-color: rgba(255, 255, 255, 0.06);
+  box-shadow: var(--shadow-sm);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  transition: border-color var(--transition), box-shadow var(--transition), transform var(--transition);
+}
+
+[data-theme="dark"] .card:hover,
+[data-theme="dark"] .chart-card:hover {
+  border-color: rgba(255, 255, 255, 0.1);
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.1),
+    0 8px 40px rgba(0, 0, 0, 0.55),
+    0 0 80px rgba(59, 130, 246, 0.12);
+  transform: translateY(-3px);
+}
+
+[data-theme="dark"] .stat-card:hover {
+  border-color: rgba(255, 255, 255, 0.1);
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.1),
+    0 8px 40px rgba(0, 0, 0, 0.55),
+    0 0 80px rgba(59, 130, 246, 0.12);
+  transform: translateY(-3px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-theme="dark"] .card:hover,
+  [data-theme="dark"] .chart-card:hover,
+  [data-theme="dark"] .stat-card:hover {
+    transform: none;
+  }
+}
+
+[data-theme="dark"] .btn-primary {
+  background: var(--accent);
+  color: #fff;
+  box-shadow:
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.14),
+    0 0 0 1px rgba(59, 130, 246, 0.5),
+    0 4px 16px rgba(59, 130, 246, 0.32);
+}
+
+[data-theme="dark"] .btn-primary:hover {
+  background: var(--accent-hover);
+  box-shadow:
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.16),
+    0 0 0 1px rgba(59, 130, 246, 0.55),
+    0 6px 22px rgba(59, 130, 246, 0.38);
+  transform: translateY(-2px);
+}
+
+[data-theme="dark"] .btn-primary:active {
+  transform: scale(0.98) translateY(0);
+}
+
+[data-theme="dark"] .btn-secondary {
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text-primary);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+[data-theme="dark"] .btn-secondary:hover {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.12);
+  color: #fff;
+}
+
+[data-theme="dark"] .form-control:focus,
+[data-theme="dark"] .search-input:focus,
+[data-theme="dark"] .filter-select:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(5, 5, 6, 0.9), 0 0 0 4px rgba(59, 130, 246, 0.35);
+}
+
+/* 暗色：日期/时间原生控件右侧图标（勿对 input 设 color-scheme:dark，否则部分浏览器先画「暗色」图标再 invert 会变回深色） */
+[data-theme="dark"] input[type='date'].form-control,
+[data-theme="dark"] input[type='datetime-local'].form-control,
+[data-theme="dark"] input[type='date'].filter-select,
+[data-theme="dark"] input[type='datetime-local'].filter-select {
+  color: var(--text-primary);
+}
+
+[data-theme="dark"] input[type='date'].form-control::-webkit-calendar-picker-indicator,
+[data-theme="dark"] input[type='datetime-local'].form-control::-webkit-calendar-picker-indicator,
+[data-theme="dark"] input[type='date'].filter-select::-webkit-calendar-picker-indicator,
+[data-theme="dark"] input[type='datetime-local'].filter-select::-webkit-calendar-picker-indicator {
+  opacity: 1;
+  width: 1.15rem;
+  height: 1.15rem;
+  padding: 0 0 0 2px;
+  cursor: pointer;
+  -webkit-filter: invert(1) brightness(1.05);
+  filter: invert(1) brightness(1.05);
+}
+
+[data-theme="dark"] input[type='date'].form-control::-webkit-calendar-picker-indicator:hover,
+[data-theme="dark"] input[type='datetime-local'].form-control::-webkit-calendar-picker-indicator:hover,
+[data-theme="dark"] input[type='date'].filter-select::-webkit-calendar-picker-indicator:hover,
+[data-theme="dark"] input[type='datetime-local'].filter-select::-webkit-calendar-picker-indicator:hover {
+  filter: invert(1) brightness(1.2);
+  -webkit-filter: invert(1) brightness(1.2);
+}
+
+/* Firefox 日期控件右侧图标 */
+[data-theme="dark"] input[type='date'].form-control::-moz-calendar-picker-indicator,
+[data-theme="dark"] input[type='datetime-local'].form-control::-moz-calendar-picker-indicator,
+[data-theme="dark"] input[type='date'].filter-select::-moz-calendar-picker-indicator,
+[data-theme="dark"] input[type='datetime-local'].filter-select::-moz-calendar-picker-indicator {
+  filter: invert(1) brightness(1.05);
+  opacity: 1;
+  cursor: pointer;
+}
+
+[data-theme="dark"] .modal {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.08) 0%, rgba(255, 255, 255, 0.03) 100%);
+  border-color: rgba(255, 255, 255, 0.08);
+  box-shadow:
+    0 0 0 1px rgba(255, 255, 255, 0.06),
+    0 24px 64px rgba(0, 0, 0, 0.65),
+    0 0 100px rgba(59, 130, 246, 0.1);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+}
+
+[data-theme="dark"] .modal-overlay {
+  background: rgba(2, 2, 3, 0.72);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+}
+
+[data-theme="dark"] .year-badge {
+  background: rgba(59, 130, 246, 0.18);
+  color: #e8eaff;
+  border: 1px solid rgba(59, 130, 246, 0.25);
+}
+
+[data-theme="dark"] .year-btn {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+[data-theme="dark"] .year-btn:hover {
+  background: rgba(255, 255, 255, 0.07);
+}
+
+[data-theme="dark"] .year-btn.active {
+  border-color: rgba(59, 130, 246, 0.45);
+  color: #cdd3ff;
+}
+
+[data-theme="dark"] .nav-item:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+[data-theme="dark"] .nav-item.active {
+  background: rgba(59, 130, 246, 0.15);
+  color: #d8dcff;
+}
+
+[data-theme="dark"] .theme-toggle-icon {
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+[data-theme="dark"] .theme-toggle-icon:hover {
+  background: rgba(255, 255, 255, 0.09);
+  border-color: rgba(59, 130, 246, 0.35);
+}
+
+[data-theme="dark"] .table-wrapper {
+  border-color: rgba(255, 255, 255, 0.06);
+  background: rgba(255, 255, 255, 0.02);
+  box-shadow: var(--shadow-sm);
+}
+
+[data-theme="dark"] .toast {
+  box-shadow: var(--shadow-sm);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+/* ===== 基础重置 ===== */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html { font-size: 14px; }
+body {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', 'Noto Sans SC', sans-serif;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  min-height: 100vh;
+  display: flex;
+  overflow: hidden;
+  transition: background var(--transition), color var(--transition);
+}
+
+a { text-decoration: none; cursor: pointer; }
+button { cursor: pointer; border: none; background: none; font-family: inherit; }
+input, select, textarea { font-family: inherit; }
+
+/* ===== HarmonyOS 交互基线：统一焦点环 / 按压反馈 / 入场动效 ===== */
+button:focus-visible,
+.btn:focus-visible,
+.nav-item:focus-visible,
+.nav-group-toggle:focus-visible,
+.year-btn:focus-visible,
+.theme-toggle-icon:focus-visible,
+.page-btn:focus-visible,
+.inv-tab:focus-visible,
+.inv-view-opt:focus-visible,
+.form-control:focus-visible,
+.search-input:focus-visible,
+.filter-select:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+.is-pressed {
+  transform: scale(0.985);
+  transition: transform var(--motion-fast) ease;
+}
+
+#pageContainer.harmony-page-loading {
+  opacity: 0.72;
+}
+
+#pageContainer.harmony-page-ready {
+  opacity: 1;
+  transition: opacity var(--motion-base) var(--ease-out);
+}
+
+.harmony-enter {
+  opacity: 0;
+  transform: translateY(10px);
+  animation: harmony-enter var(--motion-slow) var(--ease-out) forwards;
+  animation-delay: var(--h-delay, 0ms);
+}
+
+@keyframes harmony-enter {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+body.modal-open {
+  overflow: hidden;
+}

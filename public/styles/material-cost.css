@@ -1,0 +1,23 @@
+/* 额外成本分析与命中明细样式 */
+/* ===== 额外成本：成本分析仪表盘 ===== */
+.mp-dash-card .mp-dash-header { transition: background-color .15s ease; }
+.mp-dash-card .mp-dash-header:hover { background: var(--bg-input); }
+.mp-dash-card .mp-dash-body { border-top: 1px solid var(--border); }
+.mp-dash-chart .card-body { background: var(--bg-card); }
+
+/* 命中明细表：横向滚动 + 不换行，避免类别长文本竖排 */
+.mp-hits-scroll { overflow-x: auto; }
+.mp-hits-table { width: 100%; min-width: 720px; border-collapse: collapse; }
+.mp-hits-table th, .mp-hits-table td {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.mp-hits-table td:nth-child(5) { max-width: 220px; }
+
+@media (max-width: 1024px) {
+  #mpDashBody > div[style*="grid-template-columns:1.4fr 1fr"],
+  #mpDashBody > div[style*="grid-template-columns:1fr 1fr"] {
+    grid-template-columns: 1fr !important;
+  }
+}

@@ -9,7 +9,24 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="style.css?v=20260624-warehouse-quote-brand">
+  <link rel="stylesheet" href="styles/base.css?v=20260727-base-css">
+  <link rel="stylesheet" href="styles/layout.css?v=20260727-layout-css">
+  <link rel="stylesheet" href="styles/components.css?v=20260727-components-css">
+  <link rel="stylesheet" href="styles/auth.css?v=20260727-auth-css">
+  <link rel="stylesheet" href="styles/dashboard.css?v=20260727-dashboard-css">
+  <link rel="stylesheet" href="styles/calendar.css?v=20260727-calendar-css">
+  <link rel="stylesheet" href="styles/activities.css?v=20260727-activities-css">
+  <link rel="stylesheet" href="styles/virtual-activities.css?v=20260727-virtual-activities-css">
+  <link rel="stylesheet" href="styles/logistics.css?v=20260727-logistics-css">
+  <link rel="stylesheet" href="styles/warehouse.css?v=20260727-warehouse-css">
+  <link rel="stylesheet" href="styles/harmony-compact.css?v=20260727-harmony-compact-css">
+  <link rel="stylesheet" href="style.css?v=20260727-legacy-css">
+  <link rel="stylesheet" href="styles/inventory.css?v=20260727-inventory-css">
+  <link rel="stylesheet" href="styles/reimbursement.css?v=20260825-reimb-detail-find">
+  <link rel="stylesheet" href="styles/activity-quotes.css?v=20260727-activity-quotes-css">
+  <link rel="stylesheet" href="styles/dict.css?v=20260727-dict-css">
+  <link rel="stylesheet" href="styles/material-cost.css?v=20260727-material-cost-css">
+  <link rel="stylesheet" href="styles/reconcile.css?v=20260727-reconcile-css">
   <!-- Chart.js -->
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
   <script src="https://unpkg.com/lucide@latest"></script>
@@ -29,8 +46,8 @@
 
     <!-- 年度切换 -->
     <div class="year-switcher">
-      <button class="year-btn active" data-year="25" onclick="switchYear('25')">25年度</button>
-      <button class="year-btn" data-year="26" onclick="switchYear('26')">26年度</button>
+      <button class="year-btn" data-year="25" onclick="switchYear('25')">25年度</button>
+      <button class="year-btn active" data-year="26" onclick="switchYear('26')">26年度</button>
     </div>
 
     <!-- 导航：分组可折叠，状态存 localStorage remy_navGroup_* -->
@@ -123,6 +140,10 @@
             <span class="nav-text">付款申请</span>
             <span class="nav-badge" id="badge-reimbursement">—</span>
           </a>
+          <a class="nav-item" data-page="reconcile" onclick="navigate('reconcile')">
+            <span class="nav-icon"><i data-lucide="clipboard-list" style="width:16px;height:16px"></i></span>
+            <span class="nav-text">临时对账</span>
+          </a>
         </div>
       </div>
 
@@ -155,7 +176,7 @@
     <!-- 底部：版本号 + 明暗主题图标 -->
     <div class="sidebar-footer">
       <div class="sidebar-footer-bar">
-        <span class="app-version" id="appVersion" title="应用版本">ver.2026.06.05.1</span>
+        <span class="app-version" id="appVersion" title="应用版本">ver.2026.07.17.1</span>
         <button type="button" class="theme-toggle-icon" id="themeToggleBtn" onclick="toggleTheme()" title="切换到亮色模式" aria-label="切换明暗主题"><svg xmlns="http://www.w3.org/2000/svg" width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg></button>
       </div>
     </div>
@@ -170,9 +191,10 @@
         <h1 class="page-title" id="pageTitle">数据看板</h1>
       </div>
       <div class="top-bar-right">
-        <span class="year-badge" id="yearBadge">25年度</span>
+        <span class="year-badge" id="yearBadge">26年度</span>
         <span class="year-badge" id="yearFrameHint" title="当前年框与场次数量">YF#— · 场次—</span>
         <span class="year-badge" id="authUserBadge" title="当前登录用户">—</span>
+        <button type="button" class="btn btn-secondary btn-sm inv-admin-only" id="reloadServiceBtn" onclick="reloadLocalService()" title="拉取最新代码并由本机服务自动重启，同事刷新即可">同步最新</button>
         <button type="button" class="btn btn-secondary btn-sm" id="changePasswordBtn" onclick="openChangePasswordModal()">修改密码</button>
         <button class="btn btn-secondary btn-sm" id="logoutBtn" onclick="logout()">退出登录</button>
         <div class="connection-status" id="connectionStatus">
@@ -746,7 +768,7 @@
     </div>
   </div>
 
-  <div class="modal wide" id="modalReimbDetail" style="max-width:920px" onclick="event.stopPropagation()">
+  <div class="modal wide" id="modalReimbDetail" style="max-width:min(1240px, 96vw)" onclick="event.stopPropagation()">
     <div class="modal-header">
       <span class="modal-title" id="modalReimbDetailTitle">付款申请详情</span>
       <button type="button" class="modal-close" onclick="closeModal()">✕</button>
@@ -1000,7 +1022,127 @@
   <div class="toast-container" id="toastContainer"></div>
 
   <script src="disable-number-input-wheel.js?v=2"></script>
+  <script src="modules/core-utils.js?v=20260727-core-utils"></script>
+  <script src="modules/api-client.js?v=20260727-api-client"></script>
+  <script src="modules/ui-feedback.js?v=20260727-ui-feedback"></script>
+  <script src="modules/ui-formatters.js?v=20260727-ui-formatters"></script>
+  <script src="modules/ui-modal.js?v=20260727-ui-modal"></script>
   <script src="app.js?v=20260709-import-preview"></script>
+  <script src="app-part-2.js?v=20260728-app-split"></script>
+  <script src="app-part-3.js?v=20260817-operator-reimb2"></script>
+  <script src="app-part-4.js?v=20260817-operator-reimb2"></script>
+  <script src="app-part-5.js?v=20260728-app-split"></script>
+  <script src="modules/dashboard-page.js?v=20260727-dashboard-module"></script>
+  <script src="modules/dashboard-page-part-2.js?v=20260728-dashboard-split"></script>
+  <script src="modules/dashboard-page-part-3.js?v=20260728-dashboard-split"></script>
+  <script src="modules/dashboard-page-part-4.js?v=20260728-dashboard-split"></script>
+  <script src="modules/dashboard-page-part-5.js?v=20260728-dashboard-split"></script>
+  <script src="modules/dashboard-page-part-6.js?v=20260728-dashboard-split"></script>
+  <script src="modules/activities-page.js?v=20260727-activities-module"></script>
+  <script src="modules/activities-page-part-2.js?v=20260728-activities-split"></script>
+  <script src="modules/activities-page-part-3.js?v=20260728-activities-split"></script>
+  <script src="modules/activities-page-part-4.js?v=20260728-activities-split"></script>
+  <script src="modules/activities-page-part-5.js?v=20260728-activities-split"></script>
+  <script src="modules/activities-page-part-6.js?v=20260728-activities-split"></script>
+  <script src="modules/calendar-page.js?v=20260727-calendar-module"></script>
+  <script src="modules/virtual-activities-page.js?v=20260727-virtual-activities-module"></script>
+  <script src="modules/cost-page.js?v=20260727-cost-module"></script>
+  <script src="modules/cost-page-part-2.js?v=20260728-cost-split"></script>
+  <script src="modules/cost-page-part-3.js?v=20260728-cost-split"></script>
+  <script src="modules/cost-page-part-4.js?v=20260728-cost-split"></script>
+  <script src="modules/logistics-page.js?v=20260727-logistics-module"></script>
+  <script src="modules/logistics-page-part-2.js?v=20260728-logistics-split"></script>
+  <script src="modules/logistics-page-part-3.js?v=20260728-logistics-split"></script>
+  <script src="modules/logistics-page-part-4.js?v=20260728-logistics-split"></script>
+  <script src="modules/logistics-page-part-5.js?v=20260728-logistics-split"></script>
+  <script src="modules/reimbursement-page.js?v=20260727-reimbursement-module"></script>
+  <script src="modules/reimbursement-page-part-2.js?v=20260728-reimbursement-split"></script>
+  <script src="modules/reimbursement-page-part-3.js?v=20260728-reimbursement-split"></script>
+  <script src="modules/reimbursement-page-part-4.js?v=20260825-reimb-detail-find"></script>
+  <script src="modules/reimbursement-page-part-5.js?v=20260728-reimbursement-split"></script>
+  <script src="modules/reimbursement-page-part-6.js?v=20260728-reimbursement-split"></script>
+  <script src="modules/reimbursement-page-part-7.js?v=20260817-operator-reimb"></script>
+  <script src="modules/reimbursement-page-part-8.js?v=20260728-reimbursement-split"></script>
+  <script src="modules/reimbursement-page-part-9.js?v=20260728-reimbursement-split"></script>
+  <script src="modules/reimbursement-page-part-10.js?v=20260728-reimbursement-split"></script>
+  <script src="modules/reimbursement-page-part-11.js?v=20260728-reimbursement-split"></script>
+  <script src="modules/reimbursement-page-part-12.js?v=20260817-operator-reimb"></script>
+  <script src="modules/reimbursement-page-part-13.js?v=20260728-reimbursement-split"></script>
+  <script src="modules/reimbursement-page-part-14.js?v=20260825-reimb-detail-find"></script>
+  <script src="modules/reimbursement-page-part-15.js?v=20260817-operator-reimb"></script>
+  <script src="modules/reimbursement-page-part-16.js?v=20260817-operator-reimb"></script>
+  <script src="modules/reimbursement-page-part-17.js?v=20260728-reimbursement-split"></script>
+  <script src="modules/reimbursement-page-part-18.js?v=20260728-reimbursement-split"></script>
+  <script src="modules/reimbursement-page-part-19.js?v=20260728-reimbursement-split"></script>
+  <script src="modules/reimbursement-page-part-20.js?v=20260728-reimbursement-split"></script>
+  <script src="modules/reimbursement-page-part-21.js?v=20260817-operator-reimb"></script>
+  <script src="modules/reimbursement-page-part-22.js?v=20260817-operator-reimb"></script>
+  <script src="modules/payment-order-utils.js?v=20260727-payment-order-utils"></script>
+  <script src="modules/material-purchases-page.js?v=20260727-material-purchases-module"></script>
+  <script src="modules/material-purchases-page-part-2.js?v=20260728-material-split"></script>
+  <script src="modules/material-purchases-page-part-3.js?v=20260728-material-split"></script>
+  <script src="modules/material-purchases-page-part-4.js?v=20260728-material-split"></script>
+  <script src="modules/prop-repair-page.js?v=20260727-prop-repair-module"></script>
+  <script src="modules/prop-repair-page-part-2.js?v=20260728-prop-repair-split"></script>
+  <script src="modules/warehouse-page.js?v=20260727-warehouse-module"></script>
+  <script src="modules/warehouse-page-part-2.js?v=20260728-warehouse-split"></script>
+  <script src="modules/warehouse-page-part-3.js?v=20260728-warehouse-split"></script>
+  <script src="modules/inventory-utils.js?v=20260727-inventory-utils"></script>
+  <script src="modules/inventory-detail-utils.js?v=20260727-inventory-detail-utils"></script>
+  <script src="modules/inventory-page.js?v=20260727-inventory-module"></script>
+  <script src="modules/inventory-page-part-2.js?v=20260728-inventory-split"></script>
+  <script src="modules/inventory-page-part-3.js?v=20260728-inventory-split"></script>
+  <script src="modules/inventory-page-part-4.js?v=20260728-inventory-split"></script>
+  <script src="modules/inventory-page-part-5.js?v=20260728-inventory-split"></script>
+  <script src="modules/inventory-page-part-6.js?v=20260728-inventory-split"></script>
+  <script src="modules/inventory-page-part-7.js?v=20260728-inventory-split"></script>
+  <script src="modules/inventory-page-part-8.js?v=20260728-inventory-split"></script>
+  <script src="modules/inventory-page-part-9.js?v=20260728-inventory-split"></script>
+  <script src="modules/inventory-page-part-10.js?v=20260728-inventory-split"></script>
+  <script src="modules/inventory-page-part-11.js?v=20260728-inventory-split"></script>
+  <script src="modules/inventory-page-part-12.js?v=20260728-inventory-split"></script>
+  <script src="modules/inventory-page-chrome.js?v=20260728-inventory-split"></script>
+  <script src="modules/inventory-page-part-13.js?v=20260728-inventory-split"></script>
+  <script src="modules/inventory-page-part-14.js?v=20260728-inventory-split"></script>
+  <script src="modules/inventory-page-part-15.js?v=20260728-inventory-split"></script>
+  <script src="modules/inventory-page-part-16.js?v=20260728-inventory-split"></script>
+  <script src="modules/inventory-page-part-17.js?v=20260728-inventory-split"></script>
+  <script src="modules/inventory-page-part-18.js?v=20260728-inventory-split"></script>
+  <script src="modules/inventory-page-part-19.js?v=20260728-inventory-split"></script>
+  <script src="modules/inventory-page-part-20.js?v=20260728-inventory-split"></script>
+  <script src="modules/wine-catalog-page.js?v=20260727-wine-catalog-module"></script>
+  <script src="modules/wine-catalog-page-part-2.js?v=20260728-wine-split"></script>
+  <script src="modules/wine-catalog-page-part-3.js?v=20260728-wine-split"></script>
+  <script src="modules/wine-catalog-page-part-4.js?v=20260728-wine-split"></script>
+  <script src="modules/wine-catalog-page-part-5.js?v=20260728-wine-split"></script>
+  <script src="modules/dict-page.js?v=20260727-dict-module"></script>
+  <script src="modules/dict-page-part-2.js?v=20260728-dict-split"></script>
+  <script src="modules/dict-page-part-3.js?v=20260728-dict-split"></script>
+  <script src="modules/dict-page-part-4.js?v=20260728-dict-split"></script>
+  <script src="modules/dict-page-part-5.js?v=20260728-dict-split"></script>
+  <script src="modules/backup-page.js?v=20260727-backup-module"></script>
+  <script src="modules/users-page.js?v=20260727-users-module"></script>
+  <script src="modules/reconcile-page.js?v=20260727-reconcile-module"></script>
+  <script src="modules/reconcile-page-part-2.js?v=20260728-reconcile-split"></script>
+  <script src="modules/reconcile-page-part-3.js?v=20260728-reconcile-split"></script>
   <script src="activity-quotes.js?v=20260605-aq-list-summary"></script>
+  <script src="activity-quotes-part-2.js?v=20260728-quotes-split"></script>
+  <script src="activity-quotes-part-3.js?v=20260728-quotes-split"></script>
+  <script src="activity-quotes-part-4.js?v=20260728-quotes-split"></script>
+  <script src="activity-quotes-part-5.js?v=20260728-quotes-split"></script>
+  <script src="activity-quotes-part-6.js?v=20260728-quotes-split"></script>
+  <script src="activity-quotes-part-7.js?v=20260728-quotes-split"></script>
+  <script src="activity-quotes-part-8.js?v=20260728-quotes-split"></script>
+  <script src="activity-quotes-part-9.js?v=20260728-quotes-split"></script>
+  <script src="activity-quotes-part-10.js?v=20260728-quotes-split"></script>
+  <script src="activity-quotes-part-11.js?v=20260728-quotes-split"></script>
+  <script src="activity-quotes-part-12.js?v=20260728-quotes-split"></script>
+  <script src="activity-quotes-part-13.js?v=20260728-quotes-split"></script>
+  <script src="activity-quotes-part-14.js?v=20260728-quotes-split"></script>
+  <script src="activity-quotes-part-15.js?v=20260728-quotes-split"></script>
+  <script src="activity-quotes-part-16.js?v=20260728-quotes-split"></script>
+  <script src="activity-quotes-part-17.js?v=20260728-quotes-split"></script>
+  <script src="activity-quotes-part-18.js?v=20260728-quotes-split"></script>
+  <script src="activity-quotes-part-19.js?v=20260728-quotes-split"></script>
 </body>
 </html>

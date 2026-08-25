@@ -129,7 +129,7 @@ remy-year-frame/
 - `POST /api/auth/logout` - 退出登录
 - `GET /api/auth/me` - 当前登录用户
 - 说明：除 `/api/auth/*` 与 `/api/health` 外，其余 API 均需登录。
-- 权限：`admin` 可读写；`operator` 默认只读（写操作返回 403）。
+- 权限：`admin` 可读写全部模块；`operator` 默认可查看，并可登记报销（创建/编辑/删除、导入、合并，以及回写个人收款方）；付款单、库存主数据、用户管理、字典管理等写操作仍仅 `admin`。
 
 ### 用户管理（仅 admin）
 

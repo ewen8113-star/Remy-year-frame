@@ -1,0 +1,101 @@
+/* 仓储成本页面样式 */
+/* 仓储成本：紧凑运营布局 */
+.warehouse-page {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.warehouse-page .toolbar {
+  margin-bottom: 0;
+}
+
+.warehouse-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.warehouse-region-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(220px, 1fr));
+  gap: 12px;
+}
+
+.warehouse-page .stat-card {
+  padding: 14px 16px;
+  min-height: 0;
+}
+
+.warehouse-page .stat-icon {
+  width: 30px;
+  height: 30px;
+  margin-bottom: 8px;
+}
+
+.warehouse-page .stat-value {
+  font-size: 18px;
+}
+
+.warehouse-page .stat-value.sm {
+  font-size: 17px;
+}
+
+.warehouse-table-card {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  overflow: visible;
+  box-shadow: none;
+}
+
+.warehouse-table-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 2px 10px;
+  border-bottom: 0;
+}
+
+.warehouse-table-title {
+  font-size: 14px;
+  font-weight: 800;
+  color: var(--text-primary);
+}
+
+.warehouse-table-sub {
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.warehouse-table-scroll {
+  max-height: min(58vh, calc(100vh - 360px));
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.warehouse-cost-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 4;
+  background: var(--bg-input);
+}
+
+.warehouse-cost-table thead th,
+.warehouse-cost-table tbody td {
+  padding: 9px 12px;
+}
+
+@media (max-width: 1200px) {
+  .warehouse-summary-grid {
+    grid-template-columns: repeat(2, minmax(220px, 1fr));
+  }
+
+  .warehouse-region-grid {
+    grid-template-columns: 1fr;
+  }
+}
